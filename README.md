@@ -2,6 +2,8 @@
 
 Run **Claude Code**, **OpenCode**, or **OpenClaw** against a fully local LLM — no API costs, nothing leaves your machine. One small **Go binary**, cross-platform (Windows, Linux, macOS), no Python and no PowerShell.
 
+*My own rebuild — written from scratch in Go, **not a fork or port** of anything. It's inspired by the methods of earlier local-model launchers; see [Origin & credits](#origin--credits).*
+
 `winc` wires together:
 
 | Component | Role |
@@ -144,4 +146,20 @@ Requires Go 1.22+. The only runtime dependency is the engine (`llama-server`, op
 
 ---
 
-Author: Sam Dotson. llama.cpp and llama-swap are separate upstream projects under their own licenses.
+## Origin & credits
+
+winc.cpp is an independent project by **Sam Dotson** — a ground-up rebuild in Go that shares
+**no code** with any other tool. It is **not a fork and not a port**. It re-implements an idea
+from scratch, taking inspiration from the *methods* of the local-LLM and coding-agent community:
+
+- **[claude.cpp](https://github.com/d4rks1d33/claude.cpp)** (d4rks1d33) — the influence behind
+  the core idea of pointing a coding agent at a local model. winc rebuilds that idea with a
+  different architecture (single Go binary, native Anthropic serving in llama.cpp, llama-swap
+  routing, adaptive reasoning) and a fresh codebase.
+
+It stands on these upstream projects, each under its own license — winc bundles none of them;
+`winc setup` downloads them from their official releases:
+
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — local inference engine + native Anthropic Messages API
+- **[llama-swap](https://github.com/mostlygeek/llama-swap)** — multi-model routing proxy
+- **Claude Code / OpenCode / OpenClaw** — the coding agents winc points at your GPU
