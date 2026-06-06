@@ -1,0 +1,39 @@
+{
+  "tiers": {
+    "nano":  "<6 GB - phones, weak laptops, iGPUs",
+    "small": "6-8 GB VRAM / 8 GB unified",
+    "mid":   "16 GB VRAM / 16-32 GB unified",
+    "large": "24 GB+ VRAM / 36 GB+ unified",
+    "xl":    "64 GB+ unified (Apple)"
+  },
+  "models": [
+    { "tier": "nano", "alias": "qwen2.5-coder-3b", "name": "Qwen2.5-Coder-3B-Instruct Q4_K_M", "size": "1.9 GB", "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF", "file": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf", "note": "Best tiny coder. Runs on phones / weak laptops" },
+    { "tier": "nano", "alias": "qwen2.5-coder-1.5b", "name": "Qwen2.5-Coder-1.5B-Instruct Q4_K_M", "size": "1.0 GB", "repo": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF", "file": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf", "note": "Faster tiny coder, fits ~3-4 GB" },
+    { "tier": "nano", "alias": "llama3.2-3b", "name": "Llama-3.2-3B-Instruct Q4_K_M", "size": "2.0 GB", "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF", "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", "note": "Meta mobile-tuned general model" },
+    { "tier": "nano", "alias": "llama3.2-1b", "name": "Llama-3.2-1B-Instruct Q4_K_M", "size": "0.8 GB", "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF", "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf", "note": "Ultra-tiny, runs on phones" },
+    { "tier": "nano", "alias": "gemma3-1b", "name": "Gemma-3-1B-IT Q4_K_M", "size": "0.8 GB", "repo": "unsloth/gemma-3-1b-it-GGUF", "file": "gemma-3-1b-it-Q4_K_M.gguf", "note": "Flash-fast on mobile GPUs (~2500 tok/s)" },
+    { "tier": "nano", "alias": "phi4-mini", "name": "Phi-4-mini-instruct (3.8B) Q4_K_M", "size": "2.5 GB", "repo": "bartowski/microsoft_Phi-4-mini-instruct-GGUF", "file": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf", "note": "Best small reasoning for weak laptops" },
+    { "tier": "nano", "alias": "smollm2-1.7b", "name": "SmolLM2-1.7B-Instruct Q4_K_M", "size": "1.1 GB", "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF", "file": "SmolLM2-1.7B-Instruct-Q4_K_M.gguf", "note": "Ultra-light general model" },
+
+    { "tier": "small", "alias": "qwen2.5-coder-7b", "name": "Qwen2.5-Coder-7B-Instruct Q4_K_M", "size": "4.7 GB", "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF", "file": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf", "note": "Best small coder. Fast, fits 6-8 GB" },
+    { "tier": "small", "alias": "deepseek-r1-8b", "name": "DeepSeek-R1-0528-Qwen3-8B Q4_K_M", "size": "5.0 GB", "repo": "bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF", "file": "deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf", "note": "Fast reasoning distill. Math/algorithmic" },
+    { "tier": "small", "alias": "llama3.1-8b", "name": "Llama-3.1-8B-Instruct Q4_K_M", "size": "4.9 GB", "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "note": "Meta 8B. Well-rounded, 128K ctx" },
+    { "tier": "small", "alias": "gemma4-e4b", "name": "Gemma-4-E4B-IT Q4_K_M", "size": "5.0 GB", "repo": "unsloth/gemma-4-E4B-it-GGUF", "file": "gemma-4-E4B-it-Q4_K_M.gguf", "note": "Newest Gemma. Multimodal, edge-tuned" },
+
+    { "tier": "mid", "alias": "qwen3.6-27b", "name": "Qwen3.6-27B Q3_K_M", "size": "13.6 GB", "repo": "unsloth/Qwen3.6-27B-GGUF", "file": "Qwen3.6-27B-Q3_K_M.gguf", "note": "Newest top dense coder. Clean 16 GB fit" },
+    { "tier": "mid", "alias": "qwen3.6-35b", "name": "Qwen3.6-35B-A3B UD-IQ3_S", "size": "16 GB", "repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "file": "Qwen3.6-35B-A3B-UD-IQ3_S.gguf", "note": "Newest MoE coder (3B active = fast). Agentic" },
+    { "tier": "mid", "alias": "gpt-oss-20b", "name": "GPT-OSS-20B (MXFP4)", "size": "12.1 GB", "repo": "ggml-org/gpt-oss-20b-GGUF", "file": "gpt-oss-20b-mxfp4.gguf", "note": "OpenAI open-weights. Fast daily driver" },
+    { "tier": "mid", "alias": "devstral", "name": "Devstral-Small-2507 Q4_K_M", "size": "14.3 GB", "repo": "bartowski/mistralai_Devstral-Small-2507-GGUF", "file": "mistralai_Devstral-Small-2507-Q4_K_M.gguf", "note": "Mistral 24B agent/coding. Strong tool-calling" },
+    { "tier": "mid", "alias": "qwen3-14b", "name": "Qwen3-14B Q5_K_M", "size": "10.5 GB", "repo": "bartowski/Qwen_Qwen3-14B-GGUF", "file": "Qwen_Qwen3-14B-Q5_K_M.gguf", "note": "Snappy general/reasoning + tools" },
+    { "tier": "mid", "alias": "mistral-small", "name": "Mistral-Small-3.2-24B-Instruct Q4_K_M", "size": "14.3 GB", "repo": "bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF", "file": "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf", "note": "Strong general-purpose + tool use" },
+    { "tier": "mid", "alias": "gemma4-12b", "name": "Gemma-4-12B-IT Q6_K", "size": "9.8 GB", "repo": "unsloth/gemma-4-12b-it-GGUF", "file": "gemma-4-12b-it-Q6_K.gguf", "note": "Newest Gemma. Multimodal, 256K ctx" },
+    { "tier": "mid", "alias": "phi4", "name": "Phi-4-reasoning-plus (14B) Q5_K_M", "size": "10.6 GB", "repo": "bartowski/microsoft_Phi-4-reasoning-plus-GGUF", "file": "microsoft_Phi-4-reasoning-plus-Q5_K_M.gguf", "note": "RL-tuned. Excellent math/logic" },
+
+    { "tier": "large", "alias": "qwen3.6-27b-q5", "name": "Qwen3.6-27B Q5_K_M", "size": "19.5 GB", "repo": "unsloth/Qwen3.6-27B-GGUF", "file": "Qwen3.6-27B-Q5_K_M.gguf", "note": "Top dense coder at high quant. Best on 24 GB" },
+    { "tier": "large", "alias": "qwen3.6-35b-q4", "name": "Qwen3.6-35B-A3B UD-Q4_K_M", "size": "22.1 GB", "repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "note": "MoE coder, full Q4. Fast + high quality" },
+    { "tier": "large", "alias": "qwen2.5-coder-32b", "name": "Qwen2.5-Coder-32B-Instruct Q5_K_M", "size": "23.3 GB", "repo": "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF", "file": "Qwen2.5-Coder-32B-Instruct-Q5_K_M.gguf", "note": "SOTA 32B open coder" },
+    { "tier": "large", "alias": "qwen3-32b", "name": "Qwen3-32B Q5_K_M", "size": "23.2 GB", "repo": "bartowski/Qwen_Qwen3-32B-GGUF", "file": "Qwen_Qwen3-32B-Q5_K_M.gguf", "note": "Frontier dense reasoning model" },
+
+    { "tier": "xl", "alias": "qwen2.5-72b", "name": "Qwen2.5-72B-Instruct Q4_K_M", "size": "47 GB", "repo": "bartowski/Qwen2.5-72B-Instruct-GGUF", "file": "Qwen2.5-72B-Instruct-Q4_K_M.gguf", "note": "Largest Qwen2.5. Strong coder for 64 GB+ unified memory" }
+  ]
+}

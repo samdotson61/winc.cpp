@@ -1,30 +1,23 @@
 @echo off
-REM Double-clickable wrapper for install.ps1.
-REM Sets cwd to this folder, bypasses ExecutionPolicy, keeps window open on exit.
+REM winc.cpp one-click setup (Windows). Double-click me.
 setlocal
 cd /d "%~dp0"
 
-where powershell >nul 2>nul
-if errorlevel 1 (
-    echo [x] PowerShell not found on PATH.
-    echo     This script needs Windows PowerShell or PowerShell 7+.
+if not exist "winc.exe" (
+  where go >nul 2>nul
+  if errorlevel 1 (
+    echo [x] winc.exe not found and Go is not installed.
+    echo     Either download a prebuilt winc.exe release into this folder,
+    echo     or install Go from https://go.dev/dl/ and re-run this script.
     pause
     exit /b 1
+  )
+  echo Building winc.exe from source...
+  go build -o winc.exe .\cmd\winc
+  if errorlevel 1 ( echo [x] build failed & pause & exit /b 1 )
 )
 
-echo === winc.cpp installer ===
-echo Folder: %~dp0
+winc.exe setup
 echo.
-
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
-set EC=%ERRORLEVEL%
-
-echo.
-if "%EC%"=="0" (
-    echo === Done. ===
-) else (
-    echo === Installer exited with code %EC%. ===
-)
-echo Press any key to close this window . . .
-pause >nul
-exit /b %EC%
+echo Done. Open a NEW terminal and run:  winc ls
+pause

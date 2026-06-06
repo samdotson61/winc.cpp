@@ -1,0 +1,93 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"winc/internal/catalog"
+	"winc/internal/download"
+	"winc/internal/ui"
+)
+
+func cmdDownload(args []string) int {
+	if len(args) == 0 {
+		ui.Err("usage: winc -d <alias>   or   winc -d <repo> <file>")
+		return 1
+	}
+	cfg := loadConfig()
+	cat := catalog.Load(cfg.CustomModels)
+	md := modelsDir(cfg)
+
+	var repo, file string
+	if len(args) >= 2 && strings.Contains(args[0], "/") {
+		repo, file = args[0], args[1]
+	} else {
+		m := cat.Find(args[0])
+		if m == nil {
+			ui.Err("unknown model %q. Run 'winc ls' for aliases, or pass '<repo> <file>'.", args[0])
+			return 1
+		}
+		repo, file = m.Repo, m.File
+	}
+
+	target := filepath.Join(md, filepath.Base(file))
+	if fileExists(target) {
+		ui.Good("already downloaded: %s", filepath.Base(file))
+		return 0
+	}
+	ui.Good("Downloading %s", filepath.Base(file))
+	ui.Say("  from %s", repo)
+	if _, err := download.HFDownload(repo, file, md, cfg.HuggingFace.Token); err != nil {
+		ui.Err("download failed: %v", err)
+		ui.Say("  for gated models set HF_TOKEN, or [huggingface].token in winc.toml")
+		return 1
+	}
+	ui.Good("done: %s", filepath.Base(file))
+	return 0
+}
+
+func cmdRemove(args []string) int {
+	yes := false
+	var q string
+	for _, a := range args {
+		switch a {
+		case "-y", "--yes":
+			yes = true
+		default:
+			if q == "" {
+				q = a
+			}
+		}
+	}
+	if q == "" {
+		ui.Err("usage: winc -r <alias|filename> [-y]")
+		return 1
+	}
+	cfg := loadConfig()
+	cat := catalog.Load(cfg.CustomModels)
+	path, alias := downloadedPath(cfg, cat, q)
+	if path == "" {
+		if alias != "" {
+			ui.Err("'%s' is not downloaded - nothing to remove.", alias)
+		} else {
+			ui.Err("no downloaded model matches %q. See 'winc ls'.", q)
+		}
+		return 1
+	}
+	gb := 0.0
+	if info, err := os.Stat(path); err == nil {
+		gb = float64(info.Size()) / 1e9
+	}
+	if !yes && !ui.Confirm(fmt.Sprintf("Delete %s (%.1f GB)?", filepath.Base(path), gb), false) {
+		ui.Say("cancelled - nothing removed.")
+		return 0
+	}
+	if err := os.Remove(path); err != nil {
+		ui.Err("remove failed: %v", err)
+		return 1
+	}
+	ui.Good("removed: %s (%.1f GB freed)", filepath.Base(path), gb)
+	return 0
+}
