@@ -127,7 +127,8 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 	if !agent.Available(app) {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
-	env := agent.Env(baseURL, slots)
+	maxOut := engine.ResolveMaxOutput(cfg, engine.ResolveContext(cfg, hw, engine.FileMB(models[slots.Sonnet])))
+	env := agent.Env(baseURL, slots, maxOut)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)

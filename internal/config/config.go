@@ -52,8 +52,9 @@ type Performance struct {
 	Context   string `toml:"context"`    // "auto" or integer
 	Batch     string `toml:"batch"`      // "auto" or integer
 	FlashAttn bool   `toml:"flash_attn"`
-	CacheType string `toml:"cache_type"` // e.g. q8_0, f16
-	Threads   string `toml:"threads"`    // "auto" or integer
+	CacheType string `toml:"cache_type"`        // e.g. q8_0, f16
+	Threads   string `toml:"threads"`           // "auto" or integer
+	MaxOutputTokens string `toml:"max_output_tokens"` // "auto" (~half context) or integer
 }
 
 type Multi struct {
@@ -112,11 +113,12 @@ complexity_boost = true          # +1 tier if code / tool_result / build-intent 
 [performance]
 backend    = "auto"     # auto | cuda | metal | vulkan | rocm | cpu
 gpu_layers = "auto"     # "auto" or integer (-ngl)
-context    = "auto"     # "auto" or token count (-c)
+context    = "auto"     # "auto" sizes the window to fit VRAM (falls back if too big), or a token count (-c)
 batch      = "auto"
 flash_attn = true
 cache_type = "q8_0"
 threads    = "auto"
+max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
 
 [multi]                  # llama-swap, only with ` + "`winc -s ... --multi`" + `
 enabled = false
@@ -223,6 +225,9 @@ func (c *Config) backfill() {
 	}
 	if c.Performance.Threads == "" {
 		c.Performance.Threads = d.Performance.Threads
+	}
+	if c.Performance.MaxOutputTokens == "" {
+		c.Performance.MaxOutputTokens = d.Performance.MaxOutputTokens
 	}
 	if c.Multi.TTLSeconds == 0 {
 		c.Multi.TTLSeconds = d.Multi.TTLSeconds

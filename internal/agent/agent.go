@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 
 	"winc/internal/paths"
 )
@@ -15,8 +16,10 @@ import (
 // Slots holds the model names mapped onto Claude Code's claude-* tiers.
 type Slots struct{ Sonnet, Opus, Haiku string }
 
-// Env returns the full environment for the agent process.
-func Env(baseURL string, slots Slots) []string {
+// Env returns the full environment for the agent process. maxOutputTokens, when
+// > 0, raises Claude Code's response-length cap so big agentic edits don't hit
+// the default 32000-token limit.
+func Env(baseURL string, slots Slots, maxOutputTokens int) []string {
 	env := os.Environ()
 	add := func(k, v string) {
 		if v != "" {
@@ -33,6 +36,9 @@ func Env(baseURL string, slots Slots) []string {
 	add("CLAUDE_CONFIG_DIR", paths.ClaudeLocalDir())
 	add("CLAUDE_FORCE_SYNCHRONIZED_OUTPUT", "1")
 	add("COLORTERM", "truecolor")
+	if maxOutputTokens > 0 {
+		add("CLAUDE_CODE_MAX_OUTPUT_TOKENS", strconv.Itoa(maxOutputTokens))
+	}
 	return env
 }
 

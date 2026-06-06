@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"winc/internal/agent"
 	"winc/internal/catalog"
@@ -16,7 +15,6 @@ import (
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
-	"winc/internal/server"
 	"winc/internal/ui"
 )
 
@@ -95,13 +93,12 @@ func cmdStart(args []string) int {
 	port := cfg.General.Port
 	serverURL := fmt.Sprintf("http://%s:%d", cfg.General.Host, port)
 	logPath := filepath.Join(paths.InstallDir(), "llama-server.log")
-	sargs := engine.ServerArgs(cfg, hw, modelPath, port, "")
 
 	ui.Good("Starting %s on %s (sandboxed local instance)", app, filepath.Base(modelPath))
 	ui.Info("engine: %s  |  reasoning: %s", serverBin, cfg.Reasoning.Mode)
-	proc, err := server.Start(serverBin, sargs, logPath)
-	if err != nil {
-		ui.Err("failed to start llama-server: %v", err)
+	proc, loadedCtx := startLlamaFitting(cfg, hw, modelPath, serverBin, port, serverURL, logPath)
+	if proc == nil {
+		ui.Err("server did not become ready; see %s", logPath)
 		return 1
 	}
 	defer proc.Stop()
@@ -110,12 +107,8 @@ func cmdStart(args []string) int {
 	signal.Notify(sig, os.Interrupt)
 	go func() { <-sig; proc.Stop(); os.Exit(130) }()
 
-	ui.Info("loading model + waiting for server...")
-	if !server.WaitReady(serverURL, 240*time.Second, proc.Dead) {
-		ui.Err("server did not become ready; see %s", logPath)
-		return 1
-	}
-	ui.Good("server ready at %s", serverURL)
+	maxOut := engine.ResolveMaxOutput(cfg, loadedCtx)
+	ui.Good("server ready at %s (context %d, max output %d)", serverURL, loadedCtx, maxOut)
 
 	// Adaptive reasoning: front the server with the in-process router.
 	baseURL := serverURL
@@ -134,7 +127,7 @@ func cmdStart(args []string) int {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
 	slots := agent.Slots{Sonnet: alias, Opus: alias, Haiku: alias}
-	env := agent.Env(baseURL, slots)
+	env := agent.Env(baseURL, slots, maxOut)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)

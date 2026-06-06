@@ -6,14 +6,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"winc/internal/catalog"
 	"winc/internal/engine"
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
-	"winc/internal/server"
 	"winc/internal/ui"
 )
 
@@ -69,25 +67,17 @@ func cmdServe(args []string) int {
 	port := cfg.General.Port
 	serverURL := fmt.Sprintf("http://%s:%d", cfg.General.Host, port)
 	logPath := filepath.Join(paths.InstallDir(), "llama-server.log")
-	sargs := engine.ServerArgs(cfg, hw, modelPath, port, "")
-
 	ui.Good("serve: %s (%s)", alias, filepath.Base(modelPath))
 	ui.Info("engine: %s  |  reasoning: %s", serverBin, cfg.Reasoning.Mode)
-	proc, err := server.Start(serverBin, sargs, logPath)
-	if err != nil {
-		ui.Err("failed to start llama-server: %v", err)
+	proc, loadedCtx := startLlamaFitting(cfg, hw, modelPath, serverBin, port, serverURL, logPath)
+	if proc == nil {
+		ui.Err("server did not become ready; see %s", logPath)
 		return 1
 	}
 	defer proc.Stop()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
-
-	ui.Info("loading model + waiting for server...")
-	if !server.WaitReady(serverURL, 240*time.Second, proc.Dead) {
-		ui.Err("server did not become ready; see %s", logPath)
-		return 1
-	}
 
 	baseURL := serverURL
 	if cfg.Reasoning.Mode == "adaptive" {
@@ -100,7 +90,7 @@ func cmdServe(args []string) int {
 	}
 
 	ui.Good("ready -> set ANTHROPIC_BASE_URL=%s", baseURL)
-	ui.Info("llama-server: %s   (Ctrl-C to stop)", serverURL)
+	ui.Info("llama-server: %s  (context %d, max output %d)   (Ctrl-C to stop)", serverURL, loadedCtx, engine.ResolveMaxOutput(cfg, loadedCtx))
 	<-sig
 	ui.Say("stopping...")
 	return 0
