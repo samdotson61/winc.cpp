@@ -91,6 +91,26 @@ The installer is re-runnable: existing models and the existing llama.cpp build a
 
 ---
 
+## Idempotency & moving between machines
+
+**Re-running `install.cmd` is idempotent.** Each step checks before acting: deps are only `winget`-installed if missing, the venv is reused if `litellm` already imports (rebuilt only if its Python is incompatible), the llama.cpp build is reused unless you pass `-Rebuild`, models are skipped if already in `.\models\`, and `launcher.ps1` is regenerated deterministically. So you can run it as many times as you like.
+
+**What's portable vs. what isn't.** Only the *source* files are committed (see `.gitignore`); the heavy artifacts are deliberately **not**, because they're machine- and path-specific:
+
+| Item | Portable? | Why |
+|------|-----------|-----|
+| `install.cmd`, `install.ps1`, `winc.*`, `catalog.ps1`, `hf_get.py`, `litellm_run.py`, `README.md` | ✅ yes | plain source — this is what git tracks |
+| `models/*.gguf` | ✅ yes (just copy) | plain data; copy them to skip re-downloading |
+| `venv/` | ❌ no | a Python venv hardcodes absolute paths; not relocatable |
+| `llama.cpp/build/` | ❌ no | binaries compiled for *this* machine's CUDA / CPU |
+| `launcher.ps1`, `.claude-local/` | ❌ no | generated per-machine (regenerated on install) |
+
+**To set up on another machine:** copy or `git clone` the repo (optionally copy `models/` across to avoid re-downloading), then run `install.cmd`. It rebuilds the venv and llama.cpp correctly for that hardware and regenerates the launcher. Don't copy `venv/` or `llama.cpp/` over — let the installer make them.
+
+**Moving the folder on the same machine** (rename or relocate) is now safe: `launcher.ps1` and `winc` locate everything relative to their own folder (no baked absolute paths), and the venv's `python.exe` keeps working after a move. The only thing to update is the PATH entry if you [added one](#making-winc-available-everywhere) — point it at the new location.
+
+---
+
 ## The `winc` command
 
 After installing, a small CLI (`winc`) handles day-to-day model management and launching — without re-running the full installer.

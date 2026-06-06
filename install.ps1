@@ -695,11 +695,11 @@ function Write-Launcher {
 # Baked: $(Get-Date -Format o)
 `$ErrorActionPreference = 'Stop'
 
-`$INSTALL_DIR     = '$InstallDir'
-`$MODELS_DIR      = '$ModelsDir'
-`$LLAMA_SERVER    = '$LLAMA_SERVER_BIN'
-`$LLAMA_CLI       = '$($LLAMA_CLI_BIN)'
-`$VENV_DIR        = '$VenvDir'
+# Paths are derived from this script's own location, so the whole winc.cpp folder
+# can be moved or renamed and the launcher still finds everything (no baked paths).
+`$INSTALL_DIR     = `$PSScriptRoot
+`$MODELS_DIR      = Join-Path `$INSTALL_DIR 'models'
+`$VENV_DIR        = Join-Path `$INSTALL_DIR 'venv'
 `$GPU_VENDOR      = '$GPU_VENDOR'
 `$GPU_NAME        = '$($GPU_NAME -replace "'","''")'
 `$TOTAL_RAM_GB    = $TOTAL_RAM_GB
@@ -753,6 +753,23 @@ Start-Sleep -Milliseconds 500
 $venvScripts = Join-Path $VENV_DIR 'Scripts'
 $env:PATH    = "$venvScripts;$env:PATH"
 $venvPython  = Join-Path $venvScripts 'python.exe'
+
+# -- locate llama.cpp binaries relative to this folder (no baked paths) -------
+$llamaBuild = Join-Path $INSTALL_DIR 'llama.cpp\build'
+$LLAMA_SERVER = @(
+    (Join-Path $llamaBuild 'bin\Release\llama-server.exe'),
+    (Join-Path $llamaBuild 'bin\llama-server.exe'),
+    (Join-Path $llamaBuild 'Release\llama-server.exe')
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+$LLAMA_CLI = @(
+    (Join-Path $llamaBuild 'bin\Release\llama-cli.exe'),
+    (Join-Path $llamaBuild 'bin\llama-cli.exe'),
+    (Join-Path $llamaBuild 'Release\llama-cli.exe')
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $LLAMA_SERVER) {
+    Write-Host "[x] llama-server.exe not found under $llamaBuild - run install.cmd." -ForegroundColor Red
+    exit 1
+}
 
 $totalCores = [Environment]::ProcessorCount
 $threads    = [Math]::Max(2, $totalCores - 4)
@@ -929,7 +946,14 @@ $yamlPath = Join-Path $env:TEMP 'litellm_runtime.yaml'
 $yaml | Set-Content -Path $yamlPath -Encoding utf8
 
 Write-Host "[+] Starting LiteLLM..." -ForegroundColor Green
-$litellmArgs = @('-m', 'litellm', '--config', $yamlPath, '--port', "$LLM_PROXY_PORT",
+# Force UTF-8 so LiteLLM's startup banner doesn't crash under cp1252 when stdout
+# is redirected to a log file (UnicodeEncodeError -> "Application startup failed").
+$env:PYTHONUTF8       = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+# Start via litellm_run.py (loads litellm's console entry point) NOT `-m litellm`
+# (litellm has no __main__) and NOT litellm.exe (shim breaks if the folder moves).
+$litellmRun  = Join-Path $INSTALL_DIR 'litellm_run.py'
+$litellmArgs = @($litellmRun, '--config', $yamlPath, '--port', "$LLM_PROXY_PORT",
                  '--host', '127.0.0.1', '--telemetry', 'False')
 $script:LITELLM_PROC = Start-Process -FilePath $venvPython -ArgumentList $litellmArgs `
     -RedirectStandardOutput $litellmLog -RedirectStandardError "$litellmLog.err" `
@@ -944,8 +968,13 @@ for ($i = 1; $i -le 30; $i++) {
     } catch { Start-Sleep -Seconds 1 }
 }
 if (-not $proxyReady) {
-    Write-Host "[!] LiteLLM failed - tail of log:" -ForegroundColor Red
-    if (Test-Path $litellmLog) { Get-Content $litellmLog -Tail 20 }
+    Write-Host "[!] LiteLLM failed - tail of logs:" -ForegroundColor Red
+    foreach ($lf in @($litellmLog, "$litellmLog.err")) {
+        if ((Test-Path $lf) -and (Get-Item $lf).Length -gt 0) {
+            Write-Host "--- $lf ---" -ForegroundColor DarkGray
+            Get-Content $lf -Tail 20
+        }
+    }
 }
 
 # -- env vars so Claude Code / OpenCode talk to the local proxy -------------
