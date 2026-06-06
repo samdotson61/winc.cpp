@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -50,16 +51,37 @@ func detectGPU(hw *Hardware) {
 	}
 	name := strings.TrimSpace(string(out))
 	hw.GPUName = name
+	hw.VRAMMB = detectVRAMMBRegistry() // dedicated VRAM for AMD/Intel/etc.
 	switch l := strings.ToLower(name); {
 	case strings.Contains(l, "nvidia"), strings.Contains(l, "geforce"), strings.Contains(l, "rtx"):
 		hw.GPUVendor = "nvidia"
 	case strings.Contains(l, "amd"), strings.Contains(l, "radeon"):
 		hw.GPUVendor = "amd"
-	case strings.Contains(l, "intel"):
+	case strings.Contains(l, "intel"), strings.Contains(l, "arc"):
 		hw.GPUVendor = "intel"
 	default:
 		hw.GPUVendor = "none"
 	}
+}
+
+// detectVRAMMBRegistry reads dedicated VRAM (MB) from the display adapters'
+// HardwareInformation.qwMemorySize registry value - an accurate 64-bit figure for
+// AMD/Intel/NVIDIA, unlike WMI Win32_VideoController.AdapterRAM which is a uint32
+// and wraps/caps at 4 GB. Returns the largest adapter's VRAM, or 0 if unavailable.
+func detectVRAMMBRegistry() int {
+	const ps = `$k='HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'; ` +
+		`$m=0; Get-ChildItem $k -ErrorAction SilentlyContinue | ForEach-Object { ` +
+		`$v=(Get-ItemProperty $_.PSPath -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue).'HardwareInformation.qwMemorySize'; ` +
+		`if($v -and $v -gt $m){$m=$v} }; [int]($m/1MB)`
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).Output()
+	if err != nil {
+		return 0
+	}
+	mb, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	if mb < 0 {
+		return 0
+	}
+	return mb
 }
 
 // EnableVT turns on ANSI escape processing in the Windows console.

@@ -42,6 +42,8 @@ func Run(args []string) int {
 		return cmdUninstall(rest)
 	case "setup":
 		return cmdSetup()
+	case "detect":
+		return cmdDetect()
 	case "serve":
 		return cmdServe(rest)
 	case "version", "-v", "--version":

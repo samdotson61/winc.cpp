@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -39,28 +40,49 @@ func detectGPU(hw *Hardware) {
 	if detectNvidia(hw) {
 		return
 	}
-	if _, err := exec.LookPath("rocminfo"); err == nil {
+	// Vendor + name from lspci (falling back to rocminfo presence for AMD).
+	if out, err := exec.Command("sh", "-c", "lspci | grep -iE 'vga|3d|display'").Output(); err == nil && len(out) > 0 {
+		l := strings.ToLower(string(out))
+		switch {
+		case strings.Contains(l, "nvidia"):
+			hw.GPUVendor = "nvidia"
+		case strings.Contains(l, "amd"), strings.Contains(l, "radeon"), strings.Contains(l, "advanced micro"):
+			hw.GPUVendor = "amd"
+		case strings.Contains(l, "intel"):
+			hw.GPUVendor = "intel"
+		default:
+			hw.GPUVendor = "none"
+		}
+		hw.GPUName = strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	} else if _, e := exec.LookPath("rocminfo"); e == nil {
 		hw.GPUVendor = "amd"
-		hw.GPUName = "AMD GPU (ROCm)"
-		return
-	}
-	out, err := exec.Command("sh", "-c", "lspci | grep -iE 'vga|3d|display'").Output()
-	if err != nil {
-		hw.GPUVendor = "none"
-		return
-	}
-	l := strings.ToLower(string(out))
-	switch {
-	case strings.Contains(l, "nvidia"):
-		hw.GPUVendor = "nvidia"
-	case strings.Contains(l, "amd"), strings.Contains(l, "radeon"):
-		hw.GPUVendor = "amd"
-	case strings.Contains(l, "intel"):
-		hw.GPUVendor = "intel"
-	default:
+		hw.GPUName = "AMD GPU"
+	} else {
 		hw.GPUVendor = "none"
 	}
-	hw.GPUName = strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	// Dedicated VRAM: amdgpu exposes it via sysfs (accurate). Intel/others fall
+	// back to 0 here, which the conservative budget logic treats as the smallest
+	// tier rather than guessing from shared system RAM.
+	hw.VRAMMB = detectVRAMMBSysfs()
+}
+
+// detectVRAMMBSysfs reads dedicated VRAM (MB) from amdgpu's
+// /sys/class/drm/card*/device/mem_info_vram_total. Returns the largest, or 0.
+func detectVRAMMBSysfs() int {
+	max := 0
+	matches, _ := filepath.Glob("/sys/class/drm/card*/device/mem_info_vram_total")
+	for _, p := range matches {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil {
+			if mb := int(n / (1024 * 1024)); mb > max {
+				max = mb
+			}
+		}
+	}
+	return max
 }
 
 // PkgManager returns the detected system package manager, or "".

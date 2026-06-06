@@ -7,6 +7,7 @@ func usage() {
 	ui.Say("winc - local Claude Code models (winc.cpp), one portable binary")
 	ui.Say("")
 	ui.Say("  winc setup                      first-run install wizard")
+	ui.Say("  winc detect                     show detected GPU/VRAM + recommended tier")
 	ui.Say("  winc ls                         list downloaded + available models")
 	ui.Say("  winc -d <alias>                 download a catalogue model")
 	ui.Say("  winc -d <repo> <file>           download any GGUF from HuggingFace")
