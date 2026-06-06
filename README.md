@@ -136,6 +136,7 @@ winc -s claude qwen3.6-27b   # start Claude Code on that model (sandboxed instan
 | `winc -s cli <model>` | Same, but the raw llama.cpp chat CLI |
 | `winc -c` / `winc check` | Read-only: fetch upstream and report whether the source, llama.cpp engine, or Python packages have updates (applies nothing) |
 | `winc -u` / `winc update` | Update the stack: `git pull` the source (if a remote is set), upgrade the Python packages, and pull + rebuild llama.cpp, then regenerate the launcher |
+| `winc -n` / `winc uninstall` | Remove the installed components (models, venv, llama.cpp engine, launcher, sandboxed config, logs) and strip winc.cpp from your user PATH. Lists everything with sizes and prompts first (add `-y` to skip). The source scripts are kept so you can re-install or delete the folder by hand |
 | `winc help` | Usage |
 
 `<model>` is a catalogue alias (see `winc ls`) or any part of a downloaded filename, so `winc -s claude qwen3.6-27b` and `winc -s claude Qwen3.6-27B-Q3_K_M.gguf` are equivalent.

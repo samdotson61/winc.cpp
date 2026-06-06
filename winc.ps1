@@ -7,6 +7,7 @@
 #                                  app = claude | opencode | openclaw | cli
 #   winc -c | winc check         check for updates (read-only)
 #   winc -u | winc update        update llama.cpp + Python packages (+ pull source)
+#   winc -n | winc uninstall     remove installed components (models, venv, engine)
 #   winc help                    this help
 # =============================================================================
 $ErrorActionPreference = 'Stop'
@@ -63,6 +64,7 @@ function Show-Usage {
     Say "  winc -s cli <model>           start the raw llama.cpp chat CLI"
     Say "  winc -c | winc check          check for updates (read-only, applies nothing)"
     Say "  winc -u | winc update         update llama.cpp + Python packages (and pull source)"
+    Say "  winc -n | winc uninstall      remove installed components (-y to skip prompt)"
     Say "  winc help                     show this help"
     Say ""
     Say "  <model> is an alias (see 'winc ls') or part of a downloaded filename."
@@ -260,6 +262,99 @@ function Cmd-Check {
     } finally { $ErrorActionPreference = $prevEAP }
 }
 
+function Cmd-Uninstall {
+    param($rest)
+    $rest = @($rest)
+    $yes = ($rest -contains '-y') -or ($rest -contains '--yes')
+
+    # Everything the installer creates INSIDE the winc.cpp folder. The source
+    # scripts (winc.ps1, install.ps1, catalog.ps1, *.py, *.cmd, README) are left
+    # in place so you can re-run install.cmd - or delete the folder by hand to
+    # remove those too. We can't delete the folder itself here: this script is
+    # running from it.
+    $targets = @(
+        @{ Path = $ModelsDir;                             Label = 'models\ (downloaded GGUFs)' },
+        @{ Path = (Join-Path $Root 'llama.cpp');          Label = 'llama.cpp\ (engine + build)' },
+        @{ Path = (Join-Path $Root 'venv');               Label = 'venv\ (Python environment)' },
+        @{ Path = (Join-Path $Root '.claude-local');      Label = '.claude-local\ (sandboxed config)' },
+        @{ Path = $Launcher;                              Label = 'launcher.ps1' },
+        @{ Path = (Join-Path $Root '.winc-timings.json'); Label = '.winc-timings.json' },
+        @{ Path = (Join-Path $Root 'install.log');        Label = 'install.log' },
+        @{ Path = (Join-Path $Root 'pip.log');            Label = 'pip.log' },
+        @{ Path = (Join-Path $Root '__pycache__');        Label = '__pycache__\' }
+    )
+
+    $present = @()
+    $totalBytes = 0.0
+    foreach ($t in $targets) {
+        if (-not (Test-Path $t.Path)) { continue }
+        $bytes = 0.0
+        try {
+            if (Test-Path $t.Path -PathType Container) {
+                $sum = (Get-ChildItem $t.Path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+                if ($sum) { $bytes = [double]$sum }
+            } else {
+                $bytes = [double]((Get-Item $t.Path -Force -ErrorAction SilentlyContinue).Length)
+            }
+        } catch {}
+        $totalBytes += $bytes
+        $present += @{ Path = $t.Path; Label = $t.Label; Bytes = $bytes }
+    }
+
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $onPath = [bool]($userPath -and (($userPath -split ';') -contains $Root))
+
+    if ($present.Count -eq 0 -and -not $onPath) {
+        Good "Nothing to uninstall - no installed components found in $Root."
+        return
+    }
+
+    Say ""
+    Say "This will remove the following from:  $Root"
+    Say ""
+    foreach ($p in $present) {
+        $gb = [Math]::Round($p.Bytes / 1GB, 2)
+        Say ("  {0,-42} {1,8} GB" -f $p.Label, $gb)
+    }
+    if ($onPath) { Say "  (also removes winc.cpp from your user PATH)" }
+    Say ""
+    Say ("  Total to free: {0} GB" -f [Math]::Round($totalBytes / 1GB, 2))
+    Say ""
+    Say "  Source scripts (winc.ps1, install.ps1, catalog.ps1, *.py, *.cmd, README)"
+    Say "  are kept so you can re-run install.cmd. Delete the folder by hand to"
+    Say "  remove those too."
+    Say ""
+
+    if (-not $yes) {
+        $ans = Read-Host "Uninstall winc.cpp? [y/N]"
+        if ($ans -notmatch '^[yY]') { Say "Cancelled - nothing removed."; return }
+    }
+
+    foreach ($p in $present) {
+        try {
+            Remove-Item $p.Path -Recurse -Force -ErrorAction Stop
+            Good "Removed: $($p.Label)"
+        } catch {
+            Warn "Could not remove $($p.Label): $($_.Exception.Message)"
+        }
+    }
+
+    if ($onPath) {
+        try {
+            $new = (($userPath -split ';') | Where-Object { $_ -and $_ -ne $Root }) -join ';'
+            [Environment]::SetEnvironmentVariable('PATH', $new, 'User')
+            Good "Removed winc.cpp from user PATH (open a new terminal to refresh)."
+        } catch {
+            Warn "Could not update user PATH: $($_.Exception.Message)"
+        }
+    }
+
+    Say ""
+    Good "Uninstall complete."
+    Say "  To remove the source too, delete:  $Root"
+    Say ""
+}
+
 # -- dispatch ----------------------------------------------------------------
 # NOTE: build $rest with an explicit @() wrapper. A one-element slice returned
 # from an `if {}` block gets unwrapped to a scalar string, and then $rest[0]
@@ -283,6 +378,8 @@ switch ($cmd) {
     'update'    { Cmd-Update }
     '-c'        { Cmd-Check }
     'check'     { Cmd-Check }
+    '-n'        { Cmd-Uninstall $rest }
+    'uninstall' { Cmd-Uninstall $rest }
     'help'      { Show-Usage }
     '-h'        { Show-Usage }
     '--help'    { Show-Usage }
