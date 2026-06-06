@@ -80,11 +80,17 @@ func extractTarGzFlat(src, destDir string) error {
 		if err != nil {
 			return err
 		}
-		if h.Typeflag != tar.TypeReg {
-			continue
-		}
-		if err := writeFlat(destDir, h.Name, tr, os.FileMode(h.Mode)); err != nil {
-			return err
+		switch h.Typeflag {
+		case tar.TypeReg:
+			if err := writeFlat(destDir, h.Name, tr, os.FileMode(h.Mode)); err != nil {
+				return err
+			}
+		case tar.TypeSymlink, tar.TypeLink:
+			// Recreate (flattened) so versioned .so/.dylib symlinks like
+			// libfoo.so.0 -> libfoo.so.0.1.2 resolve next to the binary.
+			link := filepath.Join(destDir, filepath.Base(h.Name))
+			_ = os.Remove(link)
+			_ = os.Symlink(filepath.Base(h.Linkname), link)
 		}
 	}
 	return nil

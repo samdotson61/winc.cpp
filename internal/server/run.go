@@ -5,6 +5,9 @@ package server
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -25,6 +28,7 @@ func Start(bin string, args []string, logPath string) (*Proc, error) {
 		return nil, err
 	}
 	c := exec.Command(bin, args...)
+	c.Env = EnvWithLibPath(filepath.Dir(bin)) // find .so/.dylib shipped beside the binary
 	c.Stdout = lf
 	c.Stderr = lf
 	if err := c.Start(); err != nil {
@@ -73,4 +77,36 @@ func (p *Proc) Stop() {
 		p.log.Close()
 		p.log = nil
 	}
+}
+
+// EnvWithLibPath returns the environment with binDir added to the dynamic linker's
+// library search path, so shared libraries shipped next to the engine binary load
+// at runtime. No-op on Windows (the executable's own directory is searched there).
+func EnvWithLibPath(binDir string) []string {
+	return envWithLibPath(runtime.GOOS, binDir, os.Environ())
+}
+
+func envWithLibPath(goos, binDir string, environ []string) []string {
+	var key string
+	switch goos {
+	case "linux":
+		key = "LD_LIBRARY_PATH"
+	case "darwin":
+		key = "DYLD_LIBRARY_PATH"
+	default:
+		return environ
+	}
+	prefix := key + "="
+	val := binDir
+	out := make([]string, 0, len(environ)+1)
+	for _, e := range environ {
+		if strings.HasPrefix(e, prefix) {
+			if cur := e[len(prefix):]; cur != "" {
+				val = binDir + ":" + cur
+			}
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, key+"="+val)
 }

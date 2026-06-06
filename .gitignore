@@ -3,6 +3,8 @@
 # Built winc binary + cross-compile output
 /winc
 /winc.exe
+/winc.exe~
+*~
 /dist/
 
 # Single config file (per-machine; generated from the embedded default template)

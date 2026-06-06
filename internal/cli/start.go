@@ -15,6 +15,7 @@ import (
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
+	"winc/internal/server"
 	"winc/internal/ui"
 )
 
@@ -147,6 +148,7 @@ func runCliChat(cfg *config.Config, hw platform.Hardware, modelPath string) int 
 	ngl := engine.GpuLayers(cfg, hw)
 	ui.Good("raw chat on %s (Ctrl-C to exit)", filepath.Base(modelPath))
 	c := execInherit(cliBin, "-m", modelPath, "-ngl", strconv.Itoa(ngl), "-c", "4096", "-cnv")
+	c.Env = server.EnvWithLibPath(filepath.Dir(cliBin))
 	if err := c.Run(); err != nil {
 		ui.Warn("llama-cli exited: %v", err)
 	}
