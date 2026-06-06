@@ -618,14 +618,12 @@ function Download-Model {
     Write-Host "  Downloading: $file (~$size)" -ForegroundColor Cyan
     Write-Host "  From:        $repo"           -ForegroundColor Cyan
     Br
-    # Download via the venv python + huggingface_hub library, NOT the hf.exe shim.
-    # Console-script .exe shims hardcode the venv's python path, so they break if
-    # the folder is ever renamed/moved; calling python.exe directly never does.
-    # huggingface_hub reads the token from the HF_TOKEN env var automatically.
+    # Download via the venv python + hf_get.py (clean 1s progress bar + ETA),
+    # NOT the hf.exe shim (which hardcodes the venv path and breaks on rename).
+    # hf_get.py reads the token from the HF_TOKEN env var automatically.
     if ($HF_TOKEN) { $env:HF_TOKEN = $HF_TOKEN }
     $py = Join-Path $VenvDir 'Scripts\python.exe'
-    $code = 'from huggingface_hub import hf_hub_download; import sys; hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])'
-    & $py -c $code $repo $file $ModelsDir
+    & $py (Join-Path $InstallDir 'hf_get.py') $repo $file $ModelsDir
     return ($LASTEXITCODE -eq 0)
 }
 

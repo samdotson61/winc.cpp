@@ -107,10 +107,9 @@ function Cmd-Download {
     New-Item -ItemType Directory -Force -Path $ModelsDir | Out-Null
     Good "Downloading $file"
     Say  "  from $repo"
-    # Use the venv python + huggingface_hub library (not the hf.exe shim, which
-    # breaks if the install folder is renamed). HF_TOKEN env is read automatically.
-    $code = 'from huggingface_hub import hf_hub_download; import sys; hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])'
-    & $py -c $code $repo $file $ModelsDir
+    # Use the venv python + hf_get.py (clean 1s progress bar + ETA), not the
+    # hf.exe shim (which breaks if the install folder is renamed).
+    & $py (Join-Path $Root 'hf_get.py') $repo $file $ModelsDir
     if ($LASTEXITCODE -ne 0) { Die "Download failed. For gated models set HF_TOKEN (`$env:HF_TOKEN='hf_...') and retry." }
     if (Test-Path $target) { Good "Done: $file" } else { Warn "Download reported success but $file is not in models\ - check the filename." }
 }
