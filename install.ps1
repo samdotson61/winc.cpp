@@ -618,11 +618,14 @@ function Download-Model {
     Write-Host "  Downloading: $file (~$size)" -ForegroundColor Cyan
     Write-Host "  From:        $repo"           -ForegroundColor Cyan
     Br
-    # The modern 'hf' CLI reads the token from the HF_TOKEN env var (its download
-    # subcommand has no --token flag), so set it rather than passing a flag.
+    # Download via the venv python + huggingface_hub library, NOT the hf.exe shim.
+    # Console-script .exe shims hardcode the venv's python path, so they break if
+    # the folder is ever renamed/moved; calling python.exe directly never does.
+    # huggingface_hub reads the token from the HF_TOKEN env var automatically.
     if ($HF_TOKEN) { $env:HF_TOKEN = $HF_TOKEN }
-    $dlArgs = @('download', $repo, '--include', $file, '--local-dir', $ModelsDir)
-    & $HF_CLI @dlArgs
+    $py = Join-Path $VenvDir 'Scripts\python.exe'
+    $code = 'from huggingface_hub import hf_hub_download; import sys; hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])'
+    & $py -c $code $repo $file $ModelsDir
     return ($LASTEXITCODE -eq 0)
 }
 

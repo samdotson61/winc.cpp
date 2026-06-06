@@ -40,11 +40,9 @@ function Resolve-Downloaded {
     return $null
 }
 
-function Find-Hf {
-    foreach ($n in 'hf.exe','huggingface-cli.exe') {
-        $p = Join-Path $VenvScripts $n
-        if (Test-Path $p) { return $p }
-    }
+function Find-VenvPython {
+    $p = Join-Path $VenvScripts 'python.exe'
+    if (Test-Path $p) { return $p }
     return $null
 }
 
@@ -93,8 +91,8 @@ function Cmd-Ls {
 function Cmd-Download {
     param($rest)
     if (-not $rest -or $rest.Count -eq 0) { Die "Usage: winc -d <alias>   or   winc -d <repo> <file>" }
-    $hf = Find-Hf
-    if (-not $hf) { Die "HuggingFace CLI not found. Run install.cmd first." }
+    $py = Find-VenvPython
+    if (-not $py) { Die "venv not found. Run install.cmd first." }
 
     if ($rest.Count -ge 2) {
         $repo = $rest[0]; $file = $rest[1]
@@ -109,9 +107,12 @@ function Cmd-Download {
     New-Item -ItemType Directory -Force -Path $ModelsDir | Out-Null
     Good "Downloading $file"
     Say  "  from $repo"
-    & $hf download $repo --include $file --local-dir $ModelsDir
-    if ($LASTEXITCODE -ne 0) { Die "Download failed (hf exit $LASTEXITCODE). For gated models run 'hf auth login' or set HF_TOKEN." }
-    if (Test-Path $target) { Good "Done: $file" } else { Warn "hf reported success but $file is not in models\ - check the filename." }
+    # Use the venv python + huggingface_hub library (not the hf.exe shim, which
+    # breaks if the install folder is renamed). HF_TOKEN env is read automatically.
+    $code = 'from huggingface_hub import hf_hub_download; import sys; hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])'
+    & $py -c $code $repo $file $ModelsDir
+    if ($LASTEXITCODE -ne 0) { Die "Download failed. For gated models set HF_TOKEN (`$env:HF_TOKEN='hf_...') and retry." }
+    if (Test-Path $target) { Good "Done: $file" } else { Warn "Download reported success but $file is not in models\ - check the filename." }
 }
 
 function Cmd-Start {

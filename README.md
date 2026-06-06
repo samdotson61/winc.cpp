@@ -315,16 +315,17 @@ Then run `install.ps1` from a fresh **Developer PowerShell for VS 2022** window 
 
 ## Adding models manually
 
-Drop any `.gguf` into `.\models\` — the launcher auto-detects everything in that directory.
+Easiest: `winc -d <repo> <file>` (downloads any GGUF, e.g. `winc -d unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-Q3_K_M.gguf`).
+
+Or drop any `.gguf` straight into `.\models\` — the launcher and `winc ls` auto-detect everything in that directory.
+
+To pull one with Python directly (this is exactly what `winc -d` does under the hood — it uses the venv's `python.exe` + the `huggingface_hub` library rather than the `hf.exe` console script, which avoids breakage if the folder is ever renamed):
 
 ```powershell
-.\venv\Scripts\Activate.ps1
-hf download unsloth/Qwen3.6-27B-GGUF `
-    --include "Qwen3.6-27B-Q3_K_M.gguf" `
-    --local-dir .\models\
+.\venv\Scripts\python.exe -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='unsloth/Qwen3.6-27B-GGUF', filename='Qwen3.6-27B-Q3_K_M.gguf', local_dir='.\models')"
 ```
 
-> The CLI is `hf` (the old `huggingface-cli` is deprecated in huggingface_hub 1.x and refuses to run). For gated models, run `hf auth login` or set `$env:HF_TOKEN` first.
+> For gated models (some Llama/Gemma repos), set a token first: `$env:HF_TOKEN = 'hf_...'`.
 
 ---
 
