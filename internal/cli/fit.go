@@ -20,7 +20,7 @@ func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serve
 		if err != nil {
 			continue
 		}
-		if server.WaitReady(serverURL, 240*time.Second, proc.Dead) {
+		if server.WaitReady(serverURL, "/health", 240*time.Second, proc.Dead) {
 			return proc, ctx
 		}
 		proc.Stop() // didn't fit / failed -> try a smaller context

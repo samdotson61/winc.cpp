@@ -99,7 +99,7 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 	signal.Notify(sig, os.Interrupt)
 	go func() { <-sig; proc.Stop(); os.Exit(130) }()
 
-	if !server.WaitReady(swapURL, 60*time.Second, proc.Dead) {
+	if !server.WaitReady(swapURL, "/v1/models", 60*time.Second, proc.Dead) {
 		ui.Err("llama-swap did not become ready; see %s", logPath)
 		return 1
 	}
