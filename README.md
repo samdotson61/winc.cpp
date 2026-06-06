@@ -295,6 +295,17 @@ winc.cpp\
 
 ## Troubleshooting
 
+**Claude Code shows the model as "Sonnet 4.6" — am I really on the local model?**
+
+Yes (if you launched via `winc -s` / `launch.cmd`). Claude Code only accepts real Claude model names, so the LiteLLM proxy aliases your local GGUF as `claude-sonnet-4-6` and the launcher starts `claude --model claude-sonnet-4-6`. The "Sonnet 4.6" label is cosmetic — behind it your chosen model is running on your GPU. "API Usage Billing" just means an API key is set (a dummy one); all traffic stays on `127.0.0.1`, nothing is billed.
+
+To **prove** it's local, while a prompt is generating:
+```powershell
+nvidia-smi                      # llama-server using ~13-14 GB VRAM + GPU load = local
+Get-Content $env:TEMP\llama.log -Tail 5   # shows request/timing activity
+```
+If you instead launched `claude` directly (not through `winc`/`launch.cmd`), you're on your **normal cloud** Claude Code — there'll be no `winc.cpp` launcher banner above the welcome screen, and it really is the paid API. Always start the local one with `winc -s claude <model>`; you should see the `Ready / Proxy / Server / Config ...\.claude-local` banner first.
+
 **`llama-server` not responding after launch**
 ```powershell
 Get-Content $env:TEMP\llama.log -Tail 20

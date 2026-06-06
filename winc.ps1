@@ -90,6 +90,7 @@ function Cmd-Ls {
 
 function Cmd-Download {
     param($rest)
+    $rest = @($rest)   # never let a single arg arrive as a scalar string
     if (-not $rest -or $rest.Count -eq 0) { Die "Usage: winc -d <alias>   or   winc -d <repo> <file>" }
     $py = Find-VenvPython
     if (-not $py) { Die "venv not found. Run install.cmd first." }
@@ -116,6 +117,7 @@ function Cmd-Download {
 
 function Cmd-Start {
     param($rest)
+    $rest = @($rest)   # never let args arrive as a scalar string
     if (-not $rest -or $rest.Count -lt 2) { Die "Usage: winc -s <claude|opencode|cli> <model>" }
     $app = "$($rest[0])".ToLower()
     $modelQ = $rest[1]
@@ -141,8 +143,13 @@ function Cmd-Start {
 }
 
 # -- dispatch ----------------------------------------------------------------
-$cmd  = if ($args.Count -ge 1) { "$($args[0])".ToLower() } else { '' }
-$rest = if ($args.Count -ge 2) { $args[1..($args.Count - 1)] } else { @() }
+# NOTE: build $rest with an explicit @() wrapper. A one-element slice returned
+# from an `if {}` block gets unwrapped to a scalar string, and then $rest[0]
+# would index the STRING (e.g. 'qwen3.6-35b'[0] -> 'q'). @() keeps it an array.
+$cmd  = ''
+$rest = @()
+if ($args.Count -ge 1) { $cmd = "$($args[0])".ToLower() }
+if ($args.Count -ge 2) { $rest = @($args[1..($args.Count - 1)]) }
 
 switch ($cmd) {
     'ls'        { Cmd-Ls }

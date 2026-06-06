@@ -1001,6 +1001,7 @@ $mlockLabel = if ($extra -contains '--mlock') { 'ON' } else { 'OFF' }
 Write-Host ""
 Write-Host "========================================================" -ForegroundColor White
 Write-Host "  Ready" -ForegroundColor Green
+Write-Host "  Model   : $modelName  (running locally on your GPU)" -ForegroundColor Green
 Write-Host "  Proxy   : http://127.0.0.1:$LLM_PROXY_PORT/v1"
 Write-Host "  Server  : http://127.0.0.1:$LLAMA_PORT"
 Write-Host "  Context : $ctx | Batch: $batch | GPU layers: $ngl"
@@ -1016,6 +1017,10 @@ try {
     switch ($mode) {
         '2' {
             Write-Host "[+] Launching Claude Code... (Ctrl+C or /exit to stop)" -ForegroundColor Green
+            Write-Host "[i] Claude Code labels the model 'Sonnet 4.6' - that is the proxy alias" -ForegroundColor DarkGray
+            Write-Host "    it requires. You are actually running $modelName locally." -ForegroundColor DarkGray
+            Write-Host "    'API Usage Billing' just means a (dummy) API key is set; all traffic" -ForegroundColor DarkGray
+            Write-Host "    stays on localhost - nothing is billed." -ForegroundColor DarkGray
             Write-Host ""
             & claude --model claude-sonnet-4-6
         }
