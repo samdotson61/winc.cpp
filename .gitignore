@@ -23,9 +23,6 @@
 # Internal roadmap (planning doc, not shipped)
 wincmap.md
 
-# Go scratch
-/vendor/
-
 # OS / editor cruft
 Thumbs.db
 desktop.ini

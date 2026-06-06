@@ -18,23 +18,31 @@ Claude Code thinks it's talking to Anthropic. It's actually talking to your GPU 
 
 ## Quick start
 
-1. Get `winc` for your OS — download the prebuilt binary from Releases, **or** build from source (`go build -o winc ./cmd/winc`).
-2. Run the one-click setup:
-   - **Windows:** double-click `install.cmd` (or run `winc setup`)
-   - **macOS:** double-click `install.command` (or run `./winc setup`)
-   - **Linux:** run `./install.sh` (or `./winc setup`)
-3. Open a new terminal and start coding on a local model:
+**From a clone — no prerequisites. The installer builds `winc` for you, installing Go automatically if it's missing:**
 
 ```
-winc ls                      # list downloaded + available models
-winc -d qwen2.5-coder-7b      # download one
-winc -s claude qwen2.5-coder-7b   # launch Claude Code on it (sandboxed)
+git clone <this-repo-url> winc.cpp
+cd winc.cpp
 ```
+- **Windows:** double-click `install.cmd`
+- **macOS:** double-click `install.command`
+- **Linux:** run `./install.sh`
 
-`winc setup` detects your hardware, downloads the right prebuilt llama.cpp backend
-(CUDA / Metal / Vulkan / ROCm / CPU) + llama-swap, picks a model for your memory tier,
-and adds `winc` to your PATH. It is idempotent and fully portable — move the folder
-anywhere and it still works (no baked paths).
+**Or grab a prebuilt binary** (once a release is published): download `winc` for your OS from the
+repo's **Releases**, put it in a folder, and run `winc setup` — no build, no Go.
+
+Either way, `winc setup` detects your hardware, downloads the right prebuilt llama.cpp backend
+(CUDA / Metal / Vulkan / ROCm / CPU) + llama-swap, picks a model for your memory tier, and adds
+`winc` to your PATH. It's idempotent and fully portable — move the folder anywhere and it still
+works (no baked paths).
+
+Then start coding on a local model:
+
+```
+winc ls                            # list downloaded + available models
+winc -d qwen2.5-coder-7b           # download one
+winc -s claude qwen2.5-coder-7b    # launch Claude Code on it (sandboxed)
+```
 
 ---
 
@@ -141,8 +149,9 @@ make release                      # cross-compile all OS/arch into dist/
 go test ./cmd/... ./internal/...
 ```
 
-Requires Go 1.22+. The only runtime dependency is the engine (`llama-server`, optionally
-`llama-swap`), which `winc setup` downloads as prebuilt binaries into `bin/`.
+Requires Go 1.22+. Dependencies are **vendored** (`vendor/`), so the build needs no network for
+modules — only the Go toolchain. The one runtime dependency is the engine (`llama-server`,
+optionally `llama-swap`), which `winc setup` downloads as prebuilt binaries into `bin/`.
 
 ---
 

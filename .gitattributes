@@ -1,0 +1,14 @@
+# Cross-platform line endings. Default to LF so shell scripts work on Linux/macOS
+# regardless of the committer's OS or git config; Windows batch keeps CRLF.
+* text=auto eol=lf
+*.cmd     text eol=crlf
+*.bat     text eol=crlf
+*.sh      text eol=lf
+*.command text eol=lf
+*.go      text eol=lf
+
+# Binary assets (never normalize)
+*.gguf binary
+*.exe  binary
+*.zip  binary
+*.png  binary
