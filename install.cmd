@@ -10,34 +10,37 @@ where go >nul 2>nul
 if %errorlevel%==0 goto build
 
 echo Go is not installed - winc needs it once, to build itself.
+
+REM 1) Try winget.
 where winget >nul 2>nul
 if %errorlevel%==0 (
   echo Installing Go via winget...
   winget install --id GoLang.Go -e --accept-package-agreements --accept-source-agreements --disable-interactivity
-) else (
-  echo [x] winget not found. Install Go from https://go.dev/dl/ then re-run this script.
-  pause
-  exit /b 1
 )
+call :findgo
+if %errorlevel%==0 goto build
 
-REM winget often doesn't refresh PATH in this window; probe the default location.
-where go >nul 2>nul
+REM 2) Fallback: download + run the official Go MSI from go.dev (approve the UAC prompt).
+echo Installing Go from the official MSI (go.dev)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $a= if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){'arm64'}else{'amd64'}; $v=(Invoke-RestMethod 'https://go.dev/VERSION?m=text').Split([char]10)[0].Trim(); $m=Join-Path $env:TEMP ($v + '.windows-' + $a + '.msi'); Write-Host ('Downloading ' + $v + ' (' + $a + ')...'); Invoke-WebRequest ('https://go.dev/dl/' + $v + '.windows-' + $a + '.msi') -OutFile $m -UseBasicParsing; Write-Host 'Launching the Go installer (approve the UAC prompt)...'; Start-Process msiexec -ArgumentList '/i', $m, '/passive' -Verb RunAs -Wait"
+call :findgo
 if %errorlevel%==0 goto build
-if exist "%ProgramFiles%\Go\bin\go.exe" set "PATH=%ProgramFiles%\Go\bin;%PATH%"
-where go >nul 2>nul
-if %errorlevel%==0 goto build
-echo [x] Go was installed but isn't on PATH yet. Open a NEW terminal and re-run install.cmd.
+
+echo [x] Could not install Go automatically.
+echo     Install it from https://go.dev/dl/ and re-run install.cmd.
 pause
+exit /b 1
+
+:findgo
+where go >nul 2>nul && exit /b 0
+if exist "%ProgramFiles%\Go\bin\go.exe" set "PATH=%ProgramFiles%\Go\bin;%PATH%"
+where go >nul 2>nul && exit /b 0
 exit /b 1
 
 :build
 echo Building winc.exe from source...
 go build -o winc.exe .\cmd\winc
-if errorlevel 1 (
-  echo [x] build failed.
-  pause
-  exit /b 1
-)
+if errorlevel 1 ( echo [x] build failed. & pause & exit /b 1 )
 
 :setup
 winc.exe setup
