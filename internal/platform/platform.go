@@ -24,14 +24,24 @@ type Hardware struct {
 	CudaMinor int
 }
 
-// MemoryBudgetMB is the memory to size models against: discrete VRAM for a
-// dedicated GPU, otherwise system RAM (unified-memory Macs, or CPU-only).
+// MemoryBudgetMB is the memory to size model recommendations against.
+//
+// Only Apple Silicon's *unified* memory legitimately lets the GPU use system RAM,
+// so it's the only case that counts RAM. On Windows/Linux a discrete (or
+// integrated) GPU is bounded by its *dedicated* VRAM - Windows "shared GPU
+// memory" / system RAM is far too slow to treat as VRAM, so we never fall back to
+// it (a 2 GB GPU with 16 GB RAM must not be sized as 16 GB). When VRAM is unknown
+// it stays 0, yielding the smallest tier, which is the safe default. A CPU-only
+// machine is sized by RAM but capped, since large models are impractical on CPU.
 func (h Hardware) MemoryBudgetMB() int {
 	if h.Unified {
 		return h.RAMMB
 	}
-	if h.VRAMMB > 0 {
-		return h.VRAMMB
+	if h.GPUVendor != "" && h.GPUVendor != "none" {
+		return h.VRAMMB // dedicated VRAM only; never system/shared RAM
+	}
+	if h.RAMMB > 8192 {
+		return 8192 // CPU-only: cap so we don't recommend huge, slow models
 	}
 	return h.RAMMB
 }
