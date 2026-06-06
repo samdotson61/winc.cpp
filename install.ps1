@@ -564,6 +564,22 @@ function Build-Llama {
         [void](Invoke-Tool 'git' @('-C',$LlamaDir,'pull','--ff-only'))
     }
 
+    # CMakeCache.txt records ABSOLUTE source/binary paths. If the winc.cpp folder
+    # was renamed/moved since the last build, those paths are stale and cmake
+    # refuses to reconfigure ("CMakeCache.txt directory is different..."). Wipe the
+    # build dir on -Rebuild, or whenever the cache no longer points at this folder.
+    $cache = Join-Path $bd 'CMakeCache.txt'
+    $stale = $false
+    if (Test-Path $cache) {
+        $bdFwd = $bd -replace '\\','/'
+        $cacheText = Get-Content $cache -Raw -ErrorAction SilentlyContinue
+        if ($cacheText -and ($cacheText -notmatch [regex]::Escape($bdFwd))) { $stale = $true }
+    }
+    if (($Rebuild -or $stale) -and (Test-Path $bd)) {
+        if ($stale) { Log "Stale CMake cache (build was created under a different path) - cleaning build dir" }
+        else        { Log "Clean rebuild requested - removing previous build dir" }
+        Remove-Item $bd -Recurse -Force -ErrorAction SilentlyContinue
+    }
     New-Item -ItemType Directory -Force -Path $bd | Out-Null
 
     $cfg = @('-DCMAKE_BUILD_TYPE=Release')

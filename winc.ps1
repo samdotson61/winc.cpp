@@ -5,6 +5,7 @@
 #   winc -r <model>              delete a downloaded model
 #   winc -s <app> <model>        start a sandboxed local instance with a model
 #                                  app = claude | opencode | openclaw | cli
+#   winc -c | winc check         check for updates (read-only)
 #   winc -u | winc update        update llama.cpp + Python packages (+ pull source)
 #   winc help                    this help
 # =============================================================================
@@ -60,6 +61,7 @@ function Show-Usage {
     Say "  winc -s opencode <model>      start OpenCode on a local model"
     Say "  winc -s openclaw <model>      start OpenClaw (terminal UI) on a local model"
     Say "  winc -s cli <model>           start the raw llama.cpp chat CLI"
+    Say "  winc -c | winc check          check for updates (read-only, applies nothing)"
     Say "  winc -u | winc update         update llama.cpp + Python packages (and pull source)"
     Say "  winc help                     show this help"
     Say ""
@@ -198,6 +200,66 @@ function Cmd-Update {
     Good "Update finished."
 }
 
+function Cmd-Check {
+    # Read-only: fetch upstream and report what 'winc -u' would change. Relax the
+    # error preference so native git/pip stderr (progress) can't abort the check.
+    $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        Say ""
+        Say "Checking for updates (read-only)..."
+        Say ""
+        $any = $false
+        $haveGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+
+        # 1) winc.cpp source
+        if ($haveGit -and (Test-Path (Join-Path $Root '.git'))) {
+            $remote = (& git -C $Root remote 2>$null | Select-Object -First 1)
+            if ($remote) {
+                & git -C $Root fetch --quiet 2>$null | Out-Null
+                $u = (& git -C $Root rev-parse --abbrev-ref '@{u}' 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $u) {
+                    $behind = (& git -C $Root rev-list --count "HEAD..$u" 2>$null)
+                    if ($behind -match '^\d+$' -and [int]$behind -gt 0) { Warn "winc.cpp source : $behind update(s) available"; $any = $true }
+                    else { Good "winc.cpp source : up to date" }
+                } else { Say "  winc.cpp source : no upstream branch set (can't compare)" }
+            } else { Say "  winc.cpp source : no git remote configured (skipped)" }
+        } else { Say "  winc.cpp source : not a git clone (skipped)" }
+
+        # 2) llama.cpp engine (shallow clone -> compare HEAD vs fetched master tip)
+        $llama = Join-Path $Root 'llama.cpp'
+        if ($haveGit -and (Test-Path (Join-Path $llama '.git'))) {
+            & git -C $llama fetch --quiet origin master 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $localRev  = (& git -C $llama rev-parse HEAD 2>$null)
+                $remoteRev = (& git -C $llama rev-parse FETCH_HEAD 2>$null)
+                if ($localRev -and $remoteRev) {
+                    if ($localRev -ne $remoteRev) { Warn "llama.cpp engine: new commits upstream (rebuild on update)"; $any = $true }
+                    else { Good "llama.cpp engine: up to date" }
+                } else { Say "  llama.cpp engine: couldn't compare revisions" }
+            } else { Say "  llama.cpp engine: fetch failed (offline?)" }
+        } else { Say "  llama.cpp engine: not built yet (skipped)" }
+
+        # 3) Python packages (litellm + huggingface_hub) vs PyPI
+        $py = Find-VenvPython
+        if ($py) {
+            Say "  Python packages: querying PyPI..."
+            $out = & $py -m pip list --outdated --disable-pip-version-check 2>$null
+            $watch = @('litellm', 'huggingface-hub')
+            $hits = @()
+            foreach ($line in $out) {
+                foreach ($w in $watch) { if ($line -match ("^{0}\s" -f [regex]::Escape($w))) { $hits += (($line -replace '\s{2,}', ' ').Trim()) } }
+            }
+            if ($hits.Count -gt 0) { Warn "Python packages: updates available:"; $hits | ForEach-Object { Say "    $_" }; $any = $true }
+            else { Good "Python packages: litellm + huggingface_hub up to date" }
+        } else { Say "  Python packages: venv not present (skipped)" }
+
+        Say ""
+        if ($any) { Say "Updates available - run 'winc -u' (or 'winc update') to apply." }
+        else      { Say "Everything is up to date." }
+        Say ""
+    } finally { $ErrorActionPreference = $prevEAP }
+}
+
 # -- dispatch ----------------------------------------------------------------
 # NOTE: build $rest with an explicit @() wrapper. A one-element slice returned
 # from an `if {}` block gets unwrapped to a scalar string, and then $rest[0]
@@ -219,6 +281,8 @@ switch ($cmd) {
     'start'     { Cmd-Start $rest }
     '-u'        { Cmd-Update }
     'update'    { Cmd-Update }
+    '-c'        { Cmd-Check }
+    'check'     { Cmd-Check }
     'help'      { Show-Usage }
     '-h'        { Show-Usage }
     '--help'    { Show-Usage }

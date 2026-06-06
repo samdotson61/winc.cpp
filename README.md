@@ -134,6 +134,7 @@ winc -s claude qwen3.6-27b   # start Claude Code on that model (sandboxed instan
 | `winc -s opencode <model>` | Same, but launches **OpenCode** |
 | `winc -s openclaw <model>` | Same, but launches **OpenClaw** (`openclaw tui`) |
 | `winc -s cli <model>` | Same, but the raw llama.cpp chat CLI |
+| `winc -c` / `winc check` | Read-only: fetch upstream and report whether the source, llama.cpp engine, or Python packages have updates (applies nothing) |
 | `winc -u` / `winc update` | Update the stack: `git pull` the source (if a remote is set), upgrade the Python packages, and pull + rebuild llama.cpp, then regenerate the launcher |
 | `winc help` | Usage |
 
