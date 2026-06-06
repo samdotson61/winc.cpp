@@ -163,3 +163,12 @@ It stands on these upstream projects, each under its own license — winc bundle
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — local inference engine + native Anthropic Messages API
 - **[llama-swap](https://github.com/mostlygeek/llama-swap)** — multi-model routing proxy
 - **Claude Code / OpenCode / OpenClaw** — the coding agents winc points at your GPU
+
+---
+
+## License
+
+winc.cpp is released under the **[MIT License](LICENSE)** — Copyright (c) 2026 Sam Dotson.
+
+The engines fetched at runtime (llama.cpp, llama-swap) and the coding agents remain under
+their own respective licenses.
