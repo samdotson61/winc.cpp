@@ -753,7 +753,14 @@ function Download-Model {
     # hf_get.py reads the token from the HF_TOKEN env var automatically.
     if ($HF_TOKEN) { $env:HF_TOKEN = $HF_TOKEN }
     $py = Join-Path $VenvDir 'Scripts\python.exe'
-    & $py (Join-Path $InstallDir 'hf_get.py') $repo $file $ModelsDir
+    # Pipe to Out-Host so the live 1s progress bar renders on the console. Callers
+    # use this function in 'if (Download-Model ...)' / '[void](Download-Model ...)',
+    # which consumes the return value - and PowerShell collects EVERYTHING a
+    # function writes to its success stream into that return value. Without Out-Host
+    # the bar's stdout would be captured (hidden) instead of shown. Out-Host streams
+    # straight to the console host, live, exactly like 'winc -d'. $LASTEXITCODE is
+    # still set by the native command regardless of the pipe.
+    & $py (Join-Path $InstallDir 'hf_get.py') $repo $file $ModelsDir | Out-Host
     return ($LASTEXITCODE -eq 0)
 }
 
