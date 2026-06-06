@@ -1086,10 +1086,14 @@ $env:OPENAI_API_KEY                           = 'dummy'
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
 $env:CLAUDE_CODE_ENABLE_TELEMETRY             = '0'
 $env:CLAUDE_CODE_ATTRIBUTION_HEADER           = '0'
-# Truecolor + flicker-free animations, incl. when launched inside tmux/winmux
-# (where Claude Code otherwise degrades to a choppy "reduced motion" render).
+# Truecolor + smoother rendering, incl. inside tmux/winmux where Claude Code
+# otherwise downsamples colour (it keys off TERM=tmux-256color and ignores
+# COLORTERM - anthropics/claude-code#59867) and reduces animation.
+# NOTE: CLAUDE_FORCE_SYNCHRONIZED_OUTPUT is NOT a real Claude Code variable.
 if (-not $env:COLORTERM) { $env:COLORTERM = 'truecolor' }
-$env:CLAUDE_FORCE_SYNCHRONIZED_OUTPUT = '1'
+$env:FORCE_COLOR                         = '3'   # force truecolor for the Node TUI
+$env:CLAUDE_CODE_NO_FLICKER              = '1'   # fullscreen (alt-screen) render
+$env:CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT = '1'   # avoid stale fragments on Windows
 
 # Isolate this instance's Claude config/state into a project-local dir so it
 # shares NOTHING with the user's global ~/.claude (no shared credentials, history,
