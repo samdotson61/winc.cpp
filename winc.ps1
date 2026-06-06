@@ -4,7 +4,8 @@
 #   winc -d <alias|repo file>    download a model (HuggingFace)
 #   winc -r <model>              delete a downloaded model
 #   winc -s <app> <model>        start a sandboxed local instance with a model
-#                                  app = claude | opencode | cli
+#                                  app = claude | opencode | openclaw | cli
+#   winc -u | winc update        update llama.cpp + Python packages (+ pull source)
 #   winc help                    this help
 # =============================================================================
 $ErrorActionPreference = 'Stop'
@@ -57,7 +58,9 @@ function Show-Usage {
     Say "  winc -r <model>               delete a downloaded model (-y to skip prompt)"
     Say "  winc -s claude <model>        start Claude Code on a local model (sandboxed)"
     Say "  winc -s opencode <model>      start OpenCode on a local model"
+    Say "  winc -s openclaw <model>      start OpenClaw (terminal UI) on a local model"
     Say "  winc -s cli <model>           start the raw llama.cpp chat CLI"
+    Say "  winc -u | winc update         update llama.cpp + Python packages (and pull source)"
     Say "  winc help                     show this help"
     Say ""
     Say "  <model> is an alias (see 'winc ls') or part of a downloaded filename."
@@ -124,14 +127,15 @@ function Cmd-Download {
 function Cmd-Start {
     param($rest)
     $rest = @($rest)   # never let args arrive as a scalar string
-    if (-not $rest -or $rest.Count -lt 2) { Die "Usage: winc -s <claude|opencode|cli> <model>" }
+    if (-not $rest -or $rest.Count -lt 2) { Die "Usage: winc -s <claude|opencode|openclaw|cli> <model>" }
     $app = "$($rest[0])".ToLower()
     $modelQ = $rest[1]
     $mode = switch ($app) {
         'claude'   { '2' }
         'opencode' { '3' }
+        'openclaw' { '4' }
         'cli'      { '1' }
-        default    { Die "Unknown app '$app'. Use claude, opencode, or cli." }
+        default    { Die "Unknown app '$app'. Use claude, opencode, openclaw, or cli." }
     }
     if (-not (Test-Path $Launcher)) { Die "launcher.ps1 not found. Run install.cmd first." }
 
@@ -171,6 +175,29 @@ function Cmd-Remove {
     Good "Removed: $($file.Name) ($gb GB freed)"
 }
 
+function Cmd-Update {
+    # 1) Update winc.cpp's own scripts if this is a git clone with a remote.
+    if (Test-Path (Join-Path $Root '.git')) {
+        $remote = $null
+        try { $remote = (& git -C $Root remote 2>$null | Select-Object -First 1) } catch {}
+        if ($remote) {
+            Good "Updating winc.cpp source (git pull)..."
+            & git -C $Root pull --ff-only
+            if ($LASTEXITCODE -ne 0) { Warn "git pull failed (local changes or no upstream) - continuing with component update." }
+        } else {
+            Say "No git remote set - skipping source pull, updating components only."
+        }
+    }
+    # 2) Update components (llama.cpp rebuild + Python packages + launcher) via
+    #    the installer's -Update path. Run in a fresh PowerShell, like install.cmd.
+    $install = Join-Path $Root 'install.ps1'
+    if (-not (Test-Path $install)) { Die "install.ps1 not found - is this a complete winc.cpp folder?" }
+    Good "Updating components (llama.cpp rebuild + Python packages)..."
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $install -Update
+    if ($LASTEXITCODE -ne 0) { Die "Update failed (exit $LASTEXITCODE) - see $Root\install.log" }
+    Good "Update finished."
+}
+
 # -- dispatch ----------------------------------------------------------------
 # NOTE: build $rest with an explicit @() wrapper. A one-element slice returned
 # from an `if {}` block gets unwrapped to a scalar string, and then $rest[0]
@@ -190,6 +217,8 @@ switch ($cmd) {
     'remove'    { Cmd-Remove $rest }
     '-s'        { Cmd-Start $rest }
     'start'     { Cmd-Start $rest }
+    '-u'        { Cmd-Update }
+    'update'    { Cmd-Update }
     'help'      { Show-Usage }
     '-h'        { Show-Usage }
     '--help'    { Show-Usage }

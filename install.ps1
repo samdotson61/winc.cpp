@@ -12,7 +12,8 @@ param(
     [switch]$NoAutoDeps,        # skip winget auto-install prompts
     [switch]$YesToAll,          # answer 'y' to every install prompt
     [switch]$Rebuild,           # force a clean llama.cpp recompile
-    [switch]$Reinstall          # force pip reinstall into the venv
+    [switch]$Reinstall,         # force pip reinstall into the venv
+    [switch]$Update             # update mode: pull+rebuild llama.cpp, upgrade pip, regen launcher
 )
 
 $ErrorActionPreference = 'Stop'
@@ -498,6 +499,21 @@ function Setup-Venv {
     Log "Venv ready | HF CLI: $HF_CLI"
 }
 
+# Upgrade the venv packages in place (used by -Update / `winc update`).
+function Update-Venv {
+    $py = Join-Path $VenvDir 'Scripts\python.exe'
+    if (-not (Test-Path $py)) { Warn "No venv found - run a full install first."; return }
+    $env:PYTHONUTF8 = '1'
+    $r = Invoke-WithProgress $py @('-m','pip','install','--upgrade','litellm[proxy]','huggingface_hub','requests','--disable-pip-version-check','--no-input') -EstimateSec (Get-Timing 'pip_update')
+    if ($r.Code -ne 0) {
+        Warn "pip upgrade failed (exit $($r.Code)). Last lines:"
+        if ($r.Tail) { $r.Tail | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+    } else {
+        Save-Timing 'pip_update' $r.Seconds
+        Log "Python packages upgraded (litellm, huggingface_hub)"
+    }
+}
+
 # -----------------------------------------------------------------------------
 # Build llama.cpp (MSVC + CUDA when available)
 # -----------------------------------------------------------------------------
@@ -921,12 +937,13 @@ if ($SPEC_ENABLED -and $DRAFT_FILE_NAME) {
 Write-Host ""
 
 if ($env:WINC_MODE) {
-    # Non-interactive: mode chosen by the winc CLI (1=cli, 2=claude, 3=opencode).
+    # Non-interactive: mode chosen by the winc CLI (1=cli, 2=claude, 3=opencode, 4=openclaw).
     $mode = $env:WINC_MODE
 } else {
     if ($LLAMA_CLI -and (Test-Path $LLAMA_CLI)) { Write-Host "  [1] llama.cpp CLI     (direct chat)" }
     Write-Host "  [2] Claude Code       (via LiteLLM proxy)"
     Write-Host "  [3] OpenCode          (via LiteLLM proxy)"
+    Write-Host "  [4] OpenClaw          (via LiteLLM proxy)"
     Write-Host ""
     $mode = Read-Host "Mode [2]"
     if (-not $mode) { $mode = '2' }
@@ -1134,6 +1151,10 @@ try {
             Write-Host "[+] Launching OpenCode..." -ForegroundColor Green
             & opencode
         }
+        '4' {
+            Write-Host "[+] Launching OpenClaw (terminal UI)..." -ForegroundColor Green
+            & openclaw tui
+        }
         default { Write-Host "[x] Invalid mode" -ForegroundColor Red }
     }
 } finally {
@@ -1201,6 +1222,25 @@ function Print-Summary {
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
+if ($Update) {
+    # Slim "update everything winc manages" path: pull+rebuild llama.cpp, upgrade
+    # the venv packages, re-probe flags, regenerate the launcher. No model menu,
+    # no token prompt, existing models/config left as-is.
+    $script:STEP_TOTAL = 8
+    $script:Rebuild    = $true   # force the llama.cpp pull + recompile
+    Step "Detecting hardware";              Detect-Hardware
+    Step "Selecting context size";          Pick-Context
+    Step "Checking dependencies";           Check-Deps
+    Step "Upgrading Python packages";       Update-Venv
+    Step "Updating + rebuilding llama.cpp";  Build-Llama
+    Step "Probing llama-server flags";      Detect-Flags
+    Step "Writing launcher";                 $script:SPEC_ENABLED = $false; $script:DRAFT_FILE_NAME = ''; Write-Launcher
+    Step "Adding winc to PATH";             Add-WincToPath
+    Br
+    Log "Update complete. Re-run 'winc -s claude <model>' to use the refreshed stack."
+    return
+}
+
 Step "Detecting hardware";          Detect-Hardware
 Step "Selecting context size";      Pick-Context
 Step "Checking dependencies";       Check-Deps

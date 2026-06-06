@@ -132,7 +132,9 @@ winc -s claude qwen3.6-27b   # start Claude Code on that model (sandboxed instan
 | `winc -r <model>` | Deletes a downloaded model from `.\models\` (prompts first; add `-y` to skip) |
 | `winc -s claude <model>` | Starts the local stack and launches **Claude Code** on `<model>` |
 | `winc -s opencode <model>` | Same, but launches **OpenCode** |
+| `winc -s openclaw <model>` | Same, but launches **OpenClaw** (`openclaw tui`) |
 | `winc -s cli <model>` | Same, but the raw llama.cpp chat CLI |
+| `winc -u` / `winc update` | Update the stack: `git pull` the source (if a remote is set), upgrade the Python packages, and pull + rebuild llama.cpp, then regenerate the launcher |
 | `winc help` | Usage |
 
 `<model>` is a catalogue alias (see `winc ls`) or any part of a downloaded filename, so `winc -s claude qwen3.6-27b` and `winc -s claude Qwen3.6-27B-Q3_K_M.gguf` are equivalent.
@@ -223,11 +225,14 @@ Select model [0]:
   [1] llama.cpp CLI     (direct chat)
   [2] Claude Code       (via LiteLLM proxy)
   [3] OpenCode          (via LiteLLM proxy)
+  [4] OpenClaw          (via LiteLLM proxy)
 
 Mode [2]:
 ```
 
-It starts `llama-server.exe` on port 8080, starts `litellm` on port 4000, sets `ANTHROPIC_BASE_URL` to the proxy, then launches Claude Code or OpenCode. Ctrl+C in the launcher window cleans up both child processes.
+It starts `llama-server.exe` on port 8080, starts `litellm` on port 4000, sets `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` to the proxy, then launches your chosen agent. Ctrl+C in the launcher window cleans up both child processes.
+
+> **OpenCode** and **OpenClaw** aren't installed by winc.cpp — install them yourself if you want those modes (`npm i -g openclaw@latest` for OpenClaw; OpenClaw's terminal UI is `openclaw tui`). They pick up the local endpoint from the `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` env vars the launcher sets.
 
 ---
 
