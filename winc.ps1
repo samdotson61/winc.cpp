@@ -2,6 +2,7 @@
 # winc - tiny CLI for winc.cpp
 #   winc ls                      list downloaded + available models
 #   winc -d <alias|repo file>    download a model (HuggingFace)
+#   winc -r <model>              delete a downloaded model
 #   winc -s <app> <model>        start a sandboxed local instance with a model
 #                                  app = claude | opencode | cli
 #   winc help                    this help
@@ -53,6 +54,7 @@ function Show-Usage {
     Say "  winc ls                       list downloaded + available models"
     Say "  winc -d <alias>               download a catalogue model"
     Say "  winc -d <repo> <file>         download any GGUF from HuggingFace"
+    Say "  winc -r <model>               delete a downloaded model (-y to skip prompt)"
     Say "  winc -s claude <model>        start Claude Code on a local model (sandboxed)"
     Say "  winc -s opencode <model>      start OpenCode on a local model"
     Say "  winc -s cli <model>           start the raw llama.cpp chat CLI"
@@ -142,6 +144,29 @@ function Cmd-Start {
     try { & $Launcher } finally { Remove-Item Env:\WINC_MODEL, Env:\WINC_MODE -ErrorAction SilentlyContinue }
 }
 
+function Cmd-Remove {
+    param($rest)
+    $rest = @($rest)   # never let a single arg arrive as a scalar string
+    if (-not $rest -or $rest.Count -eq 0) { Die "Usage: winc -r <alias|filename>   (add -y to skip the prompt)" }
+    $yes = $rest -contains '-y' -or $rest -contains '--yes'
+    $q   = @($rest | Where-Object { $_ -ne '-y' -and $_ -ne '--yes' })[0]
+    if (-not $q) { Die "Usage: winc -r <alias|filename>" }
+
+    $file = Resolve-Downloaded $q
+    if (-not $file) {
+        $entry = Resolve-Catalog $q
+        if ($entry) { Die "'$($entry.Alias)' is not downloaded - nothing to remove." }
+        Die "No downloaded model matches '$q'. See 'winc ls'."
+    }
+    $gb = [Math]::Round($file.Length / 1GB, 1)
+    if (-not $yes) {
+        $ans = Read-Host "Delete $($file.Name) ($gb GB)? [y/N]"
+        if ($ans -notmatch '^[yY]') { Say "Cancelled - nothing removed."; return }
+    }
+    Remove-Item $file.FullName -Force
+    Good "Removed: $($file.Name) ($gb GB freed)"
+}
+
 # -- dispatch ----------------------------------------------------------------
 # NOTE: build $rest with an explicit @() wrapper. A one-element slice returned
 # from an `if {}` block gets unwrapped to a scalar string, and then $rest[0]
@@ -156,6 +181,9 @@ switch ($cmd) {
     'list'      { Cmd-Ls }
     '-d'        { Cmd-Download $rest }
     'download'  { Cmd-Download $rest }
+    '-r'        { Cmd-Remove $rest }
+    'rm'        { Cmd-Remove $rest }
+    'remove'    { Cmd-Remove $rest }
     '-s'        { Cmd-Start $rest }
     'start'     { Cmd-Start $rest }
     'help'      { Show-Usage }

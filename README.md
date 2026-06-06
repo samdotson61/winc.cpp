@@ -124,8 +124,9 @@ winc -s claude qwen3.6-27b   # start Claude Code on that model (sandboxed instan
 | Command | What it does |
 |---------|--------------|
 | `winc ls` | Lists models already in `.\models\`, then the full catalogue with aliases, sizes, and an `[installed]` marker |
-| `winc -d <alias>` | Downloads a catalogue model via `hf` (e.g. `winc -d gpt-oss-20b`) |
+| `winc -d <alias>` | Downloads a catalogue model (e.g. `winc -d gpt-oss-20b`) |
 | `winc -d <repo> <file>` | Downloads any GGUF from HuggingFace (e.g. `winc -d bartowski/Some-Model-GGUF Some-Model-Q4_K_M.gguf`) |
+| `winc -r <model>` | Deletes a downloaded model from `.\models\` (prompts first; add `-y` to skip) |
 | `winc -s claude <model>` | Starts the local stack and launches **Claude Code** on `<model>` |
 | `winc -s opencode <model>` | Same, but launches **OpenCode** |
 | `winc -s cli <model>` | Same, but the raw llama.cpp chat CLI |
