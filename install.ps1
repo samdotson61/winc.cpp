@@ -986,6 +986,10 @@ $env:OPENAI_API_KEY                           = 'dummy'
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
 $env:CLAUDE_CODE_ENABLE_TELEMETRY             = '0'
 $env:CLAUDE_CODE_ATTRIBUTION_HEADER           = '0'
+# Truecolor + flicker-free animations, incl. when launched inside tmux/winmux
+# (where Claude Code otherwise degrades to a choppy "reduced motion" render).
+if (-not $env:COLORTERM) { $env:COLORTERM = 'truecolor' }
+$env:CLAUDE_FORCE_SYNCHRONIZED_OUTPUT = '1'
 
 # Isolate this instance's Claude config/state into a project-local dir so it
 # shares NOTHING with the user's global ~/.claude (no shared credentials, history,
