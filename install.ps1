@@ -1103,14 +1103,17 @@ $env:OPENAI_API_KEY                           = 'dummy'
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
 $env:CLAUDE_CODE_ENABLE_TELEMETRY             = '0'
 $env:CLAUDE_CODE_ATTRIBUTION_HEADER           = '0'
-# Truecolor + smoother rendering, incl. inside tmux/winmux where Claude Code
-# otherwise downsamples colour (it keys off TERM=tmux-256color and ignores
-# COLORTERM - anthropics/claude-code#59867) and reduces animation.
-# NOTE: CLAUDE_FORCE_SYNCHRONIZED_OUTPUT is NOT a real Claude Code variable.
+# Truecolor + full motion inside tmux/winmux. Claude Code detects $TMUX and
+# forces 256-colour + reduced-motion rendering (washed-out logo) - verified by
+# capturing its SGR codes: with $TMUX set it emits 38;5;* (256), hidden it emits
+# 38;2;* (24-bit), identical to running outside tmux. COLORTERM / FORCE_COLOR /
+# TERM / WT_SESSION make NO difference; only hiding $TMUX does. tmux still
+# renders it correctly (RGB terminal-feature is on). Trade-off: tmux passthrough
+# extras (desktop notifications, progress bar) won't reach the outer terminal
+# for this instance - a fair swap for correct colour + motion.
 if (-not $env:COLORTERM) { $env:COLORTERM = 'truecolor' }
-$env:FORCE_COLOR                         = '3'   # force truecolor for the Node TUI
-$env:CLAUDE_CODE_NO_FLICKER              = '1'   # fullscreen (alt-screen) render
-$env:CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT = '1'   # avoid stale fragments on Windows
+Remove-Item Env:\TMUX -ErrorAction SilentlyContinue
+Remove-Item Env:\TERM -ErrorAction SilentlyContinue
 
 # Isolate this instance's Claude config/state into a project-local dir so it
 # shares NOTHING with the user's global ~/.claude (no shared credentials, history,
