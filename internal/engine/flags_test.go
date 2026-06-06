@@ -12,10 +12,23 @@ func TestServerArgsAdaptive(t *testing.T) {
 	cfg := config.Defaults()
 	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
 	s := strings.Join(ServerArgs(&cfg, hw, "model.gguf", 8080, "", 0), " ")
-	for _, want := range []string{"-m model.gguf", "--jinja", "-ngl 99", "-c 32768", "--port 8080", "--reasoning auto", "--flash-attn on"} {
+	for _, want := range []string{"-m model.gguf", "--jinja", "-c 32768", "--port 8080", "--reasoning auto", "--flash-attn on"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("args missing %q: %s", want, s)
 		}
+	}
+	if strings.Contains(s, "-ngl") {
+		t.Errorf("auto should omit -ngl (let llama.cpp fit layers): %s", s)
+	}
+}
+
+func TestServerArgsExplicitNgl(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Performance.GpuLayers = "40"
+	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
+	s := strings.Join(ServerArgs(&cfg, hw, "m.gguf", 8080, "", 0), " ")
+	if !strings.Contains(s, "-ngl 40") {
+		t.Errorf("explicit gpu_layers should emit -ngl 40: %s", s)
 	}
 }
 
@@ -32,8 +45,8 @@ func TestServerArgsCPUNoOffload(t *testing.T) {
 	cfg := config.Defaults()
 	hw := platform.Hardware{OS: "linux", GPUVendor: "none"}
 	s := strings.Join(ServerArgs(&cfg, hw, "m.gguf", 9000, "", 0), " ")
-	if !strings.Contains(s, "-ngl 0") {
-		t.Errorf("cpu-only should use -ngl 0: %s", s)
+	if strings.Contains(s, "-ngl") {
+		t.Errorf("auto should omit -ngl (let llama.cpp fit): %s", s)
 	}
 	if strings.Contains(s, "--flash-attn") {
 		t.Errorf("flash-attn should be off without GPU offload: %s", s)

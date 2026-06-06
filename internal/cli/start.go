@@ -81,11 +81,6 @@ func cmdStart(args []string) int {
 		return 1
 	}
 
-	serverBin := engine.LlamaServerPath()
-	if serverBin == "" {
-		ui.Err("llama-server not found. Run 'winc setup' to install the engine.")
-		return 1
-	}
 	if _, err := config.EnsureClaudeLocal(); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)
 	}
@@ -95,10 +90,10 @@ func cmdStart(args []string) int {
 	logPath := filepath.Join(paths.InstallDir(), "llama-server.log")
 
 	ui.Good("Starting %s on %s (sandboxed local instance)", app, filepath.Base(modelPath))
-	ui.Info("engine: %s  |  reasoning: %s", serverBin, cfg.Reasoning.Mode)
-	proc, loadedCtx := startLlamaFitting(cfg, hw, modelPath, serverBin, port, serverURL, logPath)
+	ui.Info("reasoning: %s", cfg.Reasoning.Mode)
+	proc, loadedCtx := startLlamaFitting(cfg, hw, modelPath, port, serverURL, logPath)
 	if proc == nil {
-		ui.Err("server did not become ready; see %s", logPath)
+		ui.Err("could not start the engine; see %s", logPath)
 		return 1
 	}
 	defer proc.Stop()

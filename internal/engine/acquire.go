@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"winc/internal/download"
 	"winc/internal/paths"
@@ -13,27 +14,51 @@ import (
 
 func llamaServerInBin() string { return findIn("llama-server", paths.BinDir()) }
 
-// ClearBinEngine removes the engine executables from bin/ so the next Acquire
-// re-downloads the latest. Shared libs are left (re-extract overwrites them).
+func backendMarker() string { return filepath.Join(paths.BinDir(), ".winc-backend") }
+
+// CurrentBackend returns the backend recorded for the installed engine ("" if unknown).
+func CurrentBackend() string {
+	b, err := os.ReadFile(backendMarker())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func writeBackend(name string) { _ = os.WriteFile(backendMarker(), []byte(name+"\n"), 0o644) }
+
+// ClearBinEngine removes the engine executables and backend marker from bin/ so
+// the next Acquire re-downloads. Shared libs are overwritten on re-extract.
 func ClearBinEngine() {
 	for _, n := range []string{"llama-server", "llama-cli", "llama-swap"} {
 		if p := findIn(n, paths.BinDir()); p != "" {
 			_ = os.Remove(p)
 		}
 	}
+	_ = os.Remove(backendMarker())
 }
 
-// AcquireLlama ensures a llama-server binary exists in winc's bin dir, downloading
-// the best prebuilt archive for the hardware (trying backends in order, always
-// ending in a CPU fallback). Idempotent: returns immediately if bin/ already has
-// one. Returns the llama-server path.
+// AcquireLlama ensures a llama-server exists in bin/, downloading the best
+// prebuilt for the hardware. Idempotent. Wrapper kept for setup/update.
 func AcquireLlama(hw platform.Hardware) (string, error) {
+	p, _, err := AcquireLlamaExcluding(hw, nil)
+	return p, err
+}
+
+// AcquireLlamaExcluding downloads the best prebuilt backend NOT in exclude,
+// returning (serverPath, backendName). If bin/ already has a server whose backend
+// isn't excluded, it's reused. The chosen backend is recorded in a marker so a
+// later runtime failure can skip it.
+func AcquireLlamaExcluding(hw platform.Hardware, exclude map[string]bool) (string, string, error) {
 	if p := llamaServerInBin(); p != "" {
-		return p, nil
+		cur := CurrentBackend()
+		if !exclude[cur] {
+			return p, cur, nil
+		}
 	}
 	cands := LlamaCandidates(hw)
 	if len(cands) == 0 {
-		return "", fmt.Errorf("no prebuilt llama.cpp asset for %s/%s (build from source)", hw.OS, hw.Arch)
+		return "", "", fmt.Errorf("no prebuilt llama.cpp asset for %s/%s (build from source)", hw.OS, hw.Arch)
 	}
 	tmp := filepath.Join(paths.InstallDir(), ".winc-dl")
 	_ = os.MkdirAll(tmp, 0o755)
@@ -41,6 +66,10 @@ func AcquireLlama(hw platform.Hardware) (string, error) {
 
 	var lastErr error
 	for _, a := range cands {
+		if exclude[a.Backend] {
+			continue
+		}
+		ClearBinEngine()
 		ui.Info("fetching llama.cpp (%s backend)...", a.Backend)
 		ok := true
 		for _, u := range a.URLs {
@@ -60,15 +89,16 @@ func AcquireLlama(hw platform.Hardware) (string, error) {
 		}
 		if ok {
 			if p := llamaServerInBin(); p != "" {
+				writeBackend(a.Backend)
 				ui.Good("llama.cpp ready (%s backend)", a.Backend)
-				return p, nil
+				return p, a.Backend, nil
 			}
 		}
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("archives downloaded but llama-server not found inside")
+		lastErr = fmt.Errorf("no usable llama.cpp backend (all excluded or downloads failed)")
 	}
-	return "", lastErr
+	return "", "", lastErr
 }
 
 // AcquireSwap ensures the llama-swap binary exists in bin/, downloading the

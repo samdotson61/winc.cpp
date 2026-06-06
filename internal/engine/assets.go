@@ -65,12 +65,18 @@ func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
 	switch hw.OS {
 	case "windows":
 		if hw.GPUVendor == "nvidia" {
-			out = append(out,
-				mk("cuda", "zip", "llama-"+tag+"-bin-win-cuda-13.3-x64.zip", "cudart-llama-bin-win-cuda-13.3-x64.zip"),
-				mk("cuda", "zip", "llama-"+tag+"-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"),
-			)
-		}
-		if hw.GPUVendor != "none" && hw.GPUVendor != "" {
+			// Pick the CUDA build matching the driver. cuda-13.3 needs a newer
+			// driver; older drivers (CUDA 12.x) must use cuda-12.4 or its PTX
+			// won't load. Unknown -> offer both, newest first.
+			cu := hw.CudaMajor
+			if cu == 0 || cu >= 13 {
+				out = append(out, mk("cuda-13.3", "zip", "llama-"+tag+"-bin-win-cuda-13.3-x64.zip", "cudart-llama-bin-win-cuda-13.3-x64.zip"))
+			}
+			if cu == 0 || cu == 12 || cu >= 13 {
+				out = append(out, mk("cuda-12.4", "zip", "llama-"+tag+"-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"))
+			}
+			out = append(out, mk("vulkan", "zip", "llama-"+tag+"-bin-win-vulkan-x64.zip"))
+		} else if hw.GPUVendor != "none" && hw.GPUVendor != "" {
 			out = append(out, mk("vulkan", "zip", "llama-"+tag+"-bin-win-vulkan-x64.zip"))
 		}
 		out = append(out, mk("cpu", "zip", "llama-"+tag+"-bin-win-cpu-x64.zip"))

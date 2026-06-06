@@ -111,7 +111,12 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	args := []string{"-m", modelPath, "--host", cfg.General.Host, "--port", portVal, "--jinja"}
 
 	ngl := GpuLayers(cfg, hw)
-	args = append(args, "-ngl", strconv.Itoa(ngl))
+	// Only force -ngl when the user set an explicit value. For "auto" we omit it so
+	// llama.cpp fits as many layers as memory allows (partial offload on tight VRAM
+	// instead of failing to fit / OOM).
+	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
+		args = append(args, "-ngl", strconv.Itoa(ngl))
+	}
 
 	if ctx <= 0 {
 		ctx = ResolveContext(cfg, hw, FileMB(modelPath))

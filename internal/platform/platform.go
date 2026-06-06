@@ -5,6 +5,7 @@ package platform
 
 import (
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ type Hardware struct {
 	GPUName   string
 	VRAMMB    int
 	Unified   bool // Apple Silicon: GPU shares system RAM
+	CudaMajor int  // max CUDA version the NVIDIA driver supports (0 if unknown)
+	CudaMinor int
 }
 
 // MemoryBudgetMB is the memory to size models against: discrete VRAM for a
@@ -66,7 +69,23 @@ func detectNvidia(hw *Hardware) bool {
 	hw.GPUVendor = "nvidia"
 	hw.VRAMMB = mb
 	hw.GPUName = strings.TrimSpace(parts[1])
+	detectCuda(hw)
 	return true
+}
+
+// detectCuda reads the max CUDA version the driver supports from nvidia-smi's
+// header ("CUDA Version: 12.4"). Used to pick a matching prebuilt CUDA build.
+func detectCuda(hw *Hardware) {
+	out, err := exec.Command("nvidia-smi").Output()
+	if err != nil {
+		return
+	}
+	// Drivers vary: "CUDA Version: 12.4" (older) and "CUDA UMD Version: 13.3" (newer).
+	m := regexp.MustCompile(`(?i)cuda[a-z ]*version:\s*(\d+)\.(\d+)`).FindStringSubmatch(string(out))
+	if len(m) == 3 {
+		hw.CudaMajor, _ = strconv.Atoi(m[1])
+		hw.CudaMinor, _ = strconv.Atoi(m[2])
+	}
 }
 
 func out2first(s string) string {
