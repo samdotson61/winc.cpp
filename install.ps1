@@ -552,8 +552,6 @@ function Configure-ClaudeSettings {
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
   },
   "attribution": { "commit": "", "pr": "" },
-  "prefersReducedMotion": true,
-  "terminalProgressBarEnabled": false,
   "hasCompletedOnboarding": true
 }
 '@ | Set-Content -Path $f -Encoding utf8
