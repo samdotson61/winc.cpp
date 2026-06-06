@@ -84,8 +84,11 @@ The installer will:
 6. Probe `llama-server --help` to learn which optimization flags this build supports
 7. Write an **isolated** `.\.claude-local\settings.json` (its own config dir, leaving your global `~/.claude` untouched) that disables the attribution header — fixing a ~90% KV-cache hit-rate penalty
 8. Ask for an optional HuggingFace token (needed for gated models)
-9. Show the 16 GB-tuned model menu and download what you pick
+9. Detect your VRAM tier (6-8 / 16 / 24 GB+), default to it (you confirm), then show that tier's models and download what you pick
 10. Generate `.\launcher.ps1`, baked with your hardware's flags
+11. Add this folder to your user `PATH` so `winc` works from any new terminal
+
+Every step shows an overall `[####----] step N/12` bar, and the slow ones (git clone, the llama.cpp build, pip, model download) draw a **live progress bar with elapsed time** so nothing looks frozen on a slower CPU. The build/pip/clone times are remembered in `.winc-timings.json`, so on a re-run those bars show a real **ETA** ("~3m12s left") instead of just elapsed time.
 
 The installer is re-runnable: existing models and the existing llama.cpp build are kept; you can re-run it to add more models from the menu.
 
@@ -138,36 +141,53 @@ winc -s claude qwen3.6-27b   # start Claude Code on that model (sandboxed instan
 
 ### Making `winc` available everywhere
 
-From inside this folder it just works (`winc ls` in `cmd`, or `.\winc ls` in PowerShell). To call it from anywhere, add this folder to your user `PATH` once:
+**The installer already does this** — its final step adds this folder to your user `PATH` (idempotent). Just open a **new** terminal after install and `winc ls` works from any directory.
+
+From inside the folder it also works without PATH (`winc ls` in `cmd`, or `.\winc ls` in PowerShell). If you ever need to add it by hand:
 
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';C:\Claude\winc.cpp', 'User')
 ```
 
-Open a new terminal afterwards, then `winc ls` works from any directory.
-
 ---
 
-## Model menu (curated for 16 GB GPUs)
+## Model menu (VRAM tiers)
 
-Quants picked so the model + 65K KV cache fit in 16 GB VRAM with flash-attn and `--cache-type-k/v q8_0`.
+The installer detects your GPU's VRAM and **defaults to the matching tier**, but asks you to confirm so you can pick a different one. Each tier's quants are chosen to fit that VRAM with a useful context window. `winc ls` shows the same catalogue grouped by tier; the first model in each tier is the recommended default.
 
-| # | Model | Size | Why |
-|---|-------|------|-----|
-| 1 | **Qwen3.6-27B Q3_K_M** | ~13.6 GB | Newest top dense open coder (2026), ~77% SWE-bench. Clean 16 GB fit. **Default.** |
-| 2 | Qwen3.6-35B-A3B UD-IQ3_S | ~13.7 GB | Newest MoE coder — 3B active so fast; tuned for agentic/multi-file work |
-| 3 | GPT-OSS-20B (native MXFP4) | ~12.1 GB | OpenAI open weights. Fast, great all-round daily driver |
-| 4 | Devstral-Small-2507 Q4_K_M | ~14.3 GB | Mistral 24B agent/coding model. Strong tool-calling |
-| 5 | Qwen3-14B Q5_K_M | ~10.5 GB | Smaller dense Qwen3 — snappy general/reasoning + tools |
-| 6 | Mistral-Small-3.2-24B Q4_K_M | ~14.3 GB | Strong general-purpose + tool use |
-| 7 | Gemma-3-27B-IT Q3_K_M | ~13.5 GB | Google Gemma 3 27B. Multilingual, 128K ctx |
-| 8 | Phi-4-reasoning-plus (14B) Q5_K_M | ~10.5 GB | Microsoft Phi-4 RL-tuned. Excellent math/logic |
-| 9 | DeepSeek-R1-0528-Qwen3-8B Q6_K | ~6.5 GB | R1 reasoning distill — best for math-heavy / algorithmic |
-| C | Custom | — | Any GGUF — paste a HuggingFace repo and filename |
+**6–8 GB GPUs** (`small`)
 
-The Qwen3.6 family (Nov/Dec 2025) is the current top tier for local coding on 16 GB; the older Qwen3-Coder-30B was dropped because reviewers found it impractically slow for interactive use at this VRAM. You can pick more than one (comma-separated, e.g. `1,3,9`) and switch between them at launch.
+| Alias | Model | Size |
+|-------|-------|------|
+| `qwen2.5-coder-7b` | Qwen2.5-Coder-7B-Instruct Q4_K_M | ~4.7 GB |
+| `deepseek-r1-8b` | DeepSeek-R1-0528-Qwen3-8B Q4_K_M | ~5.0 GB |
+| `llama3.1-8b` | Llama-3.1-8B-Instruct Q4_K_M | ~4.9 GB |
+| `gemma4-e4b` | Gemma-4-E4B-IT Q4_K_M (Jun 2026, multimodal) | ~5.0 GB |
 
-GGUFs come from [bartowski](https://huggingface.co/bartowski), [unsloth](https://huggingface.co/unsloth), and [ggml-org](https://huggingface.co/ggml-org) on HuggingFace. If a download fails you can drop any `.gguf` into `.\models\` manually — the launcher auto-detects everything in that directory.
+**16 GB GPUs** (`mid`)
+
+| Alias | Model | Size |
+|-------|-------|------|
+| **`qwen3.6-27b`** | Qwen3.6-27B Q3_K_M | ~13.6 GB |
+| `qwen3.6-35b` | Qwen3.6-35B-A3B UD-IQ3_S (MoE) | ~13.7 GB |
+| `gpt-oss-20b` | GPT-OSS-20B (MXFP4) | ~12.1 GB |
+| `devstral` | Devstral-Small-2507 Q4_K_M | ~14.3 GB |
+| `qwen3-14b` | Qwen3-14B Q5_K_M | ~10.5 GB |
+| `mistral-small` | Mistral-Small-3.2-24B Q4_K_M | ~14.3 GB |
+| `gemma4-12b` | Gemma-4-12B-IT Q6_K (Jun 2026, multimodal) | ~9.8 GB |
+| `phi4` | Phi-4-reasoning-plus (14B) Q5_K_M | ~10.5 GB |
+| `deepseek-r1` | DeepSeek-R1-0528-Qwen3-8B Q6_K | ~6.5 GB |
+
+**24 GB+ GPUs** (`large`)
+
+| Alias | Model | Size |
+|-------|-------|------|
+| `qwen3.6-27b-q5` | Qwen3.6-27B Q5_K_M | ~19.5 GB |
+| `qwen3.6-35b-q4` | Qwen3.6-35B-A3B UD-Q4_K_M (MoE) | ~22.1 GB |
+| `qwen2.5-coder-32b` | Qwen2.5-Coder-32B-Instruct Q5_K_M | ~23.0 GB |
+| `qwen3-32b` | Qwen3-32B Q5_K_M | ~23.0 GB |
+
+Plus **Custom** (`[C]` in the installer, or `winc -d <repo> <file>`) for any GGUF. In the installer you can pick more than one (comma-separated). GGUFs come from [bartowski](https://huggingface.co/bartowski), [unsloth](https://huggingface.co/unsloth), and [ggml-org](https://huggingface.co/ggml-org); if a download fails you can drop any `.gguf` into `.\models\` manually.
 
 ---
 

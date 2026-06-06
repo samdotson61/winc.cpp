@@ -24,7 +24,7 @@ function Resolve-Catalog {
     param($q)
     if (-not $q) { return $null }
     foreach ($m in $WINC_MODELS) {
-        if ($m.Alias -ieq $q -or "$($m.N)" -eq $q -or $m.File -ieq $q -or $m.Name -ieq $q) { return $m }
+        if ($m.Alias -ieq $q -or $m.File -ieq $q -or $m.Name -ieq $q) { return $m }
     }
     return $null
 }
@@ -79,11 +79,15 @@ function Cmd-Ls {
     }
     Say ""
     Say "Available to download (alias  ~size  model):"
-    foreach ($m in $WINC_MODELS) {
-        $have = Resolve-Downloaded $m.Alias
-        $mark = if ($have) { '[installed]' } else { '' }
-        Say ("  {0,-14} {1,8}  {2} {3}" -f $m.Alias, $m.Size, $m.Name, $mark)
-        Say ("                          {0}" -f $m.Note)
+    $labels = @{ small = '6-8 GB GPUs'; mid = '16 GB GPUs'; large = '24 GB+ GPUs' }
+    foreach ($tier in 'small','mid','large') {
+        Say ""
+        Say ("  -- $($labels[$tier]) --")
+        foreach ($m in ($WINC_MODELS | Where-Object { $_.Tier -eq $tier })) {
+            $have = Resolve-Downloaded $m.Alias
+            $mark = if ($have) { '  [installed]' } else { '' }
+            Say ("  {0,-18} {1,8}  {2}{3}" -f $m.Alias, $m.Size, $m.Name, $mark)
+        }
     }
     Say ""
     Say "Download:  winc -d <alias>      Start:  winc -s claude <alias>"

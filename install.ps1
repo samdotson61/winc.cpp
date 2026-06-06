@@ -37,7 +37,7 @@ function Br     { Write-Host "" }
 # ASCII progress bar for the overall install - readable both on screen and in
 # install.log (no Unicode block glyphs, so a plain text file stays legible).
 $script:STEP_NUM   = 0
-$script:STEP_TOTAL = 12
+$script:STEP_TOTAL = 13
 function Step {
     param([string]$Title)
     $script:STEP_NUM++
@@ -77,12 +77,87 @@ function Invoke-Tool {
     return $LASTEXITCODE
 }
 
+# -- live progress for long steps (cosmetic) ---------------------------------
+function Format-Dur {
+    param([int]$s)
+    if ($s -ge 3600) { return ('{0}h{1:00}m' -f [int]($s/3600), [int](($s%3600)/60)) }
+    if ($s -ge 60)   { return ('{0}m{1:00}s' -f [int]($s/60), ($s%60)) }
+    return ('{0}s' -f $s)
+}
+
+# Remember how long each slow step took last time, so re-runs show a real ETA.
+$script:TimingsFile = Join-Path $InstallDir '.winc-timings.json'
+function Get-Timing {
+    param([string]$Key)
+    if (-not (Test-Path $TimingsFile)) { return 0 }
+    try { $t = Get-Content $TimingsFile -Raw | ConvertFrom-Json; if ($t.$Key) { return [int]$t.$Key } } catch {}
+    return 0
+}
+function Save-Timing {
+    param([string]$Key, [int]$Seconds)
+    $obj = @{}
+    if (Test-Path $TimingsFile) { try { (Get-Content $TimingsFile -Raw | ConvertFrom-Json).psobject.Properties | ForEach-Object { $obj[$_.Name] = $_.Value } } catch {} }
+    $obj[$Key] = $Seconds
+    try { ($obj | ConvertTo-Json -Compress) | Set-Content $TimingsFile -Encoding utf8 } catch {}
+}
+
+# Run a long native command in the background while drawing a live progress bar
+# with elapsed time. If $EstimateSec > 0 (from a prior run) it shows a real
+# percentage + ETA; otherwise an indeterminate animated bar + elapsed time.
+# This is purely cosmetic - success is judged by the real exit code. Command
+# output is folded into the install log afterwards (the bar never pollutes it).
+function Invoke-WithProgress {
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [int]$EstimateSec = 0
+    )
+    $o = [System.IO.Path]::GetTempFileName()
+    $e = [System.IO.Path]::GetTempFileName()
+    $proc = Start-Process -FilePath $Exe -ArgumentList $Arguments `
+        -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -PassThru
+    # Cache the handle NOW. Without this, a Start-Process -PassThru object often
+    # returns $null from .ExitCode after the process exits (the handle gets
+    # released) - and since ($null -ne 0) is TRUE, callers would see every step
+    # as a failure. Touching .Handle forces .NET to retain exit info.
+    $null = $proc.Handle
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $w = 28; $frame = 0
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds 1000
+        $el = [int]$sw.Elapsed.TotalSeconds
+        if ($EstimateSec -gt 0) {
+            $pct  = [Math]::Min(99, [int](($el / $EstimateSec) * 100))
+            $fill = [int]([Math]::Floor($pct / 100.0 * $w))
+            $bar  = ('#' * $fill) + ('-' * ($w - $fill))
+            $eta  = [Math]::Max(0, $EstimateSec - $el)
+            $line = ("  [{0}] {1,3}%  {2} elapsed  ~{3} left" -f $bar, $pct, (Format-Dur $el), (Format-Dur $eta))
+        } else {
+            # indeterminate marquee: a 4-wide block sliding back and forth
+            $span = $w - 4
+            $pos  = $frame % (2 * $span)
+            if ($pos -gt $span) { $pos = (2 * $span) - $pos }
+            $bar  = ('-' * $pos) + '####' + ('-' * ($span - $pos))
+            $line = ("  [{0}]  {1} elapsed  (working...)" -f $bar, (Format-Dur $el))
+        }
+        Write-Host ("`r" + $line + "   ") -NoNewline -ForegroundColor DarkCyan
+        $frame++
+    }
+    $sw.Stop()
+    Write-Host ("`r" + (' ' * 72) + "`r") -NoNewline   # clear the progress line
+    $tail = @()
+    if ((Test-Path $o) -and (Get-Item $o).Length -gt 0) { Get-Content $o | Add-Content $Log; $tail += Get-Content $o -Tail 25 }
+    if ((Test-Path $e) -and (Get-Item $e).Length -gt 0) { Get-Content $e | Add-Content $Log; $tail += Get-Content $e -Tail 25 }
+    Remove-Item $o, $e -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ Code = $proc.ExitCode; Seconds = [int]$sw.Elapsed.TotalSeconds; Tail = $tail }
+}
+
 Clear-Host
 Write-Host @'
 +======================================================+
 |   winc.cpp - AI LOCAL STACK INSTALLER (Windows)      |
 |   llama.cpp + LiteLLM + Speculative Decoding         |
-|   Curated for 16 GB NVIDIA GPUs                      |
+|   Curated for 6-8 / 16 / 24 GB+ NVIDIA GPUs          |
 +======================================================+
 '@ -ForegroundColor White
 Info "Install dir: $InstallDir"
@@ -402,36 +477,24 @@ function Setup-Venv {
     }
 
     Info "Installing Python packages into venv (litellm, huggingface_hub)..."
-    $pipLog = Join-Path $InstallDir 'pip.log'
-    "=== pip run: $(Get-Date) | python: $py ===" | Set-Content $pipLog
-
-    # Capture pip output into a variable then Add-Content it. We deliberately
-    # avoid the *>> / > redirection operators: under Windows PowerShell 5.1 those
-    # write UTF-16LE, which renders as spaced-out garbage in a UTF-8/ANSI log.
-    # Relax ErrorActionPreference so a pip stderr WARNING (e.g. an unknown extra)
-    # doesn't become a terminating NativeCommandError and kill the install.
-    # NOTE: huggingface_hub ships its CLI (huggingface-cli / hf) in the BASE
-    # package now - the old "[cli]" extra was removed in hub 1.x and errors.
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        # Upgrade pip + build backends first so any source-only deps can build.
-        $out1 = & $py -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --no-input 2>&1
-        $out1 | Add-Content $pipLog
-        $out2 = & $py -m pip install "litellm[proxy]" huggingface_hub requests --disable-pip-version-check --no-input 2>&1
-        $pipRc = $LASTEXITCODE
-        $out2 | Add-Content $pipLog
-    } finally {
-        $ErrorActionPreference = $prevEAP
+    # Each pip call runs via Invoke-WithProgress: a live elapsed/ETA bar while it
+    # works, output folded into the install log, success judged by exit code.
+    # (huggingface_hub ships its CLI in the BASE package now - the old "[cli]"
+    #  extra was removed in hub 1.x and errors, so we don't request it.)
+    # Step 1: upgrade pip + build backends so any source-only deps can build.
+    $r = Invoke-WithProgress $py @('-m','pip','install','--upgrade','pip','setuptools','wheel','--disable-pip-version-check','--no-input') -EstimateSec (Get-Timing 'pip_base')
+    Save-Timing 'pip_base' $r.Seconds
+    # Step 2: the heavy one - litellm + deps.
+    $r = Invoke-WithProgress $py @('-m','pip','install','litellm[proxy]','huggingface_hub','requests','--disable-pip-version-check','--no-input') -EstimateSec (Get-Timing 'pip_litellm')
+    if ($r.Code -ne 0) {
+        Warn "pip install failed (exit $($r.Code)). Last lines:"
+        if ($r.Tail) { $r.Tail | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+        Fail "pip install failed - full log: $Log"
     }
-    if ($pipRc -ne 0) {
-        Warn "pip install failed (exit $pipRc). Last 25 lines of output:"
-        $out2 | Select-Object -Last 25 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-        Fail "pip install failed - full log: $pipLog"
-    }
+    Save-Timing 'pip_litellm' $r.Seconds
 
     $script:HF_CLI = Resolve-HfCli
-    if (-not $HF_CLI) { Fail "HuggingFace CLI not found after install (see $pipLog)" }
+    if (-not $HF_CLI) { Fail "HuggingFace CLI not found after install (see $Log)" }
     Log "Venv ready | HF CLI: $HF_CLI"
 }
 
@@ -478,9 +541,9 @@ function Build-Llama {
 
     Log "Setting up llama.cpp..."
     if (-not (Test-Path (Join-Path $LlamaDir '.git'))) {
-        if ((Invoke-Tool 'git' @('clone','--depth=1','https://github.com/ggerganov/llama.cpp',$LlamaDir)) -ne 0) {
-            Fail "git clone failed - see $Log"
-        }
+        $r = Invoke-WithProgress 'git' @('clone','--depth=1','https://github.com/ggerganov/llama.cpp',$LlamaDir) -EstimateSec (Get-Timing 'clone')
+        if ($r.Code -ne 0) { Fail "git clone failed - see $Log" }
+        Save-Timing 'clone' $r.Seconds
     } else {
         [void](Invoke-Tool 'git' @('-C',$LlamaDir,'pull','--ff-only'))
     }
@@ -497,14 +560,18 @@ function Build-Llama {
     $nc = [Environment]::ProcessorCount
 
     Log "cmake configure..."
-    if ((Invoke-Tool 'cmake' (@('-S',$LlamaDir,'-B',$bd) + $cfg)) -ne 0) {
-        Fail "cmake configure failed - see $Log"
-    }
+    $r = Invoke-WithProgress 'cmake' (@('-S',$LlamaDir,'-B',$bd) + $cfg) -EstimateSec (Get-Timing 'configure')
+    if ($r.Code -ne 0) { Fail "cmake configure failed - see $Log" }
+    Save-Timing 'configure' $r.Seconds
 
     Log "Building with $nc threads (this takes a while)..."
-    if ((Invoke-Tool 'cmake' @('--build',$bd,'--config','Release','-j',"$nc")) -ne 0) {
+    $r = Invoke-WithProgress 'cmake' @('--build',$bd,'--config','Release','-j',"$nc") -EstimateSec (Get-Timing 'build')
+    if ($r.Code -ne 0) {
+        if ($r.Tail) { $r.Tail | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
         Fail "build failed - see $Log"
     }
+    Save-Timing 'build' $r.Seconds
+    Log "Build finished in $(Format-Dur $r.Seconds)"
 
     Find-LlamaBins $bd
     if (-not $LLAMA_SERVER_BIN) { Fail "llama-server.exe not found after build" }
@@ -576,36 +643,69 @@ function Ask-HfToken {
 . (Join-Path $PSScriptRoot 'catalog.ps1')
 $MODELS = $WINC_MODELS
 
+$script:TierLabel = @{ small = '6-8 GB'; mid = '16 GB'; large = '24 GB+' }
+
 function Show-ModelMenu {
     Br
     Write-Host "==========================================================" -ForegroundColor White
     Write-Host "  MODEL SELECTION  -  GPU: $GPU_NAME | VRAM: ${VRAM_MB} MB" -ForegroundColor White
     Write-Host "==========================================================" -ForegroundColor White
     Br
-    $rec = if     ($VRAM_MB -ge 16000) { '1' }
-           elseif ($VRAM_MB -ge 12000) { '3' }
-           elseif ($VRAM_MB -ge 10000) { '5' }
-           elseif ($VRAM_MB -ge 6000)  { '9' }
-           else                         { '9' }
-    foreach ($m in $MODELS) {
-        $tag = ''
-        if ($m.N.ToString() -eq $rec) { $tag = '  <- RECOMMENDED' }
-        Write-Host ("  [{0}] {1,-50}  (~{2})  {3}" -f $m.N, $m.Name, $m.Size, $tag) -ForegroundColor Cyan
+
+    # 1) VRAM tier - default to what we detected, let the user confirm/override.
+    $detected = Get-VramTier $VRAM_MB
+    $defNum   = @{ small = '1'; mid = '2'; large = '3' }[$detected]
+    $tierByNum = @{ '1' = 'small'; '2' = 'mid'; '3' = 'large' }
+    Write-Host "  Detected VRAM tier: $($TierLabel[$detected])" -ForegroundColor Green
+    Write-Host "  Pick the tier to install models for (curated to fit its VRAM):"
+    Write-Host ("    [1] 6-8 GB   small, fast{0}"          -f $(if ($detected -eq 'small') { '        <- detected' } else { '' }))
+    Write-Host ("    [2] 16 GB    balanced{0}"             -f $(if ($detected -eq 'mid')   { '           <- detected' } else { '' }))
+    Write-Host ("    [3] 24 GB+   large, best quality{0}"  -f $(if ($detected -eq 'large') { ' <- detected' } else { '' }))
+    Br
+    $tnum = Read-Host "Tier [$defNum]"
+    if (-not $tnum) { $tnum = $defNum }
+    $tier = $tierByNum["$($tnum.Trim())"]
+    if (-not $tier) { Warn "Unknown tier '$tnum' - using detected ($($TierLabel[$detected]))"; $tier = $detected }
+
+    # 2) Models for that tier (first entry is the recommended default).
+    $tierModels = @($MODELS | Where-Object { $_.Tier -eq $tier })
+    Br
+    Write-Host "==========================================================" -ForegroundColor White
+    Write-Host "  $($TierLabel[$tier]) MODELS" -ForegroundColor White
+    Write-Host "==========================================================" -ForegroundColor White
+    for ($i = 0; $i -lt $tierModels.Count; $i++) {
+        $m = $tierModels[$i]
+        $tag = if ($i -eq 0) { '  <- RECOMMENDED' } else { '' }
+        Write-Host ("  [{0}] {1,-46} (~{2}){3}" -f ($i + 1), $m.Name, $m.Size, $tag) -ForegroundColor Cyan
         Write-Host ("        {0}" -f $m.Note)
     }
     Write-Host "  [C] Custom - HuggingFace repo + filename" -ForegroundColor Yellow
     Br
     Write-Host "==========================================================" -ForegroundColor White
     Br
-    $script:MODEL_CHOICE = Read-Host "Choice(s) [1-9 or C, comma-sep, default=$rec]"
-    if (-not $MODEL_CHOICE) { $script:MODEL_CHOICE = $rec }
+    $raw = Read-Host "Choice(s) [1-$($tierModels.Count) or C, comma-sep, default=1]"
+    if (-not $raw) { $raw = '1' }
+
+    # Map tier indices -> catalogue aliases (Download/Spec use aliases).
+    $picked = @()
+    foreach ($tok in ($raw -split ',')) {
+        $t = $tok.Trim()
+        if ($t -ieq 'C') { $picked += 'C'; continue }
+        if ($t -match '^\d+$' -and [int]$t -ge 1 -and [int]$t -le $tierModels.Count) {
+            $picked += $tierModels[[int]$t - 1].Alias
+        } else { Warn "Ignoring invalid choice '$t'" }
+    }
+    if ($picked.Count -eq 0) { $picked = @($tierModels[0].Alias) }
+    $script:MODEL_CHOICE = ($picked -join ',')
 }
 
-# Speculative-decode draft model lookup. Qwen3 family pairs with Qwen3-0.6B.
+# Speculative-decode draft model lookup, keyed by catalogue alias.
 function Get-DraftPair {
-    param($n)
-    switch ($n) {
-        '5' { return @{ Repo='bartowski/Qwen_Qwen3-0.6B-GGUF'; File='Qwen_Qwen3-0.6B-Q8_0.gguf' } }   # Qwen3-14B + Qwen3-0.6B draft
+    param($alias)
+    switch -Regex ($alias) {
+        '^qwen3\.6'      { return @{ Repo='bartowski/Qwen_Qwen3-0.6B-GGUF'; File='Qwen_Qwen3-0.6B-Q8_0.gguf' } }
+        '^qwen3-(14b|32b)' { return @{ Repo='bartowski/Qwen_Qwen3-0.6B-GGUF'; File='Qwen_Qwen3-0.6B-Q8_0.gguf' } }
+        '^qwen2\.5-coder'  { return @{ Repo='bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF'; File='Qwen2.5-Coder-0.5B-Instruct-Q8_0.gguf' } }
         default { return $null }   # other families have no matched/verified draft pair
     }
 }
@@ -635,7 +735,7 @@ function Download-Models {
             if ($cr -and $cf) { [void](Download-Model -repo $cr -file $cf -size '?') }
             continue
         }
-        $m = $MODELS | Where-Object { $_.N.ToString() -eq $c } | Select-Object -First 1
+        $m = $MODELS | Where-Object { $_.Alias -ieq $c } | Select-Object -First 1
         if (-not $m) { Warn "Invalid choice '$c'"; continue }
         $target = Join-Path $ModelsDir $m.File
         if (Test-Path $target) { Log "Exists: $($m.File)"; continue }
@@ -1046,6 +1146,26 @@ try {
 }
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Add this folder to the user PATH so `winc` works from any terminal.
+# Idempotent: skips if already present. Uses .NET (no setx 1024-char truncation)
+# and also updates the current session so `winc` works immediately here.
+# -----------------------------------------------------------------------------
+function Add-WincToPath {
+    $dir = $InstallDir
+    $cur = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    if (-not $cur) { $cur = '' }
+    if (($cur -split ';') -contains $dir) {
+        Log "PATH already includes $dir"
+    } else {
+        $new = if ($cur.TrimEnd(';')) { $cur.TrimEnd(';') + ';' + $dir } else { $dir }
+        [Environment]::SetEnvironmentVariable('PATH', $new, 'User')
+        Log "Added to user PATH: $dir"
+    }
+    if (($env:PATH -split ';') -notcontains $dir) { $env:PATH = "$env:PATH;$dir" }
+    Warn "Open a NEW terminal for 'winc' to be available globally (current shells keep the old PATH)."
+}
+
 function Print-Summary {
     $sm = if ($SPEC_ENABLED) { 'ENABLED' } else { 'disabled' }
     Br
@@ -1059,6 +1179,7 @@ function Print-Summary {
     Write-Host "  Launcher:    $Launcher"
     Br
     Write-Host "  To start:    powershell -ExecutionPolicy Bypass -File `"$Launcher`"" -ForegroundColor Cyan
+    Write-Host "  Or (new terminal):  winc ls   |   winc -s claude <model>" -ForegroundColor Cyan
     Br
     Write-Host "  OPTIMIZATIONS:" -ForegroundColor Yellow
     Write-Host "  - ATTRIBUTION_HEADER=0 - fixes 90% KV cache penalty"
@@ -1088,4 +1209,5 @@ Step "Model selection";             Show-ModelMenu
 Step "Downloading models";          Download-Models
 Step "Speculative decoding";        Ask-Speculative
 Step "Writing launcher";            Write-Launcher
+Step "Adding winc to PATH";         Add-WincToPath
 Print-Summary
