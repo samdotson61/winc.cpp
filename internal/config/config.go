@@ -6,6 +6,7 @@ package config
 
 import (
 	"os"
+	"regexp"
 
 	"github.com/pelletier/go-toml/v2"
 	"winc/internal/paths"
@@ -170,6 +171,24 @@ func Load() (*Config, error) {
 	}
 	cfg.backfill()
 	return &cfg, nil
+}
+
+var defaultModelLine = regexp.MustCompile(`(?m)^(\s*default_model\s*=\s*)"[^"]*"`)
+
+// UpdateDefaultModel rewrites the default_model value in winc.toml in place,
+// preserving the rest of the file (and the user's other edits). No-op if the
+// line isn't present.
+func UpdateDefaultModel(alias string) error {
+	p := paths.ConfigPath()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return err
+	}
+	if !defaultModelLine.Match(data) {
+		return nil
+	}
+	out := defaultModelLine.ReplaceAll(data, []byte(`${1}"`+alias+`"`))
+	return os.WriteFile(p, out, 0o644)
 }
 
 // EnsureExists writes the default template if winc.toml is missing. Returns true

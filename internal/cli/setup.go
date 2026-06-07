@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"winc/internal/catalog"
+	"winc/internal/config"
 	"winc/internal/download"
 	"winc/internal/engine"
 	"winc/internal/paths"
@@ -49,6 +50,9 @@ func cmdSetup() int {
 				ui.Warn("model download failed: %v", err)
 			} else {
 				ui.Good("downloaded %s", def.Alias)
+				if err := config.UpdateDefaultModel(def.Alias); err == nil {
+					ui.Say("  set %s as default model in winc.toml", def.Alias)
+				}
 			}
 		}
 	} else {

@@ -36,6 +36,21 @@ func TestVramTier(t *testing.T) {
 	}
 }
 
+func TestMoEDefaultsForMidAndLarge(t *testing.T) {
+	c := Load(nil)
+	// Speed-first: tiers that can fit a strong MoE coder must default to it.
+	for tier, want := range map[string]string{"mid": "qwen3.6-35b", "large": "qwen3.6-35b-q4"} {
+		ms := c.ByTier(tier)
+		got := "(none)"
+		if len(ms) > 0 {
+			got = ms[0].Alias
+		}
+		if got != want {
+			t.Errorf("tier %q default = %q, want MoE %q", tier, got, want)
+		}
+	}
+}
+
 func TestCustomModelMerge(t *testing.T) {
 	c := Load([]config.CustomModel{{Alias: "my-test-model", Repo: "u/r", File: "f.gguf", Tier: "nano"}})
 	if c.Find("my-test-model") == nil {

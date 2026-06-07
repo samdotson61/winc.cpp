@@ -27,6 +27,24 @@ func TestLoadWritesDefault(t *testing.T) {
 	}
 }
 
+func TestUpdateDefaultModel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	if _, err := Load(); err != nil { // writes the default winc.toml
+		t.Fatal(err)
+	}
+	if err := UpdateDefaultModel("qwen3.6-35b"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.General.DefaultModel != "qwen3.6-35b" {
+		t.Fatalf("default_model = %q, want qwen3.6-35b", cfg.General.DefaultModel)
+	}
+}
+
 func TestBackfill(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WINC_HOME", dir)
