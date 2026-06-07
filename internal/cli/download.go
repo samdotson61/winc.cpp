@@ -8,6 +8,7 @@ import (
 
 	"winc/internal/catalog"
 	"winc/internal/download"
+	"winc/internal/engine"
 	"winc/internal/ui"
 )
 
@@ -43,21 +44,30 @@ func cmdDownload(args []string) int {
 		repo, file = m.Repo, m.File
 	}
 
-	target := filepath.Join(md, filepath.Base(file))
+	localName := filepath.Base(file)
+	if m != nil {
+		localName = m.LocalFile()
+	}
+	target := filepath.Join(md, localName)
 	if fileExists(target) {
-		ui.Good("already downloaded: %s", filepath.Base(file))
+		ui.Good("already downloaded: %s", localName)
 		offerDraft(cfg, cat, m, autoYes)
+		mtpTip(cat, m)
 		return 0
 	}
-	ui.Good("Downloading %s", filepath.Base(file))
+	ui.Good("Downloading %s", localName)
 	ui.Say("  from %s", repo)
-	if _, err := download.HFDownload(repo, file, md, cfg.HuggingFace.Token); err != nil {
+	if _, err := download.HFDownloadAs(repo, file, md, localName, cfg.HuggingFace.Token); err != nil {
 		ui.Err("download failed: %v", err)
 		ui.Say("  for gated models set HF_TOKEN, or [huggingface].token in winc.toml")
 		return 1
 	}
-	ui.Good("done: %s", filepath.Base(file))
+	ui.Good("done: %s", localName)
+	if engine.IsMTPFile(localName) {
+		ui.Good("MTP variant - winc turns on --spec-type draft-mtp automatically at launch")
+	}
 	offerDraft(cfg, cat, m, autoYes)
+	mtpTip(cat, m)
 	return 0
 }
 

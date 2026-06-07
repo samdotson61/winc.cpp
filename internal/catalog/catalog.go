@@ -20,9 +20,22 @@ type Model struct {
 	Name  string `json:"name"`
 	Size  string `json:"size"`
 	Repo  string `json:"repo"`
-	File  string `json:"file"`
-	Draft string `json:"draft"` // alias of a same-tokenizer draft model (speculative decoding); "" = none
+	File  string `json:"file"`           // filename in the HF repo to download
+	Save  string `json:"save,omitempty"` // local filename to save as (default: File); used to disambiguate MTP variants
+	Draft string `json:"draft,omitempty"` // alias of a same-tokenizer draft model (speculative decoding); "" = none
+	Mtp   string `json:"mtp,omitempty"`   // alias of this model's Multi-Token-Prediction variant; "" = none
 	Note  string `json:"note"`
+}
+
+// LocalFile is the on-disk filename winc saves/looks for (Save if set, else File).
+func (m *Model) LocalFile() string {
+	if m == nil {
+		return ""
+	}
+	if m.Save != "" {
+		return m.Save
+	}
+	return m.File
 }
 
 type Catalog struct {
@@ -30,8 +43,9 @@ type Catalog struct {
 	Models []Model           `json:"models"`
 }
 
-// TierOrder is smallest -> largest, used for display and selection.
-var TierOrder = []string{"nano", "small", "mid", "large", "xl", "custom"}
+// TierOrder is smallest -> largest, used for display and selection. "mtp" holds
+// faster Multi-Token-Prediction model variants (shown last, never auto-recommended).
+var TierOrder = []string{"nano", "small", "mid", "large", "xl", "mtp", "custom"}
 
 // Load parses the embedded catalogue and appends user custom models.
 func Load(custom []config.CustomModel) *Catalog {

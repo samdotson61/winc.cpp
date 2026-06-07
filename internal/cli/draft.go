@@ -26,11 +26,11 @@ func autoPairDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) 
 	if draft == nil {
 		return
 	}
-	if !fileExists(filepath.Join(modelsDir(cfg), draft.File)) {
+	if !fileExists(filepath.Join(modelsDir(cfg), draft.LocalFile())) {
 		ui.Dim("tip: 'winc -d %s' enables speculative decoding (faster) for %s", draft.Alias, m.Alias)
 		return
 	}
-	cfg.Performance.DraftModel = draft.File
+	cfg.Performance.DraftModel = draft.LocalFile()
 	ui.Info("speculative decoding on: drafting %s with %s", m.Alias, draft.Alias)
 }
 
@@ -44,7 +44,7 @@ func offerDraft(cfg *config.Config, cat *catalog.Catalog, m *catalog.Model, auto
 		return
 	}
 	md := modelsDir(cfg)
-	if fileExists(filepath.Join(md, draft.File)) {
+	if fileExists(filepath.Join(md, draft.LocalFile())) {
 		ui.Info("speculative decoding ready: %s will draft with %s", m.Alias, draft.Alias)
 		return
 	}

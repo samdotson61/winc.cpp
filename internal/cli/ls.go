@@ -49,7 +49,7 @@ func cmdLs() int {
 		ui.Say("  -- %s  (%s) --", tier, cat.Tiers[tier])
 		for _, m := range models {
 			mark := ""
-			if fileExists(filepath.Join(md, m.File)) {
+			if fileExists(filepath.Join(md, m.LocalFile())) {
 				mark = "  [installed]"
 			}
 			ui.Say("  %-20s %9s  %s%s", m.Alias, m.Size, m.Name, mark)

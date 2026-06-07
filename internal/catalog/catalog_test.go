@@ -76,6 +76,40 @@ func TestDraftFor(t *testing.T) {
 	}
 }
 
+func TestMTPVariants(t *testing.T) {
+	c := Load(nil)
+	// Standard Qwen3.6 models point at their MTP variant.
+	for std, want := range map[string]string{"qwen3.6-35b": "qwen3.6-35b-mtp", "qwen3.6-27b": "qwen3.6-27b-mtp"} {
+		m := c.Find(std)
+		if m == nil || m.Mtp != want {
+			t.Errorf("%s.Mtp = %q, want %q", std, mtpOf(m), want)
+		}
+		v := c.Find(want)
+		if v == nil {
+			t.Fatalf("MTP variant %q missing from catalogue", want)
+		}
+		// The MTP variant saves under a distinct, MTP-tagged local name (no collision
+		// with the standard model, and filename-detectable at launch).
+		if v.Save == "" || v.LocalFile() != v.Save {
+			t.Errorf("%s should have a distinct save name, got %q", want, v.Save)
+		}
+		if v.LocalFile() == m.LocalFile() {
+			t.Errorf("%s local name collides with standard %s (%s)", want, std, v.LocalFile())
+		}
+	}
+	// Models without a save name fall back to File.
+	if m := c.Find("qwen3.6-27b"); m == nil || m.LocalFile() != m.File {
+		t.Errorf("standard model LocalFile should equal File")
+	}
+}
+
+func mtpOf(m *Model) string {
+	if m == nil {
+		return "(nil)"
+	}
+	return m.Mtp
+}
+
 func TestCustomModelMerge(t *testing.T) {
 	c := Load([]config.CustomModel{{Alias: "my-test-model", Repo: "u/r", File: "f.gguf", Tier: "nano"}})
 	if c.Find("my-test-model") == nil {

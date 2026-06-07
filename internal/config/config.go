@@ -58,6 +58,8 @@ type Performance struct {
 	MaxOutputTokens string   `toml:"max_output_tokens"`  // "auto" (~half context) or integer
 	CpuMoe          string   `toml:"cpu_moe"`            // auto | on | off | <layer count>
 	DraftModel      string   `toml:"draft_model"`        // filename of a small draft model (speculative decoding)
+	Mtp             string   `toml:"mtp"`                // auto | off  (Multi-Token Prediction for *-MTP models)
+	MtpDraftMax     int      `toml:"mtp_draft_max"`      // --spec-draft-n-max for MTP (default 2)
 	ExtraServerArgs []string `toml:"extra_server_args"`  // advanced: extra llama-server flags
 }
 
@@ -131,6 +133,12 @@ cpu_moe = "auto"             # "auto" (offload only if the model won't fit VRAM)
 # Speculative decoding: a small same-family draft model predicts tokens the main
 # model verifies in a batch (faster on dense models). Filename of a GGUF in models/.
 draft_model = ""             # e.g. "Qwen2.5-Coder-0.5B-Instruct-Q8_0.gguf"; blank = off
+
+# Multi-Token Prediction (MTP): built-in speculative decoding baked into *-MTP model
+# variants (e.g. qwen3.6-27b-mtp). Auto-enabled when an MTP GGUF is loaded AND the
+# engine supports it; harmlessly skipped otherwise. ~1.4-2.2x on dense, ~1.2x on MoE.
+mtp = "auto"                 # "auto" (on for MTP models) | "off"
+mtp_draft_max = 2            # tokens drafted per step (--spec-draft-n-max); 2 is a good default
 
 # Advanced escape hatch: extra llama-server flags appended verbatim.
 extra_server_args = []       # e.g. ["--mlock"] or ["--prio", "2"] or ["--n-cpu-moe", "16"]
@@ -264,6 +272,12 @@ func (c *Config) backfill() {
 	}
 	if c.Performance.CpuMoe == "" {
 		c.Performance.CpuMoe = d.Performance.CpuMoe
+	}
+	if c.Performance.Mtp == "" {
+		c.Performance.Mtp = d.Performance.Mtp
+	}
+	if c.Performance.MtpDraftMax == 0 {
+		c.Performance.MtpDraftMax = d.Performance.MtpDraftMax
 	}
 	if c.Multi.TTLSeconds == 0 {
 		c.Multi.TTLSeconds = d.Multi.TTLSeconds

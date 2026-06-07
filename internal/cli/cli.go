@@ -87,7 +87,7 @@ func execInherit(bin string, args ...string) *exec.Cmd {
 func downloadedPath(cfg *config.Config, cat *catalog.Catalog, query string) (path, alias string) {
 	md := modelsDir(cfg)
 	if m := cat.Find(query); m != nil {
-		p := filepath.Join(md, m.File)
+		p := filepath.Join(md, m.LocalFile())
 		if fileExists(p) {
 			return p, m.Alias
 		}

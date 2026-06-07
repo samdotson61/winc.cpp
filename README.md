@@ -185,6 +185,7 @@ end of this section only exist if you want to override a decision.
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
 | **Auto-paired draft (dense)** | Downloading a **dense** catalogue model offers its tiny same-tokenizer draft; once present, `winc` enables `--spec-draft-model` automatically at launch. MoE models are skipped (drafts backfire there) | The draft proposes tokens the big model verifies in a batch — up to ~2× on predictable code |
+| **MTP (Qwen3.6 variants)** | The `*-mtp` model variants carry built-in multi-token-prediction heads; `winc` auto-adds `--spec-type draft-mtp` when one is loaded (and the engine supports it — probed, never breaks an old engine) | ~1.4–2.2× on the dense 27B, ~1.15–1.25× on the 35B MoE — the **only** speculative win for that MoE |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
 ### MoE expert offload, in one line
@@ -222,6 +223,10 @@ cpu_moe = "auto"      # "auto" (offload only if it won't fit VRAM) | "on" | "off
 # this only to force a specific draft GGUF (must live in models/) or override the pick.
 draft_model = ""      # "" = auto-pair for dense models; or a filename to force one
 
+# Multi-Token Prediction: auto-on for *-mtp model variants (built-in draft heads).
+mtp = "auto"          # "auto" (on for MTP models, engine permitting) | "off"
+mtp_draft_max = 2     # tokens drafted per step (--spec-draft-n-max)
+
 # Escape hatch: any extra llama-server flags, appended verbatim.
 extra_server_args = []   # e.g. ["--mlock"] (lock model in RAM) or ["--n-cpu-moe", "16"]
 ```
@@ -233,6 +238,15 @@ Llama-3.1-8B). Once the draft is present, `winc` turns on `--spec-draft-model`
 automatically at launch — up to ~2× on predictable code. **MoE models are never paired**
 (only ~3B is active, so a draft just adds overhead). `draft_model` forces a specific
 draft or overrides the auto-pick.
+
+**MTP for Qwen3.6 (`*-mtp` variants).** Qwen3.6 changed tokenizers, so a separate draft
+model is the *wrong* tool — and classic drafts actually regress it. The right lever is
+**Multi-Token Prediction**: prediction heads baked into the model, no second model. Grab
+the MTP build — `winc -d qwen3.6-27b-mtp` (dense, ~1.4–2.2×) or `winc -d qwen3.6-35b-mtp`
+(MoE, ~1.15–1.25× — the only speculative speedup that helps a MoE) — and `winc` adds
+`--spec-type draft-mtp` automatically when it loads, **after probing that your engine
+supports the flag** (older engines just run without it). `winc detect` shows the MTP
+variant for your recommended model; `mtp = "off"` disables it.
 
 **More context at ~the same speed:** set `cache_type = "q4_0"` to halve KV-cache bytes per
 token — `winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM

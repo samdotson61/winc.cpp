@@ -182,6 +182,44 @@ func TestServerArgsCpuMoe(t *testing.T) {
 	}
 }
 
+func TestIsMTPFile(t *testing.T) {
+	for _, f := range []string{"Qwen3.6-27B-MTP-Q3_K_M.gguf", "Qwen3.6-35B-A3B-MTP-UD-IQ3_S.gguf", "some-mtp-model.gguf"} {
+		if !IsMTPFile(f) {
+			t.Errorf("%s should be detected as MTP", f)
+		}
+	}
+	for _, f := range []string{"Qwen3.6-27B-Q3_K_M.gguf", "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"} {
+		if IsMTPFile(f) {
+			t.Errorf("%s should NOT be detected as MTP", f)
+		}
+	}
+}
+
+func TestMTPArgs(t *testing.T) {
+	// serverBin "" skips the support probe so this stays a pure config/filename test.
+	cfg := config.Defaults() // mtp=auto, mtp_draft_max=2
+	got := strings.Join(MTPArgs(&cfg, "Qwen3.6-27B-MTP-Q3_K_M.gguf", ""), " ")
+	if got != "--spec-type draft-mtp --spec-draft-n-max 2" {
+		t.Errorf("MTP file should yield draft-mtp flags, got %q", got)
+	}
+	// Non-MTP model -> no flags.
+	if a := MTPArgs(&cfg, "Qwen3.6-27B-Q3_K_M.gguf", ""); a != nil {
+		t.Errorf("non-MTP model should yield no MTP flags, got %v", a)
+	}
+	// Disabled via config.
+	cfg.Performance.Mtp = "off"
+	if a := MTPArgs(&cfg, "Qwen3.6-27B-MTP-Q3_K_M.gguf", ""); a != nil {
+		t.Errorf("mtp=off should yield no flags, got %v", a)
+	}
+	// Custom draft-max.
+	cfg = config.Defaults()
+	cfg.Performance.MtpDraftMax = 3
+	got = strings.Join(MTPArgs(&cfg, "x-MTP.gguf", ""), " ")
+	if got != "--spec-type draft-mtp --spec-draft-n-max 3" {
+		t.Errorf("custom mtp_draft_max not honored, got %q", got)
+	}
+}
+
 func TestServerArgsExtra(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Performance.ExtraServerArgs = []string{"--mlock", "--prio", "2"}

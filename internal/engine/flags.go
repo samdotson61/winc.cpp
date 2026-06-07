@@ -2,10 +2,13 @@ package engine
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"winc/internal/config"
 	"winc/internal/platform"
@@ -46,6 +49,70 @@ func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, m
 		return "all"
 	}
 	return ""
+}
+
+// isMTPFile reports whether a GGUF is a Multi-Token-Prediction variant (winc saves
+// those with "-MTP-" in the local name; upstream MTP repos use "mtp" too).
+func isMTPFile(path string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(path)), "mtp")
+}
+
+// IsMTPFile reports whether a GGUF filename looks like an MTP (Multi-Token Prediction) variant.
+func IsMTPFile(path string) bool { return isMTPFile(path) }
+
+var (
+	mtpProbeMu sync.Mutex
+	mtpProbe   = map[string]bool{}
+)
+
+// serverSupportsMTP reports whether a llama-server binary understands the MTP flag.
+// Result is cached per binary path (--help is cheap but we may ask several times).
+func serverSupportsMTP(bin string) bool {
+	mtpProbeMu.Lock()
+	defer mtpProbeMu.Unlock()
+	if v, ok := mtpProbe[bin]; ok {
+		return v
+	}
+	cmd := exec.Command(bin, "--help")
+	cmd.Env = mtpProbeEnv(bin)
+	out, _ := cmd.CombinedOutput()
+	ok := strings.Contains(string(out), "draft-mtp")
+	mtpProbe[bin] = ok
+	return ok
+}
+
+// mtpProbeEnv makes co-located shared libraries loadable for the --help probe.
+func mtpProbeEnv(bin string) []string {
+	dir := filepath.Dir(bin)
+	env := os.Environ()
+	switch runtime.GOOS {
+	case "linux":
+		env = append(env, "LD_LIBRARY_PATH="+dir+string(os.PathListSeparator)+os.Getenv("LD_LIBRARY_PATH"))
+	case "darwin":
+		env = append(env, "DYLD_LIBRARY_PATH="+dir+string(os.PathListSeparator)+os.Getenv("DYLD_LIBRARY_PATH"))
+	}
+	return env
+}
+
+// MTPArgs returns the Multi-Token-Prediction flags for an MTP model, or nil when the
+// model isn't MTP, config disables it, or the engine is too old to support it (pass
+// serverBin to probe; "" skips the probe). Never breaks a launch -- a model that fits
+// MTP but lacks engine support simply runs without it.
+func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
+	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Mtp), "off") {
+		return nil
+	}
+	if !isMTPFile(modelPath) {
+		return nil
+	}
+	if serverBin != "" && !serverSupportsMTP(serverBin) {
+		return nil
+	}
+	n := cfg.Performance.MtpDraftMax
+	if n <= 0 {
+		n = 2
+	}
+	return []string{"--spec-type", "draft-mtp", "--spec-draft-n-max", strconv.Itoa(n)}
 }
 
 // PlanForModel reports the context window and MoE-offload decision winc would use

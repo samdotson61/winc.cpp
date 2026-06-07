@@ -34,6 +34,7 @@ func GenerateSwapYAML(cfg *config.Config, hw platform.Hardware, serverBin string
 	for _, k := range keys {
 		ctx := ResolveContext(cfg, hw, FileMB(models[k]))
 		args := ServerArgs(cfg, hw, models[k], 0, "${PORT}", ctx)
+		args = append(args, MTPArgs(cfg, models[k], serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
 		cmd := quoteArg(serverBin)
 		for _, a := range args {
 			cmd += " " + quoteArg(a)

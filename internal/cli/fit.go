@@ -16,6 +16,7 @@ func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serve
 	target := engine.ResolveContext(cfg, hw, engine.FileMB(modelPath))
 	for _, ctx := range engine.ContextLadder(target) {
 		args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
+		args = append(args, engine.MTPArgs(cfg, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
 		proc, err := server.Start(serverBin, args, logPath)
 		if err != nil {
 			continue

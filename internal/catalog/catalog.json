@@ -5,6 +5,7 @@
     "mid":   "16 GB VRAM / 16-32 GB unified",
     "large": "24 GB+ VRAM / 36 GB+ unified",
     "xl":    "64 GB+ unified (Apple)",
+    "mtp":   "faster Multi-Token-Prediction variants (auto --spec-type draft-mtp)",
     "draft": "tiny same-tokenizer draft models for speculative decoding"
   },
   "models": [
@@ -21,9 +22,9 @@
     { "tier": "small", "alias": "llama3.1-8b", "name": "Llama-3.1-8B-Instruct Q4_K_M", "size": "4.9 GB", "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "draft": "llama3.2-1b", "note": "Meta 8B. Well-rounded, 128K ctx" },
     { "tier": "small", "alias": "gemma4-e4b", "name": "Gemma-4-E4B-IT Q4_K_M", "size": "5.0 GB", "repo": "unsloth/gemma-4-E4B-it-GGUF", "file": "gemma-4-E4B-it-Q4_K_M.gguf", "note": "Effective-4B (selective activation) = fast. Multimodal, edge-tuned" },
 
-    { "tier": "mid", "alias": "qwen3.6-35b", "name": "Qwen3.6-35B-A3B UD-IQ3_S (MoE)", "size": "13.7 GB", "repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "file": "Qwen3.6-35B-A3B-UD-IQ3_S.gguf", "note": "RECOMMENDED. MoE, 3B active = ~3-5x faster than dense, near-top coding" },
+    { "tier": "mid", "alias": "qwen3.6-35b", "name": "Qwen3.6-35B-A3B UD-IQ3_S (MoE)", "size": "13.7 GB", "repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "file": "Qwen3.6-35B-A3B-UD-IQ3_S.gguf", "mtp": "qwen3.6-35b-mtp", "note": "RECOMMENDED. MoE, 3B active = ~3-5x faster than dense, near-top coding" },
     { "tier": "mid", "alias": "gpt-oss-20b", "name": "GPT-OSS-20B (MXFP4, MoE)", "size": "12.1 GB", "repo": "ggml-org/gpt-oss-20b-GGUF", "file": "gpt-oss-20b-mxfp4.gguf", "note": "OpenAI open-weights MoE. Fast all-round daily driver" },
-    { "tier": "mid", "alias": "qwen3.6-27b", "name": "Qwen3.6-27B Q3_K_M (dense)", "size": "13.6 GB", "repo": "unsloth/Qwen3.6-27B-GGUF", "file": "Qwen3.6-27B-Q3_K_M.gguf", "note": "Top dense coder, highest quality but slower than the 35B MoE" },
+    { "tier": "mid", "alias": "qwen3.6-27b", "name": "Qwen3.6-27B Q3_K_M (dense)", "size": "13.6 GB", "repo": "unsloth/Qwen3.6-27B-GGUF", "file": "Qwen3.6-27B-Q3_K_M.gguf", "mtp": "qwen3.6-27b-mtp", "note": "Top dense coder, highest quality but slower than the 35B MoE" },
     { "tier": "mid", "alias": "devstral", "name": "Devstral-Small-2507 Q4_K_M (dense)", "size": "14.3 GB", "repo": "bartowski/mistralai_Devstral-Small-2507-GGUF", "file": "mistralai_Devstral-Small-2507-Q4_K_M.gguf", "note": "Mistral 24B agent/coding. Strong tool-calling" },
     { "tier": "mid", "alias": "qwen3-14b", "name": "Qwen3-14B Q5_K_M (dense)", "size": "10.5 GB", "repo": "bartowski/Qwen_Qwen3-14B-GGUF", "file": "Qwen_Qwen3-14B-Q5_K_M.gguf", "draft": "qwen3-0.6b-draft", "note": "Snappy general/reasoning + tools" },
     { "tier": "mid", "alias": "mistral-small", "name": "Mistral-Small-3.2-24B-Instruct Q4_K_M (dense)", "size": "14.3 GB", "repo": "bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF", "file": "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf", "note": "Strong general-purpose + tool use" },
@@ -39,6 +40,9 @@
 
     { "tier": "draft", "alias": "qwen2.5-coder-0.5b-draft", "name": "Qwen2.5-Coder-0.5B-Instruct Q4_K_M (draft)", "size": "0.4 GB", "repo": "bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF", "file": "Qwen2.5-Coder-0.5B-Instruct-Q4_K_M.gguf", "note": "Speculative-decoding draft for Qwen2.5-Coder dense targets (same tokenizer)" },
     { "tier": "draft", "alias": "qwen2.5-0.5b-draft", "name": "Qwen2.5-0.5B-Instruct Q4_K_M (draft)", "size": "0.4 GB", "repo": "bartowski/Qwen2.5-0.5B-Instruct-GGUF", "file": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", "note": "Speculative-decoding draft for Qwen2.5 dense targets (same tokenizer)" },
-    { "tier": "draft", "alias": "qwen3-0.6b-draft", "name": "Qwen3-0.6B Q4_K_M (draft)", "size": "0.5 GB", "repo": "unsloth/Qwen3-0.6B-GGUF", "file": "Qwen3-0.6B-Q4_K_M.gguf", "note": "Speculative-decoding draft for Qwen3 dense targets (same tokenizer)" }
+    { "tier": "draft", "alias": "qwen3-0.6b-draft", "name": "Qwen3-0.6B Q4_K_M (draft)", "size": "0.5 GB", "repo": "unsloth/Qwen3-0.6B-GGUF", "file": "Qwen3-0.6B-Q4_K_M.gguf", "note": "Speculative-decoding draft for Qwen3 dense targets (same tokenizer)" },
+
+    { "tier": "mtp", "alias": "qwen3.6-35b-mtp", "name": "Qwen3.6-35B-A3B UD-IQ3_S (MoE, MTP)", "size": "14.0 GB", "repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", "file": "Qwen3.6-35B-A3B-UD-IQ3_S.gguf", "save": "Qwen3.6-35B-A3B-MTP-UD-IQ3_S.gguf", "note": "Faster 35B MoE: built-in MTP heads (~1.15-1.25x). Runs like the standard model, plus auto --spec-type draft-mtp" },
+    { "tier": "mtp", "alias": "qwen3.6-27b-mtp", "name": "Qwen3.6-27B Q3_K_M (dense, MTP)", "size": "14.0 GB", "repo": "unsloth/Qwen3.6-27B-MTP-GGUF", "file": "Qwen3.6-27B-Q3_K_M.gguf", "save": "Qwen3.6-27B-MTP-Q3_K_M.gguf", "note": "Faster dense 27B: built-in MTP heads (~1.4-2.2x). Auto --spec-type draft-mtp at launch" }
   ]
 }

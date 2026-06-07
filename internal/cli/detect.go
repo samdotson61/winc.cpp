@@ -76,6 +76,11 @@ func cmdDetect() int {
 		case engine.IsMoEFile(def.File):
 			ui.Say("  MoE offload   : no (model fits VRAM; runs fully on GPU)")
 		}
+		if def.Mtp != "" {
+			if v := cat.Find(def.Mtp); v != nil {
+				ui.Say("  Faster variant: %s (MTP; winc -d %s)", v.Alias, v.Alias)
+			}
+		}
 	}
 	ui.Say("")
 	return 0
