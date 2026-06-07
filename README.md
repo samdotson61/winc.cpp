@@ -62,8 +62,8 @@ winc -s claude qwen2.5-coder-7b    # launch Claude Code on it (sandboxed)
 | `winc -s ... --multi` | Route through llama-swap (multiple models, hot-swapped) |
 | `winc -s ... --reasoning <mode>` | Override reasoning mode for this launch |
 | `winc serve [--multi]` | Run the server(s)/router only (point your own client at it) |
-| `winc -c` / `winc check` | Show latest engine versions |
-| `winc -u` / `winc update` | Refresh engine binaries (and `git pull` if a clone) |
+| `winc -c` / `winc check` | Show latest engine versions + catalog status |
+| `winc -u` / `winc update` | Refresh engine binaries **and the model catalog** (and `git pull` if a clone) |
 | `winc -n` / `winc uninstall [-y]` | Remove installed components + PATH entry |
 | `winc version` | Print version |
 
@@ -132,6 +132,11 @@ budget — those run with **zero proxy hop** (direct to llama-server).
 Add your own with a `[[custom_models]]` block in `winc.toml`. Tiers that can fit a
 strong MoE coder default to it — a 35B with ~3B active is ~3-5x faster than a dense
 27B at near-equal quality.
+
+`winc update` refreshes the catalogue itself (not just the engine), so **prebuilt-binary
+users get newly added models without re-downloading the binary** — the latest catalogue is
+fetched and cached to `catalog.json` next to `winc`, which transparently overrides the
+built-in one (delete it to revert). The embedded catalogue is the offline fallback.
 
 ### Low-end picks (`nano` + `small`), with rough benchmarks
 

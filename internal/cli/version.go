@@ -3,7 +3,7 @@ package cli
 import "winc/internal/ui"
 
 // Version is the winc release version.
-const Version = "1.1.9"
+const Version = "1.1.10"
 
 func cmdVersion() int {
 	ui.Say("winc %s", Version)

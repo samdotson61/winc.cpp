@@ -1,10 +1,55 @@
 package catalog
 
 import (
+	"os"
 	"testing"
 
 	"winc/internal/config"
+	"winc/internal/paths"
 )
+
+func TestParseCatalog(t *testing.T) {
+	if _, ok := parseCatalog([]byte("not json")); ok {
+		t.Error("garbage should not parse")
+	}
+	if _, ok := parseCatalog([]byte(`{"models":[]}`)); ok {
+		t.Error("too-small catalog should be rejected")
+	}
+	if _, ok := parseCatalog(catalogJSON); !ok {
+		t.Error("embedded catalog should parse")
+	}
+}
+
+func TestOnDiskCatalogOverride(t *testing.T) {
+	t.Setenv("WINC_HOME", t.TempDir())
+	// No override yet -> embedded loads.
+	if Load(nil).Find("qwen2.5-coder-7b") == nil {
+		t.Fatal("embedded catalog should load when no override present")
+	}
+	override := `{"tiers":{"nano":"x"},"models":[
+	  {"tier":"nano","alias":"sentinel-model","name":"S","size":"1 GB","repo":"u/r","file":"s.gguf"},
+	  {"tier":"nano","alias":"m2","name":"2","size":"1 GB","repo":"u/r","file":"2.gguf"},
+	  {"tier":"nano","alias":"m3","name":"3","size":"1 GB","repo":"u/r","file":"3.gguf"},
+	  {"tier":"nano","alias":"m4","name":"4","size":"1 GB","repo":"u/r","file":"4.gguf"},
+	  {"tier":"nano","alias":"m5","name":"5","size":"1 GB","repo":"u/r","file":"5.gguf"}]}`
+	if err := os.WriteFile(paths.CatalogPath(), []byte(override), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := Load(nil)
+	if c.Find("sentinel-model") == nil {
+		t.Error("on-disk override should be used")
+	}
+	if c.Find("qwen2.5-coder-7b") != nil {
+		t.Error("override should fully replace the embedded base")
+	}
+	// Corrupt override -> fall back to embedded (never break ls).
+	if err := os.WriteFile(paths.CatalogPath(), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if Load(nil).Find("qwen2.5-coder-7b") == nil {
+		t.Error("corrupt override should fall back to embedded")
+	}
+}
 
 func TestCatalogLoads(t *testing.T) {
 	c := Load(nil)

@@ -6,13 +6,22 @@ package catalog
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"winc/internal/config"
+	"winc/internal/paths"
 )
 
 //go:embed catalog.json
 var catalogJSON []byte
+
+// sourceURL is the canonical catalogue in the winc.cpp repo, fetched by `winc update`.
+const sourceURL = "https://raw.githubusercontent.com/samdotson61/winc.cpp/master/internal/catalog/catalog.json"
 
 type Model struct {
 	Tier  string `json:"tier"`
@@ -47,12 +56,64 @@ type Catalog struct {
 // faster Multi-Token-Prediction model variants (shown last, never auto-recommended).
 var TierOrder = []string{"nano", "small", "mid", "large", "xl", "mtp", "custom"}
 
-// Load parses the embedded catalogue and appends user custom models.
-func Load(custom []config.CustomModel) *Catalog {
+// parseCatalog unmarshals + sanity-checks catalogue JSON. ok=false on malformed or
+// implausibly small payloads (so a truncated download never replaces a good catalogue).
+func parseCatalog(data []byte) (*Catalog, bool) {
 	var c Catalog
-	if err := json.Unmarshal(catalogJSON, &c); err != nil {
-		panic("winc: bad embedded catalog.json: " + err.Error())
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, false
 	}
+	if len(c.Models) < 5 {
+		return nil, false
+	}
+	return &c, true
+}
+
+// loadBase returns the on-disk catalogue (written by `winc update`, or hand-placed to
+// override) when present and valid; otherwise the catalogue embedded in the binary.
+func loadBase() *Catalog {
+	if data, err := os.ReadFile(paths.CatalogPath()); err == nil {
+		if c, ok := parseCatalog(data); ok {
+			return c
+		}
+	}
+	c, ok := parseCatalog(catalogJSON)
+	if !ok {
+		panic("winc: bad embedded catalog.json")
+	}
+	return c
+}
+
+// Update fetches the latest catalogue from the winc.cpp repo, validates it, and caches
+// it to disk so prebuilt-binary users get new models without rebuilding. Returns the
+// new total model count. The embedded catalogue remains the offline fallback.
+func Update() (int, error) {
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Get(sourceURL)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("HTTP %d fetching catalog", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4 MB cap
+	if err != nil {
+		return 0, err
+	}
+	c, ok := parseCatalog(data)
+	if !ok {
+		return 0, fmt.Errorf("fetched catalog is malformed or truncated")
+	}
+	if err := os.WriteFile(paths.CatalogPath(), data, 0o644); err != nil {
+		return 0, err
+	}
+	return len(c.Models), nil
+}
+
+// Load returns the active catalogue (on-disk override or embedded) plus user custom models.
+func Load(custom []config.CustomModel) *Catalog {
+	c := loadBase()
 	if c.Tiers == nil {
 		c.Tiers = map[string]string{}
 	}
@@ -72,7 +133,7 @@ func Load(custom []config.CustomModel) *Catalog {
 			Repo: cm.Repo, File: cm.File, Note: "custom (winc.toml)",
 		})
 	}
-	return &c
+	return c
 }
 
 // Find resolves a query against alias / file / name (case-insensitive).

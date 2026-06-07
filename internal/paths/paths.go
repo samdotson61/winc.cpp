@@ -27,6 +27,11 @@ func InstallDir() string {
 // ConfigPath is the single config file: <install>/winc.toml
 func ConfigPath() string { return filepath.Join(InstallDir(), "winc.toml") }
 
+// CatalogPath is the optional on-disk model catalogue: <install>/catalog.json.
+// When present it overrides the catalogue embedded in the binary; `winc update`
+// refreshes it, so prebuilt-binary users get new models without rebuilding.
+func CatalogPath() string { return filepath.Join(InstallDir(), "catalog.json") }
+
 // BinDir holds the engine binaries (llama-server, llama-swap): <install>/bin
 func BinDir() string { return filepath.Join(InstallDir(), "bin") }
 

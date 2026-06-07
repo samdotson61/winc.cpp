@@ -10,6 +10,10 @@
 # Single config file (per-machine; generated from the embedded default template)
 /winc.toml
 
+# On-disk catalog cache written by 'winc update' (overrides the embedded catalog).
+# NOTE: only the install-root copy; the source of truth is internal/catalog/catalog.json
+/catalog.json
+
 # Downloaded / generated runtime artifacts (large, machine-specific)
 /bin/
 /models/
