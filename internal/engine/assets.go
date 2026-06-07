@@ -4,11 +4,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
 	"winc/internal/platform"
 )
+
+// llamaBuildRe parses llama-server's "version: NNNN (hash)" line into the build number.
+var llamaBuildRe = regexp.MustCompile(`(?i)version:\s*(\d+)`)
+
+// InstalledLlamaTag returns the build tag of the installed llama-server (e.g. "b9550"),
+// or "" if it isn't installed or the version can't be read.
+func InstalledLlamaTag() string {
+	bin := LlamaServerPath()
+	if bin == "" {
+		return ""
+	}
+	cmd := exec.Command(bin, "--version")
+	cmd.Env = mtpProbeEnv(bin) // make co-located shared libs loadable
+	out, _ := cmd.CombinedOutput()
+	if m := llamaBuildRe.FindSubmatch(out); m != nil {
+		return "b" + string(m[1])
+	}
+	return ""
+}
 
 const (
 	llamaRepo        = "ggml-org/llama.cpp"

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,12 +24,19 @@ func cmdCheck() int {
 	if tag := engine.LatestWincTag(); tag != "" && strings.TrimPrefix(tag, "v") != Version {
 		ui.Warn("newer winc available: %s (you have %s)", tag, Version)
 	}
-	ui.Good("llama.cpp latest : %s", engine.LatestLlamaTag())
+	latest := engine.LatestLlamaTag()
+	ui.Good("llama.cpp latest : %s", latest)
 	ui.Good("llama-swap latest: %s", engine.LatestSwapTag())
-	if p := engine.LlamaServerPath(); p != "" {
-		ui.Info("engine installed : %s", p)
-	} else {
+	inst := engine.InstalledLlamaTag()
+	switch {
+	case inst == "" && engine.LlamaServerPath() == "":
 		ui.Warn("engine not installed - run 'winc setup'")
+	case inst != "" && inst != latest:
+		ui.Warn("engine installed : %s  (latest %s - 'winc update' offers a refresh)", inst, latest)
+	case inst != "":
+		ui.Info("engine installed : %s  (up to date)", inst)
+	default:
+		ui.Info("engine installed : (version unknown)")
 	}
 	ui.Info("model catalog   : %d models (%s)", len(catalog.Load(nil).Models), catalog.Source())
 	if isGitClone(dir) {
@@ -38,9 +46,9 @@ func cmdCheck() int {
 		case n == 0:
 			ui.Info("source   : up to date with origin")
 		}
-		ui.Info("clone    : 'winc update' pulls ALL repo files, rebuilds winc, refreshes engine + catalog")
+		ui.Info("clone    : 'winc update' pulls all repo files + rebuilds winc; offers an engine refresh if it's behind")
 	} else {
-		ui.Info("prebuilt : 'winc update' refreshes engine + catalog; redownload the release for code changes")
+		ui.Info("prebuilt : 'winc update' refreshes the catalog + offers an engine refresh; redownload the release for code changes")
 	}
 	ui.Say("")
 	return 0
@@ -50,48 +58,62 @@ func cmdUpdate() int {
 	hw := platform.DetectHardware()
 	dir := paths.InstallDir()
 
-	// 1. Pull all repo files (clone only). Track whether anything actually changed.
-	clone, pulled := isGitClone(dir), false
-	if clone {
+	if isGitClone(dir) {
+		// Clone: pull every repo file, then ALWAYS rebuild so the binary matches the
+		// (now-current) source -- not only when the pull moved HEAD. This guarantees a
+		// stale binary (e.g. an earlier build that couldn't overwrite a running winc)
+		// is brought current. The rebuilt embedded catalogue is then authoritative.
 		ui.Info("updating winc source from repo (git pull - all files)...")
-		before := gitHead(dir)
 		_ = execInherit("git", "-C", dir, "pull", "--ff-only").Run()
-		after := gitHead(dir)
-		pulled = after != "" && after != before
-	}
-
-	// 2. Refresh the model catalog (works for clone + prebuilt).
-	ui.Info("refreshing model catalog...")
-	have := len(catalog.Load(nil).Models)
-	if total, err := catalog.Update(); err != nil {
-		ui.Warn("catalog refresh skipped: %v (keeping current %d models)", err, have)
-	} else if total != have {
-		ui.Good("catalog updated: %d models (was %d)", total, have)
-	} else {
-		ui.Good("catalog up to date (%d models)", total)
-	}
-
-	// 3. Rebuild from the pulled source so ALL repo changes (code, embedded catalog,
-	//    fixes) actually take effect -- a git pull alone leaves the old binary running.
-	switch {
-	case clone && pulled:
 		rebuildFromSource()
-	case clone:
-		ui.Info("source already up to date - no rebuild needed")
-	default:
-		ui.Info("prebuilt install - redownload the release binary to get winc code changes")
+	} else {
+		// Prebuilt: the catalogue cache is how new models arrive without a rebuild.
+		ui.Info("refreshing model catalog...")
+		have := len(catalog.Load(nil).Models)
+		if total, err := catalog.Update(); err != nil {
+			ui.Warn("catalog refresh skipped: %v (keeping current %d models)", err, have)
+		} else if total != have {
+			ui.Good("catalog updated: %d models (was %d)", total, have)
+		} else {
+			ui.Good("catalog up to date (%d models)", total)
+		}
+		ui.Info("prebuilt install - redownload the release binary for winc code changes")
 	}
 
-	// 4. Refresh engine binaries.
-	ui.Info("refreshing engine binaries to latest...")
+	refreshEngine(hw)
+	ui.Good("update complete.")
+	return 0
+}
+
+// refreshEngine updates the llama.cpp engine -- but only when it's actually behind,
+// and only after confirming (the prebuilt is a large download). Reports when it's
+// already current, and installs without prompting when nothing is installed yet.
+func refreshEngine(hw platform.Hardware) {
+	latest := engine.LatestLlamaTag()
+	switch installed := engine.InstalledLlamaTag(); {
+	case installed == "":
+		ui.Info("installing llama.cpp engine (%s)...", latest)
+	case installed == latest:
+		ui.Good("engine up to date (%s)", installed)
+		return
+	default:
+		if !ui.Confirm(fmt.Sprintf("Refresh llama.cpp engine %s -> %s? (large download)", installed, latest), false) {
+			ui.Say("  keeping engine %s", installed)
+			return
+		}
+	}
+	ui.Info("refreshing engine binaries...")
 	engine.ClearBinEngine()
 	if _, err := engine.AcquireLlama(hw); err != nil {
 		ui.Err("engine update failed: %v", err)
-		return 1
+		return
 	}
 	_, _ = engine.AcquireSwap(hw)
-	ui.Good("update complete.")
-	return 0
+	if v := engine.InstalledLlamaTag(); v != "" {
+		ui.Good("engine updated to %s", v)
+	} else {
+		ui.Good("engine refreshed")
+	}
 }
 
 func isGitClone(dir string) bool {
