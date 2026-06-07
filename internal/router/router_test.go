@@ -47,6 +47,26 @@ func TestRouterInjectsBudget(t *testing.T) {
 	}
 }
 
+func TestRouterBadUpstreamReturns502(t *testing.T) {
+	cfg := config.Defaults()
+	rt, err := Start(&cfg, "http://127.0.0.1:1") // nothing listening -> dial fails
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		bytes.NewReader([]byte(`{"messages":[{"role":"user","content":"hi"}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// A genuine upstream failure (not a client cancellation) must surface as 502,
+	// via the custom ErrorHandler -- which logs nothing to the shared terminal.
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("bad upstream: want 502, got %d", resp.StatusCode)
+	}
+}
+
 func TestRouterDisablesThinkingForTrivial(t *testing.T) {
 	cfg := config.Defaults()
 	m := roundtrip(t, &cfg, "/v1/messages", `{"messages":[{"role":"user","content":"hi"}]}`)

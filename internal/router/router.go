@@ -6,9 +6,12 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -33,6 +36,17 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 		return nil, err
 	}
 	rp := httputil.NewSingleHostReverseProxy(u)
+	// Claude Code routinely cancels in-flight requests (Esc, abandoned background
+	// calls, early SSE close, client timeouts). Go's default proxy ErrorHandler logs
+	// "http: proxy error: context canceled" to stderr -- which, since winc shares the
+	// terminal with the agent, prints into Claude Code's chat box. Swallow expected
+	// client cancellations silently; surface only genuine upstream failures (502).
+	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+			return // client hung up on purpose -- nothing to report
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -51,7 +65,9 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 		}
 		rp.ServeHTTP(w, req)
 	})
-	srv := &http.Server{Handler: mux}
+	// Send any remaining server-internal log lines to the void rather than the shared
+	// terminal, so nothing from winc ever corrupts the agent's TUI.
+	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
 	r := &Router{srv: srv, ln: ln, base: "http://" + ln.Addr().String()}
 	go srv.Serve(ln)
 	return r, nil
