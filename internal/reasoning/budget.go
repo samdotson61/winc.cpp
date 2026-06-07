@@ -3,6 +3,7 @@
 package reasoning
 
 import (
+	"encoding/json"
 	"strings"
 
 	"winc/internal/config"
@@ -23,6 +24,57 @@ var buildVerbs = []string{
 // EstimateInputTokens approximates tokens from the raw request body (~4 chars/token).
 func EstimateInputTokens(body []byte) int { return len(body) / 4 }
 
+// contentText flattens an Anthropic content field (a plain string or an array of
+// {type,text} blocks) into one string.
+func contentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		var b strings.Builder
+		for _, bl := range blocks {
+			b.WriteString(bl.Text)
+			b.WriteByte(' ')
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// isCompaction reports whether this looks like Claude Code's context-compaction
+// request: the instruction to summarize the whole conversation. It checks only the
+// FINAL user message + system prompt (where the instruction lives), not the history
+// -- the resulting summary keeps the section HEADERS in context, so matching those
+// would wrongly flag every later turn. Summaries need no reasoning, and even a genuine
+// "summarize our conversation" ask is fine to run think-free, so this is safe.
+func isCompaction(body []byte) bool {
+	var req struct {
+		System   json.RawMessage `json:"system"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return false
+	}
+	probe := contentText(req.System)
+	if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == "user" {
+		probe += " " + contentText(req.Messages[n-1].Content)
+	}
+	s := strings.ToLower(probe)
+	return strings.Contains(s, "summary of the conversation") ||
+		strings.Contains(s, "detailed summary of") ||
+		strings.Contains(s, "wrap your summary")
+}
+
 func looksComplex(body []byte) bool {
 	s := strings.ToLower(string(body))
 	if strings.Contains(s, "```") || strings.Contains(s, "tool_result") || strings.Contains(s, "tool_use") {
@@ -41,6 +93,11 @@ func looksComplex(body []byte) bool {
 // whose threshold covers the estimate wins. complexity_boost nudges one tier up
 // (more thinking) so short-but-complex prompts aren't starved.
 func Decide(cfg *config.Config, body []byte) Decision {
+	// Compaction is a mechanical summary -- never burn a thinking budget on it (on a
+	// big local context that thinking is minutes of pure overhead before the summary).
+	if isCompaction(body) {
+		return Decision{BudgetTokens: 0, EnableThinking: false, Set: true}
+	}
 	a := cfg.Reasoning.Adaptive
 	tiers := a.Tiers
 	est := EstimateInputTokens(body)

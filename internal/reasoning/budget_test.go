@@ -29,3 +29,30 @@ func TestDecideTiers(t *testing.T) {
 		t.Fatalf("large request: want ceiling %d, got %d", cfg.Reasoning.Adaptive.CeilingBudgetTokens, d.BudgetTokens)
 	}
 }
+
+func TestDecideCompaction(t *testing.T) {
+	cfg := config.Defaults()
+
+	// A big compaction request: the summarize instruction is the final user message.
+	hist := strings.Repeat("lots of prior conversation. ", 4000) // pushes it past the top tier
+	body := `{"messages":[` +
+		`{"role":"user","content":"` + hist + `"},` +
+		`{"role":"assistant","content":"ok"},` +
+		`{"role":"user","content":"Your task is to create a detailed summary of the conversation so far. Wrap your summary in <summary></summary>."}` +
+		`]}`
+	d := Decide(&cfg, []byte(body))
+	if d.EnableThinking || d.BudgetTokens != 0 || !d.Set {
+		t.Fatalf("compaction request must run think-free, got %+v", d)
+	}
+
+	// The compaction SUMMARY's section headers persist in history -> a normal later
+	// turn must NOT be flagged as compaction (it should think normally).
+	later := `{"messages":[` +
+		`{"role":"user","content":"Primary Request and Intent: build winc. Key Technical Concepts: Go, llama.cpp. Pending Tasks: none."},` +
+		`{"role":"user","content":"now implement the export feature"}` +
+		`]}`
+	d = Decide(&cfg, []byte(later))
+	if !d.EnableThinking {
+		t.Fatalf("post-compaction normal turn must still think, got %+v", d)
+	}
+}
