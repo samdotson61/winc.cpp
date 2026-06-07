@@ -47,10 +47,11 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int) []stri
 		add("CLAUDE_CODE_MAX_OUTPUT_TOKENS", strconv.Itoa(maxOutputTokens))
 	}
 	if contextWindow > 0 {
-		// Size auto-compaction to the real local window, and trigger at 85% to leave
-		// room for the response (so a turn never overruns the server's context).
+		// Size auto-compaction to the real local window, and trigger at 93% -- a ~7%
+		// buffer for the in-flight response, so more of the window is usable while a
+		// turn still rarely overruns the server's context.
 		add("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.Itoa(contextWindow))
-		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "85")
+		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "93")
 	}
 	return env
 }
