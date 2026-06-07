@@ -2,11 +2,60 @@ package engine
 
 import (
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"winc/internal/config"
 	"winc/internal/platform"
 )
+
+// moeNamePat matches the MoE naming convention: an active-param tag like "A3B" /
+// "A22B" / "A1.4B", or "moe"/"gpt-oss" in the filename.
+var moeNamePat = regexp.MustCompile(`(?i)(^|[-_.])a\d+(\.\d+)?b([-_.]|$)|moe|gpt-oss`)
+
+// isMoEFile guesses whether a GGUF is a Mixture-of-Experts model from its name.
+func isMoEFile(path string) bool { return moeNamePat.MatchString(filepath.Base(path)) }
+
+// IsMoEFile reports whether a GGUF filename looks like a Mixture-of-Experts model.
+func IsMoEFile(path string) bool { return isMoEFile(path) }
+
+// resolveCPUMoE decides MoE expert offload: "" (none), "all" (--cpu-moe), or an
+// integer layer count (--n-cpu-moe N). Auto offloads only when a MoE model won't
+// fit VRAM, so models that fit stay fully on the GPU (fastest generation). modelMB
+// is the model's on-disk size (0 = unknown; auto can't size-check, so it won't
+// engage offload).
+func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB, ngl int) string {
+	switch v := strings.ToLower(strings.TrimSpace(cfg.Performance.CpuMoe)); v {
+	case "off", "false", "no":
+		return ""
+	case "on", "all", "true", "yes":
+		return "all"
+	case "", "auto":
+		// fall through to auto logic
+	default:
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return strconv.Itoa(n)
+		}
+	}
+	if ngl == 0 || hw.VRAMMB <= 0 || !isMoEFile(modelPath) {
+		return ""
+	}
+	if modelMB > 0 && modelMB+1536 > hw.VRAMMB {
+		return "all"
+	}
+	return ""
+}
+
+// PlanForModel reports the context window and MoE-offload decision winc would use
+// for a model file of the given on-disk size in MB (0 = unknown). For diagnostics
+// (winc detect). cpuMoe is "" (none / full GPU), "all" (--cpu-moe), or a layer count.
+func PlanForModel(cfg *config.Config, hw platform.Hardware, modelFile string, modelMB int) (ctx int, cpuMoe string) {
+	ctx = ResolveContext(cfg, hw, modelMB)
+	cpuMoe = resolveCPUMoE(cfg, hw, modelFile, modelMB, GpuLayers(cfg, hw))
+	return ctx, cpuMoe
+}
 
 func atoiOr(s string, def int) int {
 	if n, err := strconv.Atoi(s); err == nil {
@@ -111,10 +160,16 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	args := []string{"-m", modelPath, "--host", cfg.General.Host, "--port", portVal, "--jinja"}
 
 	ngl := GpuLayers(cfg, hw)
-	// Only force -ngl when the user set an explicit value. For "auto" we omit it so
-	// llama.cpp fits as many layers as memory allows (partial offload on tight VRAM
-	// instead of failing to fit / OOM).
-	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
+	// MoE expert offload: keep all layers on the GPU (-ngl 99) but move MoE expert
+	// weights to RAM, so a MoE bigger than VRAM still runs fast (only a small
+	// activation vector crosses PCIe). Otherwise: force -ngl only when explicitly
+	// set; for "auto" omit it so llama.cpp fits layers to memory (partial offload).
+	switch cpuMoe := resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), ngl); {
+	case cpuMoe == "all":
+		args = append(args, "-ngl", "99", "--cpu-moe")
+	case cpuMoe != "":
+		args = append(args, "-ngl", "99", "--n-cpu-moe", cpuMoe)
+	case cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "":
 		args = append(args, "-ngl", strconv.Itoa(ngl))
 	}
 
@@ -156,5 +211,20 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	default: // adaptive
 		args = append(args, "--reasoning", "auto")
 	}
+
+	// Speculative decoding: a small same-family draft model (in the same dir as the
+	// main model) predicts tokens the main model verifies in a batch.
+	if d := strings.TrimSpace(cfg.Performance.DraftModel); d != "" {
+		dp := d
+		if !filepath.IsAbs(dp) {
+			dp = filepath.Join(filepath.Dir(modelPath), d)
+		}
+		if fi, err := os.Stat(dp); err == nil && !fi.IsDir() {
+			args = append(args, "--spec-draft-model", dp)
+		}
+	}
+
+	// Advanced escape hatch: any extra llama-server flags, verbatim.
+	args = append(args, cfg.Performance.ExtraServerArgs...)
 	return args
 }

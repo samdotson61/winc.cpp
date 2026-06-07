@@ -52,10 +52,13 @@ type Performance struct {
 	GpuLayers string `toml:"gpu_layers"` // "auto" or integer
 	Context   string `toml:"context"`    // "auto" or integer
 	Batch     string `toml:"batch"`      // "auto" or integer
-	FlashAttn bool   `toml:"flash_attn"`
-	CacheType string `toml:"cache_type"`        // e.g. q8_0, f16
-	Threads   string `toml:"threads"`           // "auto" or integer
-	MaxOutputTokens string `toml:"max_output_tokens"` // "auto" (~half context) or integer
+	FlashAttn       bool     `toml:"flash_attn"`
+	CacheType       string   `toml:"cache_type"`         // e.g. q8_0, f16
+	Threads         string   `toml:"threads"`            // "auto" or integer
+	MaxOutputTokens string   `toml:"max_output_tokens"`  // "auto" (~half context) or integer
+	CpuMoe          string   `toml:"cpu_moe"`            // auto | on | off | <layer count>
+	DraftModel      string   `toml:"draft_model"`        // filename of a small draft model (speculative decoding)
+	ExtraServerArgs []string `toml:"extra_server_args"`  // advanced: extra llama-server flags
 }
 
 type Multi struct {
@@ -120,6 +123,17 @@ flash_attn = true
 cache_type = "q8_0"
 threads    = "auto"
 max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
+
+# MoE expert offload: keep a MoE model's expert weights in RAM (attention stays on
+# GPU) so big MoE models run on smaller VRAM without dropping whole layers.
+cpu_moe = "auto"             # "auto" (offload only if the model won't fit VRAM), "on", "off", or a layer count
+
+# Speculative decoding: a small same-family draft model predicts tokens the main
+# model verifies in a batch (faster on dense models). Filename of a GGUF in models/.
+draft_model = ""             # e.g. "Qwen2.5-Coder-0.5B-Instruct-Q8_0.gguf"; blank = off
+
+# Advanced escape hatch: extra llama-server flags appended verbatim.
+extra_server_args = []       # e.g. ["--mlock"] or ["--prio", "2"] or ["--n-cpu-moe", "16"]
 
 [multi]                  # llama-swap, only with ` + "`winc -s ... --multi`" + `
 enabled = false
@@ -247,6 +261,9 @@ func (c *Config) backfill() {
 	}
 	if c.Performance.MaxOutputTokens == "" {
 		c.Performance.MaxOutputTokens = d.Performance.MaxOutputTokens
+	}
+	if c.Performance.CpuMoe == "" {
+		c.Performance.CpuMoe = d.Performance.CpuMoe
 	}
 	if c.Multi.TTLSeconds == 0 {
 		c.Multi.TTLSeconds = d.Multi.TTLSeconds

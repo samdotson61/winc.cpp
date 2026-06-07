@@ -1,12 +1,31 @@
 package cli
 
 import (
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"winc/internal/catalog"
+	"winc/internal/engine"
 	"winc/internal/platform"
 	"winc/internal/ui"
 )
+
+// sizeStrToMB parses a catalogue size like "14.3 GB" into megabytes (0 if unparsable).
+func sizeStrToMB(s string) int {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	mult := 1024.0
+	if strings.HasSuffix(s, "GB") {
+		s = strings.TrimSuffix(s, "GB")
+	} else if strings.HasSuffix(s, "MB") {
+		s, mult = strings.TrimSuffix(s, "MB"), 1.0
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0
+	}
+	return int(v * mult)
+}
 
 // cmdDetect prints what winc detects about the machine and which tier/model it
 // would recommend - handy for diagnosing GPU/VRAM detection.
@@ -37,6 +56,26 @@ func cmdDetect() int {
 	ui.Say("  Memory budget : %d MB  ->  tier '%s'", hw.MemoryBudgetMB(), tier)
 	if def := firstInTier(cat, tier); def != nil {
 		ui.Say("  Recommended   : %s (%s)", def.Alias, def.Size)
+
+		// Show what winc would resolve for that model (real on-disk size if it's
+		// already downloaded, else the catalogue estimate).
+		modelMB := sizeStrToMB(def.Size)
+		approx := "~"
+		if p := filepath.Join(modelsDir(cfg), def.File); fileExists(p) {
+			if m := engine.FileMB(p); m > 0 {
+				modelMB, approx = m, ""
+			}
+		}
+		ctx, moe := engine.PlanForModel(cfg, hw, def.File, modelMB)
+		ui.Say("  Auto context  : %d tokens (for %s%d MB model)", ctx, approx, modelMB)
+		switch {
+		case moe == "all":
+			ui.Say("  MoE offload   : yes (experts -> RAM; attention on GPU)")
+		case moe != "":
+			ui.Say("  MoE offload   : %s expert layers -> RAM", moe)
+		case engine.IsMoEFile(def.File):
+			ui.Say("  MoE offload   : no (model fits VRAM; runs fully on GPU)")
+		}
 	}
 	ui.Say("")
 	return 0

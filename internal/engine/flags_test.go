@@ -116,6 +116,54 @@ func TestContextLadderDescends(t *testing.T) {
 	}
 }
 
+func TestIsMoEFile(t *testing.T) {
+	for _, f := range []string{"Qwen3.6-35B-A3B-UD-IQ3_S.gguf", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "gpt-oss-20b-mxfp4.gguf"} {
+		if !isMoEFile(f) {
+			t.Errorf("%s should be detected as MoE", f)
+		}
+	}
+	for _, f := range []string{"Qwen3.6-27B-Q3_K_M.gguf", "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf", "Llama-3.2-3B-Instruct-Q4_K_M.gguf"} {
+		if isMoEFile(f) {
+			t.Errorf("%s should NOT be detected as MoE", f)
+		}
+	}
+}
+
+func TestServerArgsCpuMoe(t *testing.T) {
+	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 12000}
+
+	cfg := config.Defaults()
+	cfg.Performance.CpuMoe = "on"
+	s := strings.Join(ServerArgs(&cfg, hw, "Qwen3.6-35B-A3B.gguf", 8080, "", 16384), " ")
+	if !strings.Contains(s, "--cpu-moe") || !strings.Contains(s, "-ngl 99") {
+		t.Errorf("cpu_moe=on: want -ngl 99 + --cpu-moe: %s", s)
+	}
+
+	cfg = config.Defaults()
+	cfg.Performance.CpuMoe = "16"
+	s = strings.Join(ServerArgs(&cfg, hw, "m.gguf", 8080, "", 16384), " ")
+	if !strings.Contains(s, "--n-cpu-moe 16") {
+		t.Errorf("cpu_moe=16: want --n-cpu-moe 16: %s", s)
+	}
+
+	cfg = config.Defaults()
+	cfg.Performance.CpuMoe = "off"
+	s = strings.Join(ServerArgs(&cfg, hw, "Qwen3.6-35B-A3B.gguf", 8080, "", 16384), " ")
+	if strings.Contains(s, "cpu-moe") {
+		t.Errorf("cpu_moe=off: want no cpu-moe: %s", s)
+	}
+}
+
+func TestServerArgsExtra(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Performance.ExtraServerArgs = []string{"--mlock", "--prio", "2"}
+	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
+	s := strings.Join(ServerArgs(&cfg, hw, "m.gguf", 8080, "", 16384), " ")
+	if !strings.Contains(s, "--mlock") || !strings.Contains(s, "--prio 2") {
+		t.Errorf("extra_server_args not appended: %s", s)
+	}
+}
+
 func TestResolveMaxOutput(t *testing.T) {
 	cfg := config.Defaults()
 	if got := ResolveMaxOutput(&cfg, 32768); got != 16384 {

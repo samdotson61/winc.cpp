@@ -166,6 +166,76 @@ GPU is ~5-10x faster than CPU. **For coding at any size, prefer the Qwen2.5-Code
 
 ---
 
+## Performance
+
+`winc` tunes the engine for you. Everything below is **automatic** — it runs from
+`winc detect` (hardware) and the model file, with no config needed. The knobs at the
+end of this section only exist if you want to override a decision.
+
+### What `winc` does automatically
+
+| Optimization | What it does | Why it's faster |
+|---|---|---|
+| **Driver-aware backend** | Picks the right prebuilt llama.cpp build — CUDA 13.x vs 12.x by your **driver** version, else Metal / Vulkan / ROCm / CPU — and **falls back at runtime** (cuda → vulkan → cpu) if a backend won't actually run | A CUDA build that matches your driver runs on the GPU instead of silently dropping to CPU |
+| **GPU layer auto-fit** | Leaves `-ngl` on auto so llama.cpp packs as many layers into VRAM as fit (partial offload when a model is bigger than VRAM) | Every layer on the GPU is ~5-10x faster than on the CPU |
+| **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM, keeps **attention on the GPU** but parks the **expert weights in RAM** (`--cpu-moe`) instead of dropping whole layers | A 35B-A3B MoE runs near GPU speed on 12 GB: only the ~3B active params' activations cross PCIe, not 35B of weights |
+| **Flash attention + Q8 KV cache** | Enables `--flash-attn` and stores the KV cache at `q8_0` when on GPU | Halves KV-cache memory → bigger context in the same VRAM, and faster attention |
+| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model, then **steps down a ladder** (128k → 96k → 64k → … → 16k) if the first choice doesn't load | You get the largest context that fits — and never see an out-of-memory error on launch |
+| **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
+| **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
+| **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
+| **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
+
+### MoE expert offload, in one line
+
+A **Mixture-of-Experts** model has many "expert" sub-networks but only activates a few
+per token. `winc` exploits that: attention layers (which every token uses) stay on the
+GPU, while the big, rarely-touched expert weights live in RAM. The result — a model
+whose weights are **larger than your VRAM** still runs at close to full-GPU speed,
+because each token only moves a small activation vector across the bus, not gigabytes of
+experts. This is why the `mid` tier recommends a 35B MoE even on a 16 GB card.
+
+`winc` turns it on **only when a MoE model won't otherwise fit** (a model that fits VRAM
+stays 100% on the GPU, which is still fastest). Override with `cpu_moe` below.
+
+### Tuning knobs — `[performance]` in `winc.toml`
+
+All default to `auto`/off; set them only to override `winc`'s choice.
+
+```toml
+[performance]
+backend    = "auto"   # auto | cuda | metal | vulkan | rocm | cpu  (force a backend)
+gpu_layers = "auto"   # "auto" (fit to VRAM) or an integer -ngl
+context    = "auto"   # "auto" (size to VRAM, with fallback) or a fixed token count
+batch      = "auto"   # "auto" (2048) or an integer
+flash_attn = true     # flash attention when on GPU
+cache_type = "q8_0"   # KV cache type: q8_0 (half memory) | f16 (max quality) | q4_0 (smallest)
+threads    = "auto"   # CPU threads (auto = all cores)
+max_output_tokens = "auto"   # cap on response length ("auto" = ~half the context)
+
+# MoE expert offload (see above)
+cpu_moe = "auto"      # "auto" (offload only if it won't fit VRAM) | "on" | "off" | <layer count>
+
+# Speculative decoding: a small same-family draft model drafts tokens the main model
+# verifies in a batch — up to ~2x on dense models (little/no gain on MoE). The draft
+# GGUF must sit in your models/ folder.
+draft_model = ""      # e.g. "qwen2.5-coder-0.5b-instruct-q8_0.gguf"; blank = off
+
+# Escape hatch: any extra llama-server flags, appended verbatim.
+extra_server_args = []   # e.g. ["--mlock"] (lock model in RAM) or ["--n-cpu-moe", "16"]
+```
+
+**Speculative decoding** (`draft_model`) is the one big lever that's opt-in: pair your
+main model with a tiny same-family draft (e.g. a 0.5B coder alongside a 7-32B coder) and
+the draft proposes tokens the main model checks in parallel. It helps most on **dense**
+models with predictable code; MoE models are already activation-light, so the gain is
+small there. Leave it blank unless you've downloaded a matching draft GGUF.
+
+Run `winc detect` to see exactly what `winc` resolved for your machine (backend, VRAM,
+context, MoE offload, recommended tier).
+
+---
+
 ## Running alongside cloud Claude Code
 
 `winc -s` sets `CLAUDE_CONFIG_DIR` to a sandboxed `.claude-local/` folder, so your local
