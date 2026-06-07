@@ -21,6 +21,7 @@ type Model struct {
 	Size  string `json:"size"`
 	Repo  string `json:"repo"`
 	File  string `json:"file"`
+	Draft string `json:"draft"` // alias of a same-tokenizer draft model (speculative decoding); "" = none
 	Note  string `json:"note"`
 }
 
@@ -72,6 +73,16 @@ func (c *Catalog) Find(q string) *Model {
 		}
 	}
 	return nil
+}
+
+// DraftFor returns the catalogued draft model paired with a (dense) target, or nil.
+// MoE targets carry no draft mapping, so they are never paired -- speculative
+// decoding is net-negative on MoE (only ~3B active, nothing for a draft to save).
+func (c *Catalog) DraftFor(m *Model) *Model {
+	if m == nil || m.Draft == "" {
+		return nil
+	}
+	return c.Find(m.Draft)
 }
 
 // ByTier returns the models in a given tier (catalogue order = best first).

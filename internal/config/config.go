@@ -120,7 +120,7 @@ gpu_layers = "auto"     # "auto" or integer (-ngl)
 context    = "auto"     # "auto" sizes the window to fit VRAM (falls back if too big), or a token count (-c)
 batch      = "auto"
 flash_attn = true
-cache_type = "q8_0"
+cache_type = "q8_0"     # KV cache: q8_0 (default, best speed/accuracy) | f16 (max quality) | q4_0 (smallest -> widest auto context). Needs flash_attn.
 threads    = "auto"
 max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
 

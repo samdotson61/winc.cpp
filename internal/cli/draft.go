@@ -1,0 +1,63 @@
+package cli
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"winc/internal/catalog"
+	"winc/internal/config"
+	"winc/internal/download"
+	"winc/internal/ui"
+)
+
+// autoPairDraft turns on speculative decoding automatically for a DENSE target that
+// has a known same-tokenizer draft already downloaded -- unless the user set
+// draft_model explicitly (their choice wins). It is per-model and safe: MoE models
+// carry no draft mapping in the catalogue, so they are never paired (speculative
+// decoding is net-negative on MoE). Sets cfg.Performance.DraftModel to the draft's
+// filename; ServerArgs resolves it against the models dir and skips it if missing.
+func autoPairDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) {
+	if strings.TrimSpace(cfg.Performance.DraftModel) != "" {
+		return // explicit user override wins
+	}
+	m := cat.Find(modelQuery)
+	draft := cat.DraftFor(m)
+	if draft == nil {
+		return
+	}
+	if !fileExists(filepath.Join(modelsDir(cfg), draft.File)) {
+		ui.Dim("tip: 'winc -d %s' enables speculative decoding (faster) for %s", draft.Alias, m.Alias)
+		return
+	}
+	cfg.Performance.DraftModel = draft.File
+	ui.Info("speculative decoding on: drafting %s with %s", m.Alias, draft.Alias)
+}
+
+// offerDraft prompts to also fetch the matching draft for a freshly-downloaded dense
+// model, so speculative decoding turns on automatically on the next launch. autoYes
+// downloads it without asking. No-op for MoE / models without a draft / drafts that
+// are already present.
+func offerDraft(cfg *config.Config, cat *catalog.Catalog, m *catalog.Model, autoYes bool) {
+	draft := cat.DraftFor(m)
+	if draft == nil {
+		return
+	}
+	md := modelsDir(cfg)
+	if fileExists(filepath.Join(md, draft.File)) {
+		ui.Info("speculative decoding ready: %s will draft with %s", m.Alias, draft.Alias)
+		return
+	}
+	q := fmt.Sprintf("%s is a dense model - also download its %s draft (%s) to enable speculative decoding (faster)?", m.Alias, draft.Alias, draft.Size)
+	if !autoYes && !ui.Confirm(q, true) {
+		ui.Dim("skipped - run 'winc -d %s' anytime to turn it on later", draft.Alias)
+		return
+	}
+	ui.Good("Downloading draft %s", draft.File)
+	ui.Say("  from %s", draft.Repo)
+	if _, err := download.HFDownload(draft.Repo, draft.File, md, cfg.HuggingFace.Token); err != nil {
+		ui.Warn("draft download failed: %v (speculative decoding stays off)", err)
+		return
+	}
+	ui.Good("draft ready - speculative decoding turns on automatically for %s", m.Alias)
+}

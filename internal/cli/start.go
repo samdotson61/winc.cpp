@@ -81,6 +81,7 @@ func cmdStart(args []string) int {
 		reportMissingModel(alias, model)
 		return 1
 	}
+	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 
 	if _, err := config.EnsureClaudeLocal(); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)

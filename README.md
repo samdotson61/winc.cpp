@@ -52,7 +52,7 @@ winc -s claude qwen2.5-coder-7b    # launch Claude Code on it (sandboxed)
 |---------|--------------|
 | `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
-| `winc -d <alias>` | Download a catalogue model |
+| `winc -d <alias> [-y]` | Download a catalogue model (offers its speculative-decoding draft for dense models; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
 | `winc -s claude <model>` | Start Claude Code on a local model (sandboxed instance) |
@@ -180,10 +180,11 @@ end of this section only exist if you want to override a decision.
 | **GPU layer auto-fit** | Leaves `-ngl` on auto so llama.cpp packs as many layers into VRAM as fit (partial offload when a model is bigger than VRAM) | Every layer on the GPU is ~5-10x faster than on the CPU |
 | **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM, keeps **attention on the GPU** but parks the **expert weights in RAM** (`--cpu-moe`) instead of dropping whole layers | A 35B-A3B MoE runs near GPU speed on 12 GB: only the ~3B active params' activations cross PCIe, not 35B of weights |
 | **Flash attention + Q8 KV cache** | Enables `--flash-attn` and stores the KV cache at `q8_0` when on GPU | Halves KV-cache memory → bigger context in the same VRAM, and faster attention |
-| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model, then **steps down a ladder** (128k → 96k → 64k → … → 16k) if the first choice doesn't load | You get the largest context that fits — and never see an out-of-memory error on launch |
+| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (128k → 96k → 64k → … → 16k) if the first choice doesn't load | You get the largest context that fits — and never see an out-of-memory error on launch |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
+| **Auto-paired draft (dense)** | Downloading a **dense** catalogue model offers its tiny same-tokenizer draft; once present, `winc` enables `--spec-draft-model` automatically at launch. MoE models are skipped (drafts backfire there) | The draft proposes tokens the big model verifies in a batch — up to ~2× on predictable code |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
 ### MoE expert offload, in one line
@@ -209,27 +210,34 @@ gpu_layers = "auto"   # "auto" (fit to VRAM) or an integer -ngl
 context    = "auto"   # "auto" (size to VRAM, with fallback) or a fixed token count
 batch      = "auto"   # "auto" (2048) or an integer
 flash_attn = true     # flash attention when on GPU
-cache_type = "q8_0"   # KV cache type: q8_0 (half memory) | f16 (max quality) | q4_0 (smallest)
+cache_type = "q8_0"   # KV cache: q8_0 (default) | f16 (max quality) | q4_0 (smallest → ~2× the auto context). Needs flash_attn
 threads    = "auto"   # CPU threads (auto = all cores)
 max_output_tokens = "auto"   # cap on response length ("auto" = ~half the context)
 
 # MoE expert offload (see above)
 cpu_moe = "auto"      # "auto" (offload only if it won't fit VRAM) | "on" | "off" | <layer count>
 
-# Speculative decoding: a small same-family draft model drafts tokens the main model
-# verifies in a batch — up to ~2x on dense models (little/no gain on MoE). The draft
-# GGUF must sit in your models/ folder.
-draft_model = ""      # e.g. "qwen2.5-coder-0.5b-instruct-q8_0.gguf"; blank = off
+# Speculative decoding: winc AUTO-PAIRS a tiny same-tokenizer draft for dense catalogue
+# models once the draft is downloaded (it offers to fetch it on `winc -d <dense>`). Set
+# this only to force a specific draft GGUF (must live in models/) or override the pick.
+draft_model = ""      # "" = auto-pair for dense models; or a filename to force one
 
 # Escape hatch: any extra llama-server flags, appended verbatim.
 extra_server_args = []   # e.g. ["--mlock"] (lock model in RAM) or ["--n-cpu-moe", "16"]
 ```
 
-**Speculative decoding** (`draft_model`) is the one big lever that's opt-in: pair your
-main model with a tiny same-family draft (e.g. a 0.5B coder alongside a 7-32B coder) and
-the draft proposes tokens the main model checks in parallel. It helps most on **dense**
-models with predictable code; MoE models are already activation-light, so the gain is
-small there. Leave it blank unless you've downloaded a matching draft GGUF.
+**Speculative decoding is automatic for dense models.** When you download a dense
+catalogue model, `winc` offers to also grab its tiny same-tokenizer draft (a 0.5B coder
+for the Qwen2.5-Coder models, Qwen3-0.6B for the Qwen3 dense models, Llama-3.2-1B for
+Llama-3.1-8B). Once the draft is present, `winc` turns on `--spec-draft-model`
+automatically at launch — up to ~2× on predictable code. **MoE models are never paired**
+(only ~3B is active, so a draft just adds overhead). `draft_model` forces a specific
+draft or overrides the auto-pick.
+
+**More context at ~the same speed:** set `cache_type = "q4_0"` to halve KV-cache bytes per
+token — `winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM
+(up to the model's trained limit). `q8_0` stays the default for the best speed/accuracy
+balance.
 
 Run `winc detect` to see exactly what `winc` resolved for your machine (backend, VRAM,
 context, MoE offload, recommended tier).

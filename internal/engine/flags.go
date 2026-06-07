@@ -88,6 +88,28 @@ const (
 	ctxCeil  = 131072
 )
 
+// kvCtxFactor is the auto-context multiplier (tokens per free MB of VRAM) for a KV
+// cache type. q8_0 (~16 KB/token) is the baseline 64; f16 doubles the bytes (so
+// halves the tokens), q4 halves the bytes (so doubles the tokens). Conservative.
+// KV quantization needs flash attention -- without it the cache is f16 regardless.
+func kvCtxFactor(cacheType string, flashAttn bool) int {
+	if !flashAttn {
+		return 32 // f16 K+V
+	}
+	switch strings.ToLower(strings.TrimSpace(cacheType)) {
+	case "f16", "":
+		return 32
+	case "q8_0":
+		return 64
+	case "q5_0", "q5_1":
+		return 80
+	case "q4_0", "q4_1":
+		return 120
+	default:
+		return 64 // unknown -> conservative q8 baseline
+	}
+}
+
 // ResolveContext picks a liberal context window: the configured value, or (auto)
 // the largest that should fit free VRAM after the model, clamped to a safe range.
 // The launcher verifies the choice actually loads and falls back if not.
@@ -102,7 +124,9 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelFileMB int) i
 	if free <= 0 {
 		return ctxFloor
 	}
-	toks := free * 64 // ~16 KB/token for q8_0 KV (conservative)
+	// Bytes/token depends on the KV cache type, so a smaller cache (q4) fits a
+	// proportionally larger window. Default q8_0 keeps the original factor (64).
+	toks := free * kvCtxFactor(cfg.Performance.CacheType, cfg.Performance.FlashAttn)
 	toks = (toks / 8192) * 8192
 	if toks < ctxFloor {
 		return ctxFloor

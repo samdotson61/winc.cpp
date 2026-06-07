@@ -101,6 +101,34 @@ func TestResolveContext(t *testing.T) {
 	}
 }
 
+func TestResolveContextCacheType(t *testing.T) {
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 6000}
+	const modelMB = 3000 // leaves a small VRAM window so factors stay below the ceiling
+
+	cfg := config.Defaults() // q8_0 + flash_attn (defaults)
+	q8 := ResolveContext(&cfg, hw, modelMB)
+
+	cfg.Performance.CacheType = "f16"
+	f16 := ResolveContext(&cfg, hw, modelMB)
+
+	cfg.Performance.CacheType = "q4_0"
+	q4 := ResolveContext(&cfg, hw, modelMB)
+
+	// A smaller KV cache fits a proportionally larger window.
+	if !(q4 > q8 && q8 > f16) {
+		t.Errorf("expected q4 > q8 > f16, got q4=%d q8=%d f16=%d", q4, q8, f16)
+	}
+	// q8_0 must keep the original factor (no regression for the default).
+	if q8 != 90112 {
+		t.Errorf("q8_0 context changed from baseline: got %d want 90112", q8)
+	}
+	// Without flash attention the cache is f16 regardless of cache_type.
+	cfg.Performance.FlashAttn = false // cache_type is still q4_0 here
+	if got := ResolveContext(&cfg, hw, modelMB); got != f16 {
+		t.Errorf("no flash-attn should size as f16: got %d want %d", got, f16)
+	}
+}
+
 func TestContextLadderDescends(t *testing.T) {
 	l := ContextLadder(70000)
 	if len(l) == 0 || l[0] != 70000 {

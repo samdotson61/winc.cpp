@@ -57,6 +57,7 @@ func cmdServe(args []string) int {
 		reportMissingModel(alias, model)
 		return 1
 	}
+	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 	hw := platform.DetectHardware()
 
 	port := cfg.General.Port

@@ -12,8 +12,18 @@ import (
 )
 
 func cmdDownload(args []string) int {
-	if len(args) == 0 {
-		ui.Err("usage: winc -d <alias>   or   winc -d <repo> <file>")
+	autoYes := false
+	var pos []string
+	for _, a := range args {
+		switch a {
+		case "-y", "--yes":
+			autoYes = true
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) == 0 {
+		ui.Err("usage: winc -d <alias> [-y]   or   winc -d <repo> <file>")
 		return 1
 	}
 	cfg := loadConfig()
@@ -21,12 +31,13 @@ func cmdDownload(args []string) int {
 	md := modelsDir(cfg)
 
 	var repo, file string
-	if len(args) >= 2 && strings.Contains(args[0], "/") {
-		repo, file = args[0], args[1]
+	var m *catalog.Model // nil for a raw <repo> <file> download
+	if len(pos) >= 2 && strings.Contains(pos[0], "/") {
+		repo, file = pos[0], pos[1]
 	} else {
-		m := cat.Find(args[0])
+		m = cat.Find(pos[0])
 		if m == nil {
-			ui.Err("unknown model %q. Run 'winc ls' for aliases, or pass '<repo> <file>'.", args[0])
+			ui.Err("unknown model %q. Run 'winc ls' for aliases, or pass '<repo> <file>'.", pos[0])
 			return 1
 		}
 		repo, file = m.Repo, m.File
@@ -35,6 +46,7 @@ func cmdDownload(args []string) int {
 	target := filepath.Join(md, filepath.Base(file))
 	if fileExists(target) {
 		ui.Good("already downloaded: %s", filepath.Base(file))
+		offerDraft(cfg, cat, m, autoYes)
 		return 0
 	}
 	ui.Good("Downloading %s", filepath.Base(file))
@@ -45,6 +57,7 @@ func cmdDownload(args []string) int {
 		return 1
 	}
 	ui.Good("done: %s", filepath.Base(file))
+	offerDraft(cfg, cat, m, autoYes)
 	return 0
 }
 

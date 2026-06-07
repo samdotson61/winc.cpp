@@ -51,6 +51,31 @@ func TestMoEDefaultsForMidAndLarge(t *testing.T) {
 	}
 }
 
+func TestDraftFor(t *testing.T) {
+	c := Load(nil)
+	// Dense coder -> its same-tokenizer coder draft.
+	if d := c.DraftFor(c.Find("qwen2.5-coder-32b")); d == nil || d.Alias != "qwen2.5-coder-0.5b-draft" {
+		t.Errorf("qwen2.5-coder-32b draft = %v, want qwen2.5-coder-0.5b-draft", d)
+	}
+	// MoE -> no draft (speculative decoding is net-negative on MoE).
+	if d := c.DraftFor(c.Find("qwen3.6-35b")); d != nil {
+		t.Errorf("MoE qwen3.6-35b should have no draft, got %q", d.Alias)
+	}
+	// Llama reuses the catalogued 1B as its draft.
+	if d := c.DraftFor(c.Find("llama3.1-8b")); d == nil || d.Alias != "llama3.2-1b" {
+		t.Errorf("llama3.1-8b draft = %v, want llama3.2-1b", d)
+	}
+	// Referential integrity: every declared draft must resolve to a real entry.
+	for _, m := range c.Models {
+		if m.Draft != "" && c.Find(m.Draft) == nil {
+			t.Errorf("model %s references missing draft %q", m.Alias, m.Draft)
+		}
+	}
+	if c.DraftFor(nil) != nil {
+		t.Error("DraftFor(nil) should be nil")
+	}
+}
+
 func TestCustomModelMerge(t *testing.T) {
 	c := Load([]config.CustomModel{{Alias: "my-test-model", Repo: "u/r", File: "f.gguf", Tier: "nano"}})
 	if c.Find("my-test-model") == nil {
