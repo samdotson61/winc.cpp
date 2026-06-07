@@ -30,11 +30,7 @@ func cmdCheck() int {
 	} else {
 		ui.Warn("engine not installed - run 'winc setup'")
 	}
-	src := "built-in"
-	if _, err := os.Stat(paths.CatalogPath()); err == nil {
-		src = "updated cache"
-	}
-	ui.Info("model catalog   : %d models (%s)", len(catalog.Load(nil).Models), src)
+	ui.Info("model catalog   : %d models (%s)", len(catalog.Load(nil).Models), catalog.Source())
 	if isGitClone(dir) {
 		switch n := gitBehindCount(dir); {
 		case n > 0:

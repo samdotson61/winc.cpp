@@ -35,8 +35,14 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int) []stri
 	add("ANTHROPIC_DEFAULT_OPUS_MODEL", slots.Opus)
 	add("ANTHROPIC_DEFAULT_HAIKU_MODEL", slots.Haiku)
 	add("CLAUDE_CONFIG_DIR", paths.ClaudeLocalDir())
-	add("CLAUDE_FORCE_SYNCHRONIZED_OUTPUT", "1")
-	add("COLORTERM", "truecolor")
+	// 24-bit color + synchronized output (terminal mode 2026) glitch on terminals
+	// that don't support them -- notably macOS Terminal.app. Only advertise them
+	// elsewhere; capable terminals (iTerm2, Windows Terminal, etc.) set COLORTERM
+	// themselves and Claude Code auto-detects synchronized output.
+	if os.Getenv("TERM_PROGRAM") != "Apple_Terminal" {
+		add("CLAUDE_FORCE_SYNCHRONIZED_OUTPUT", "1")
+		add("COLORTERM", "truecolor")
+	}
 	if maxOutputTokens > 0 {
 		add("CLAUDE_CODE_MAX_OUTPUT_TOKENS", strconv.Itoa(maxOutputTokens))
 	}

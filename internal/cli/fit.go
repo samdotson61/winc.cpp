@@ -12,11 +12,13 @@ import (
 
 // tryContextLadder launches llama-server at the most liberal context that fits,
 // silently stepping down if a size fails to load. Returns (proc, ctx) or (nil, 0).
-func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string) (*server.Proc, int) {
+func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, noMTP bool) (*server.Proc, int) {
 	target := engine.ResolveContext(cfg, hw, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 	for _, ctx := range engine.ContextLadder(target) {
 		args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
-		args = append(args, engine.MTPArgs(cfg, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
+		if !noMTP {
+			args = append(args, engine.MTPArgs(cfg, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
+		}
 		proc, err := server.Start(serverBin, args, logPath)
 		if err != nil {
 			continue
@@ -44,8 +46,17 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 			return nil, 0
 		}
 		ui.Info("loading model + waiting for server (%s)...", backendLabel(backend))
-		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath); proc != nil {
+		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false); proc != nil {
 			return proc, ctx
+		}
+		// A buggy MTP/draft path can stop the server from starting (or make it crash on
+		// use). If MTP was actually active, retry this same backend once without it
+		// before blaming the backend -- the model still runs, just without the speedup.
+		if engine.IsMTPFile(modelPath) && len(engine.MTPArgs(cfg, modelPath, bin)) > 0 {
+			ui.Warn("server didn't start with MTP - retrying without speculative decoding...")
+			if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, true); proc != nil {
+				return proc, ctx
+			}
 		}
 		// The backend didn't start at any context size -> it's incompatible here.
 		if backend == "" {

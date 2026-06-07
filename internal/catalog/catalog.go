@@ -70,9 +70,12 @@ func parseCatalog(data []byte) (*Catalog, bool) {
 }
 
 // loadBase returns the on-disk catalogue (written by `winc update`, or hand-placed to
-// override) when present and valid; otherwise the catalogue embedded in the binary.
+// override) when present, valid, AND newer than this binary; otherwise the embedded
+// catalogue. The freshness check matters on a git clone: a `winc update` rebuild bakes
+// the latest catalogue into the binary, so a cache fetched earlier must not shadow it.
+// On a prebuilt install the cache is always newer than the shipped binary, so it wins.
 func loadBase() *Catalog {
-	if data, err := os.ReadFile(paths.CatalogPath()); err == nil {
+	if data, err := os.ReadFile(paths.CatalogPath()); err == nil && cacheNewerThanBinary() {
 		if c, ok := parseCatalog(data); ok {
 			return c
 		}
@@ -82,6 +85,35 @@ func loadBase() *Catalog {
 		panic("winc: bad embedded catalog.json")
 	}
 	return c
+}
+
+// Source reports which catalogue is active: "updated cache" (a fresh on-disk override
+// is in use) or "built-in" (the one embedded in this binary). Mirrors loadBase.
+func Source() string {
+	if data, err := os.ReadFile(paths.CatalogPath()); err == nil && cacheNewerThanBinary() {
+		if _, ok := parseCatalog(data); ok {
+			return "updated cache"
+		}
+	}
+	return "built-in"
+}
+
+// cacheNewerThanBinary reports whether the on-disk catalog cache was written after this
+// binary was built/installed. If the comparison can't be made, the cache is trusted.
+func cacheNewerThanBinary() bool {
+	ci, err := os.Stat(paths.CatalogPath())
+	if err != nil {
+		return false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return true
+	}
+	ei, err := os.Stat(exe)
+	if err != nil {
+		return true
+	}
+	return ci.ModTime().After(ei.ModTime())
 }
 
 // Update fetches the latest catalogue from the winc.cpp repo, validates it, and caches

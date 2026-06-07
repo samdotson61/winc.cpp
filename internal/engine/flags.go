@@ -118,6 +118,12 @@ func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
 	if !isMTPFile(modelPath) {
 		return nil
 	}
+	// draft-mtp is unstable on the Metal backend (crashes during inference -> the agent
+	// retries forever). Run the model as a normal (still fast) model on macOS GPUs until
+	// it's reliable there; CUDA/Vulkan/CPU keep MTP.
+	if CurrentBackend() == "metal" {
+		return nil
+	}
 	if serverBin != "" && !serverSupportsMTP(serverBin) {
 		return nil
 	}
