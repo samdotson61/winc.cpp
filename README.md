@@ -125,11 +125,44 @@ budget — those run with **zero proxy hop** (direct to llama-server).
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | qwen2.5-coder-3b, llama3.2-1b, gemma3-1b, phi4-mini |
 | `small` | 6-8 GB | qwen2.5-coder-7b, llama3.1-8b |
-| `mid` | 16 GB / 16-32 GB unified | qwen3.6-27b, gpt-oss-20b, devstral |
-| `large` | 24 GB+ / 36 GB+ unified | qwen2.5-coder-32b, qwen3-32b |
+| `mid` | 16 GB / 16-32 GB unified | **qwen3.6-35b (MoE)**, gpt-oss-20b, qwen3.6-27b |
+| `large` | 24 GB+ / 36 GB+ unified | **qwen3.6-35b-q4 (MoE)**, qwen2.5-coder-32b |
 | `xl` | 64 GB+ unified | qwen2.5-72b |
 
-Add your own with a `[[custom_models]]` block in `winc.toml`.
+Add your own with a `[[custom_models]]` block in `winc.toml`. Tiers that can fit a
+strong MoE coder default to it — a 35B with ~3B active is ~3-5x faster than a dense
+27B at near-equal quality.
+
+### Low-end picks (`nano` + `small`), with rough benchmarks
+
+★ = tier default. Figures are Q4_K_M, fully GPU-offloaded, short context, and
+**approximate** — HumanEval varies by eval harness (use it for relative ranking),
+and tok/s swings with GPU / quant / context. Run `winc detect` to see what your
+machine resolves to.
+
+**`nano` — <6 GB (2-4 GB GPUs, iGPUs, phones)**
+
+| Model | Params | VRAM | HumanEval~ | tok/s (4-6 GB GPU / CPU) | Best for |
+|---|---|---|---|---|---|
+| ★ qwen2.5-coder-3b | 3B | 1.9 GB | ~84% | ~50-70 / ~12-20 | best tiny **coder** |
+| qwen2.5-coder-1.5b | 1.5B | 1.0 GB | ~70% | ~90-120 / ~25-40 | fastest coder (~3 GB) |
+| phi4-mini | 3.8B | 2.5 GB | ~70% | ~45-65 / ~10-18 | math / logic |
+| llama3.2-3b | 3B | 2.0 GB | ~51% | ~55-75 / ~12-22 | general chat |
+| smollm2-1.7b | 1.7B | 1.1 GB | ~25% | ~90-120 / ~25-40 | ultra-light |
+| llama3.2-1b | 1B | 0.8 GB | ~18% | ~120-160 / ~40-60 | phones / edge |
+| gemma3-1b | 1B | 0.8 GB | ~15% | ~120-160 / ~40-60 | flash chat |
+
+**`small` — 6-8 GB (GTX 1660 / RTX 3050 / RX 6600-class)**
+
+| Model | Params | VRAM | HumanEval~ | tok/s (6-8 GB GPU / CPU) | Best for |
+|---|---|---|---|---|---|
+| ★ qwen2.5-coder-7b | 7B | 4.7 GB | ~88% | ~25-35 / ~6-10 | best small **coder** |
+| deepseek-r1-8b | 8B | 5.0 GB | strong* | ~25-32 / ~6-10 | math/algorithmic (*reasoning) |
+| llama3.1-8b | 8B | 4.9 GB | ~72% | ~25-32 / ~6-10 | well-rounded general |
+| gemma4-e4b | ~4B eff | 5.0 GB | modest | ~35-50 / ~10-16 | newest, multimodal |
+
+Anchors: an RTX 3050 8 GB runs an 8B Q4 at ~28 tok/s; a 3B is ~2x that, a 1B ~4-5x;
+GPU is ~5-10x faster than CPU. **For coding at any size, prefer the Qwen2.5-Coder line.**
 
 ---
 
