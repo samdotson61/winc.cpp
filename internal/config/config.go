@@ -126,9 +126,10 @@ cache_type = "q8_0"     # KV cache: q8_0 (default, best speed/accuracy) | f16 (m
 threads    = "auto"
 max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
 
-# MoE expert offload: keep a MoE model's expert weights in RAM (attention stays on
-# GPU) so big MoE models run on smaller VRAM without dropping whole layers.
-cpu_moe = "auto"             # "auto" (offload only if the model won't fit VRAM), "on", "off", or a layer count
+# MoE expert offload: keep a MoE model's expert weights in RAM (attention + MTP heads
+# stay on GPU) so big MoE models run on smaller VRAM AND free VRAM for a much larger
+# context. "on" is the lever for big context on a tight-fit MoE (e.g. a 35B on 16 GB).
+cpu_moe = "auto"             # auto = offload when the model won't fit OR leaves no room for context; "on" forces it (big context, a bit slower); "off" disables; or a layer count
 
 # Speculative decoding: a small same-family draft model predicts tokens the main
 # model verifies in a batch (faster on dense models). Filename of a GGUF in models/.

@@ -24,11 +24,18 @@ func isMoEFile(path string) bool { return moeNamePat.MatchString(filepath.Base(p
 // IsMoEFile reports whether a GGUF filename looks like a Mixture-of-Experts model.
 func IsMoEFile(path string) bool { return isMoEFile(path) }
 
+// minKVHeadroomMB is the free VRAM (after model + compute buffer) below which a MoE
+// model's context would be stuck near the floor. Auto-offload kicks in under this so
+// the experts move to RAM and free VRAM for a usable context.
+const minKVHeadroomMB = 1024
+
 // resolveCPUMoE decides MoE expert offload: "" (none), "all" (--cpu-moe), or an
-// integer layer count (--n-cpu-moe N). Auto offloads only when a MoE model won't
-// fit VRAM, so models that fit stay fully on the GPU (fastest generation). modelMB
-// is the model's on-disk size (0 = unknown; auto can't size-check, so it won't
-// engage offload).
+// integer layer count (--n-cpu-moe N). Auto offloads a MoE model when it won't fit
+// VRAM OR when it fits so tightly that almost no VRAM is left for KV (context would
+// be stuck at the floor) -- moving experts to RAM then frees VRAM for a much larger
+// context, trading some expert-compute speed (MTP / the small active set softens it).
+// Comfortably-fitting models stay fully on the GPU (fastest). modelMB is the on-disk
+// size (0 = unknown; auto can't size-check, so it won't engage offload).
 func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB, ngl int) string {
 	switch v := strings.ToLower(strings.TrimSpace(cfg.Performance.CpuMoe)); v {
 	case "off", "false", "no":
@@ -42,13 +49,19 @@ func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, m
 			return strconv.Itoa(n)
 		}
 	}
-	if ngl == 0 || hw.VRAMMB <= 0 || !isMoEFile(modelPath) {
+	if ngl == 0 || hw.VRAMMB <= 0 || modelMB <= 0 || !isMoEFile(modelPath) {
 		return ""
 	}
-	if modelMB > 0 && modelMB+1536 > hw.VRAMMB {
+	if hw.VRAMMB-modelMB-1536 < minKVHeadroomMB {
 		return "all"
 	}
 	return ""
+}
+
+// WillOffloadExperts reports whether winc will move this model's MoE experts to RAM
+// (--cpu-moe) -- which frees most of the model's VRAM for a much larger KV cache.
+func WillOffloadExperts(cfg *config.Config, hw platform.Hardware, modelPath string) bool {
+	return resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), GpuLayers(cfg, hw)) == "all"
 }
 
 // isMTPFile reports whether a GGUF is a Multi-Token-Prediction variant (winc saves
@@ -119,8 +132,8 @@ func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
 // for a model file of the given on-disk size in MB (0 = unknown). For diagnostics
 // (winc detect). cpuMoe is "" (none / full GPU), "all" (--cpu-moe), or a layer count.
 func PlanForModel(cfg *config.Config, hw platform.Hardware, modelFile string, modelMB int) (ctx int, cpuMoe string) {
-	ctx = ResolveContext(cfg, hw, modelMB)
 	cpuMoe = resolveCPUMoE(cfg, hw, modelFile, modelMB, GpuLayers(cfg, hw))
+	ctx = ResolveContext(cfg, hw, modelMB, cpuMoe == "all")
 	return ctx, cpuMoe
 }
 
@@ -179,12 +192,20 @@ func kvCtxFactor(cacheType string, flashAttn bool) int {
 
 // ResolveContext picks a liberal context window: the configured value, or (auto)
 // the largest that should fit free VRAM after the model, clamped to a safe range.
-// The launcher verifies the choice actually loads and falls back if not.
-func ResolveContext(cfg *config.Config, hw platform.Hardware, modelFileMB int) int {
+// The launcher verifies the choice actually loads and falls back if not. When the
+// model's experts are offloaded to RAM (expertsOffloaded), most of its VRAM is free
+// for KV, so we aim at the ceiling and let the launcher's ladder settle the max.
+func ResolveContext(cfg *config.Config, hw platform.Hardware, modelFileMB int, expertsOffloaded bool) int {
 	if cfg.Performance.Context != "auto" && cfg.Performance.Context != "" {
 		return atoiOr(cfg.Performance.Context, ctxFloor)
 	}
-	if GpuLayers(cfg, hw) == 0 || hw.VRAMMB <= 0 || modelFileMB <= 0 {
+	if GpuLayers(cfg, hw) == 0 || hw.VRAMMB <= 0 {
+		return ctxFloor
+	}
+	if expertsOffloaded {
+		return ctxCeil // experts in RAM -> lots of VRAM free; ladder fits the largest that loads
+	}
+	if modelFileMB <= 0 {
 		return ctxFloor
 	}
 	free := hw.VRAMMB - modelFileMB - 1536 // reserve compute buffer + safety
@@ -265,7 +286,7 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	}
 
 	if ctx <= 0 {
-		ctx = ResolveContext(cfg, hw, FileMB(modelPath))
+		ctx = ResolveContext(cfg, hw, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath))
 	}
 	args = append(args, "-c", strconv.Itoa(ctx))
 

@@ -189,7 +189,8 @@ end of this section only exist if you want to override a decision.
 |---|---|---|
 | **Driver-aware backend** | Picks the right prebuilt llama.cpp build — CUDA 13.x vs 12.x by your **driver** version, else Metal / Vulkan / ROCm / CPU — and **falls back at runtime** (cuda → vulkan → cpu) if a backend won't actually run | A CUDA build that matches your driver runs on the GPU instead of silently dropping to CPU |
 | **GPU layer auto-fit** | Leaves `-ngl` on auto so llama.cpp packs as many layers into VRAM as fit (partial offload when a model is bigger than VRAM) | Every layer on the GPU is ~5-10x faster than on the CPU |
-| **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM, keeps **attention on the GPU** but parks the **expert weights in RAM** (`--cpu-moe`) instead of dropping whole layers | A 35B-A3B MoE runs near GPU speed on 12 GB: only the ~3B active params' activations cross PCIe, not 35B of weights |
+| **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU but parks the **expert weights in RAM** (`--cpu-moe`), freeing VRAM for a much larger context | A 35B-A3B runs near GPU speed on 12 GB; on a tight 16 GB fit it trades a little speed for a ~32k→~100k+ context |
+| **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) so its auto-compaction fires at 85% of the *local* size, not the ~200k it assumes for cloud Sonnet | No more `400 … exceeds the available context size` mid-session — Claude Code compacts in time |
 | **Flash attention + Q8 KV cache** | Enables `--flash-attn` and stores the KV cache at `q8_0` when on GPU | Halves KV-cache memory → bigger context in the same VRAM, and faster attention |
 | **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (128k → 96k → 64k → … → 16k) if the first choice doesn't load | You get the largest context that fits — and never see an out-of-memory error on launch |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
@@ -208,8 +209,12 @@ whose weights are **larger than your VRAM** still runs at close to full-GPU spee
 because each token only moves a small activation vector across the bus, not gigabytes of
 experts. This is why the `mid` tier recommends a 35B MoE even on a 16 GB card.
 
-`winc` turns it on **only when a MoE model won't otherwise fit** (a model that fits VRAM
-stays 100% on the GPU, which is still fastest). Override with `cpu_moe` below.
+`winc` turns it on automatically when a MoE model **won't fit** *or* fits so tightly that
+there's no VRAM left for a usable context (e.g. a 14 GB MTP build on a 16 GB card, which
+would otherwise be stuck at the 32k floor). Offloading the experts frees ~10 GB+ for KV,
+so the context jumps to ~100k+. Comfortably-fitting models stay 100% on the GPU (fastest).
+**Want more context on a tight-fit MoE?** Set `cpu_moe = "on"` — it offloads the experts
+(a little slower, MTP softens it) and `winc` then sizes the context to the freed VRAM.
 
 ### Tuning knobs — `[performance]` in `winc.toml`
 

@@ -82,22 +82,26 @@ func TestResolveContext(t *testing.T) {
 	cfg := config.Defaults()
 	// explicit wins
 	cfg.Performance.Context = "8192"
-	if got := ResolveContext(&cfg, platform.Hardware{}, 0); got != 8192 {
+	if got := ResolveContext(&cfg, platform.Hardware{}, 0, false); got != 8192 {
 		t.Errorf("explicit ctx: got %d", got)
 	}
 	// auto with no info -> floor
 	cfg.Performance.Context = "auto"
-	if got := ResolveContext(&cfg, platform.Hardware{}, 0); got != ctxFloor {
+	if got := ResolveContext(&cfg, platform.Hardware{}, 0, false); got != ctxFloor {
 		t.Errorf("auto floor: got %d", got)
 	}
 	// ample headroom -> large, clamped to ceiling
-	got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 4000)
+	got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 4000, false)
 	if got < ctxFloor || got > ctxCeil {
 		t.Errorf("auto range: got %d", got)
 	}
 	// near-full VRAM -> floor
-	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 15500); got != ctxFloor {
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 15500, false); got != ctxFloor {
 		t.Errorf("tight VRAM should floor: got %d", got)
+	}
+	// experts offloaded -> aim at the ceiling regardless of the (now-irrelevant) file size
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 15500, true); got != ctxCeil {
+		t.Errorf("offloaded experts should target the ceiling: got %d", got)
 	}
 }
 
@@ -106,13 +110,13 @@ func TestResolveContextCacheType(t *testing.T) {
 	const modelMB = 3000 // leaves a small VRAM window so factors stay below the ceiling
 
 	cfg := config.Defaults() // q8_0 + flash_attn (defaults)
-	q8 := ResolveContext(&cfg, hw, modelMB)
+	q8 := ResolveContext(&cfg, hw, modelMB, false)
 
 	cfg.Performance.CacheType = "f16"
-	f16 := ResolveContext(&cfg, hw, modelMB)
+	f16 := ResolveContext(&cfg, hw, modelMB, false)
 
 	cfg.Performance.CacheType = "q4_0"
-	q4 := ResolveContext(&cfg, hw, modelMB)
+	q4 := ResolveContext(&cfg, hw, modelMB, false)
 
 	// A smaller KV cache fits a proportionally larger window.
 	if !(q4 > q8 && q8 > f16) {
@@ -124,8 +128,32 @@ func TestResolveContextCacheType(t *testing.T) {
 	}
 	// Without flash attention the cache is f16 regardless of cache_type.
 	cfg.Performance.FlashAttn = false // cache_type is still q4_0 here
-	if got := ResolveContext(&cfg, hw, modelMB); got != f16 {
+	if got := ResolveContext(&cfg, hw, modelMB, false); got != f16 {
 		t.Errorf("no flash-attn should size as f16: got %d want %d", got, f16)
+	}
+}
+
+func TestResolveCPUMoEAuto(t *testing.T) {
+	cfg := config.Defaults() // cpu_moe = "auto"
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16303}
+	const moe = "Qwen3.6-35B-A3B-MTP-UD-IQ3_S.gguf"
+
+	// Barely fits (free < 1024 MB) -> offload experts to free VRAM for context.
+	if got := resolveCPUMoE(&cfg, hw, moe, 14636, 99); got != "all" {
+		t.Errorf("barely-fitting MoE should offload: got %q", got)
+	}
+	// Comfortable fit -> stay fully on GPU.
+	if got := resolveCPUMoE(&cfg, hw, moe, 10000, 99); got != "" {
+		t.Errorf("comfortably-fitting MoE should stay on GPU: got %q", got)
+	}
+	// Dense model -> never offloaded by auto.
+	if got := resolveCPUMoE(&cfg, hw, "Qwen3.6-27B-Q3_K_M.gguf", 14636, 99); got != "" {
+		t.Errorf("dense model should not offload: got %q", got)
+	}
+	// Explicit off wins even when tight.
+	cfg.Performance.CpuMoe = "off"
+	if got := resolveCPUMoE(&cfg, hw, moe, 14636, 99); got != "" {
+		t.Errorf("cpu_moe=off should never offload: got %q", got)
 	}
 }
 

@@ -106,6 +106,12 @@ func cmdStart(args []string) int {
 
 	maxOut := engine.ResolveMaxOutput(cfg, loadedCtx)
 	ui.Good("server ready at %s (context %d, max output %d)", serverURL, loadedCtx, maxOut)
+	if loadedCtx < 49152 {
+		ui.Warn("context is small (%d tokens) - Claude Code may compact often.", loadedCtx)
+		if engine.IsMoEFile(modelPath) && !engine.WillOffloadExperts(cfg, hw, modelPath) {
+			ui.Say("  tip: set cpu_moe = \"on\" in winc.toml to offload experts to RAM and free VRAM for a much larger context.")
+		}
+	}
 
 	// Adaptive reasoning: front the server with the in-process router.
 	baseURL := serverURL
@@ -124,7 +130,7 @@ func cmdStart(args []string) int {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
 	slots := agent.Slots{Sonnet: alias, Opus: alias, Haiku: alias}
-	env := agent.Env(baseURL, slots, maxOut)
+	env := agent.Env(baseURL, slots, maxOut, loadedCtx)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)

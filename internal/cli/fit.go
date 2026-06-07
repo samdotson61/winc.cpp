@@ -13,7 +13,7 @@ import (
 // tryContextLadder launches llama-server at the most liberal context that fits,
 // silently stepping down if a size fails to load. Returns (proc, ctx) or (nil, 0).
 func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string) (*server.Proc, int) {
-	target := engine.ResolveContext(cfg, hw, engine.FileMB(modelPath))
+	target := engine.ResolveContext(cfg, hw, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 	for _, ctx := range engine.ContextLadder(target) {
 		args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
 		args = append(args, engine.MTPArgs(cfg, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)

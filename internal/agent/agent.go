@@ -17,9 +17,10 @@ import (
 type Slots struct{ Sonnet, Opus, Haiku string }
 
 // Env returns the full environment for the agent process. maxOutputTokens, when
-// > 0, raises Claude Code's response-length cap so big agentic edits don't hit
-// the default 32000-token limit.
-func Env(baseURL string, slots Slots, maxOutputTokens int) []string {
+// > 0, raises Claude Code's response-length cap. contextWindow, when > 0, tells
+// Claude Code the local model's REAL context size so its auto-compaction fires
+// before the server overflows (it otherwise assumes a ~200k cloud window).
+func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int) []string {
 	env := os.Environ()
 	add := func(k, v string) {
 		if v != "" {
@@ -38,6 +39,12 @@ func Env(baseURL string, slots Slots, maxOutputTokens int) []string {
 	add("COLORTERM", "truecolor")
 	if maxOutputTokens > 0 {
 		add("CLAUDE_CODE_MAX_OUTPUT_TOKENS", strconv.Itoa(maxOutputTokens))
+	}
+	if contextWindow > 0 {
+		// Size auto-compaction to the real local window, and trigger at 85% to leave
+		// room for the response (so a turn never overruns the server's context).
+		add("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.Itoa(contextWindow))
+		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "85")
 	}
 	return env
 }
