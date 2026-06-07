@@ -13,9 +13,13 @@ import (
 const (
 	llamaRepo        = "ggml-org/llama.cpp"
 	swapRepo         = "mostlygeek/llama-swap"
+	wincRepo         = "samdotson61/winc.cpp"
 	llamaFallbackTag = "b9542" // verified 2026-06-06
 	swapFallbackTag  = "223"   // verified 2026-06-06 (release tag v223)
 )
+
+// LatestWincTag returns the newest winc.cpp release tag, or "" if it can't be reached.
+func LatestWincTag() string { return latestTag(wincRepo, "") }
 
 // latestTag asks the GitHub releases API; falls back to a known-good tag offline.
 func latestTag(repo, fallback string) string {

@@ -7,6 +7,12 @@
 *~
 /dist/
 
+# Self-rebuild swap artifacts ('winc update' on a clone)
+/winc.new
+/winc.old
+/winc.exe.new
+/winc.exe.old
+
 # Single config file (per-machine; generated from the embedded default template)
 /winc.toml
 
