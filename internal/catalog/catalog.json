@@ -1,10 +1,10 @@
 {
   "tiers": {
     "nano":  "<6 GB - phones, weak laptops, iGPUs",
-    "small": "6-8 GB VRAM / 8 GB unified",
-    "mid":   "16 GB VRAM / 16-32 GB unified",
-    "large": "24 GB+ VRAM / 36 GB+ unified",
-    "xl":    "64 GB+ unified (Apple)",
+    "small": "6-8 GB VRAM / 8-16 GB unified",
+    "mid":   "16 GB VRAM / 24 GB unified",
+    "large": "24 GB+ VRAM / 32-64 GB unified",
+    "xl":    "96 GB+ unified (Apple)",
     "mtp":   "faster Multi-Token-Prediction variants (auto --spec-type draft-mtp)",
     "draft": "tiny same-tokenizer draft models for speculative decoding"
   },

@@ -124,10 +124,14 @@ budget — those run with **zero proxy hop** (direct to llama-server).
 | Tier | Target | Examples |
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | qwen2.5-coder-3b, llama3.2-1b, gemma3-1b, phi4-mini |
-| `small` | 6-8 GB | qwen2.5-coder-7b, llama3.1-8b |
-| `mid` | 16 GB / 16-32 GB unified | **qwen3.6-35b (MoE)**, gpt-oss-20b, qwen3.6-27b |
-| `large` | 24 GB+ / 36 GB+ unified | **qwen3.6-35b-q4 (MoE)**, qwen2.5-coder-32b |
-| `xl` | 64 GB+ unified | qwen2.5-72b |
+| `small` | 6-8 GB / 8-16 GB unified | qwen2.5-coder-7b, llama3.1-8b |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gpt-oss-20b, qwen3.6-27b |
+| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, qwen2.5-coder-32b |
+| `xl` | 96 GB+ unified | qwen2.5-72b |
+
+> **Apple Silicon note:** unified memory is shared with the OS and the GPU can only use
+> ~75% of it, so winc budgets ~72% of your RAM when picking a tier — e.g. a 24 GB Mac
+> maps to `mid` (a ~14 GB model that fits), not `large` (a 22 GB model that won't).
 
 Add your own with a `[[custom_models]]` block in `winc.toml`. Tiers that can fit a
 strong MoE coder default to it — a 35B with ~3B active is ~3-5x faster than a dense

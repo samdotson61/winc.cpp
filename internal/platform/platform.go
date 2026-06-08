@@ -35,7 +35,12 @@ type Hardware struct {
 // machine is sized by RAM but capped, since large models are impractical on CPU.
 func (h Hardware) MemoryBudgetMB() int {
 	if h.Unified {
-		return h.RAMMB
+		// Apple Silicon shares RAM between the OS, apps, and the GPU, and Metal's GPU
+		// working set is only a fraction of unified memory -- a model can't use all of
+		// it. Budget ~72% so the model + KV fit the working set with OS headroom; this
+		// stops winc recommending a model too big to load (e.g. a 22 GB model on a
+		// 24 GB Mac, which barely loads and leaves no room for context).
+		return h.RAMMB * 72 / 100
 	}
 	if h.GPUVendor != "" && h.GPUVendor != "none" {
 		return h.VRAMMB // dedicated VRAM only; never system/shared RAM
