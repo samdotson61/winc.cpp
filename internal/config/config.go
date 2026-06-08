@@ -91,7 +91,7 @@ const defaultTOML = `# winc.toml - the one and only winc.cpp config. Edit freely
 
 [general]
 default_app   = "claude"        # claude | opencode | openclaw | cli
-default_model = "qwen2.5-coder-7b"  # alias from ` + "`winc ls`" + `
+default_model = "qwen3.5-9b"  # alias from ` + "`winc ls`" + `
 host = "127.0.0.1"
 port = 8080
 
@@ -133,10 +133,10 @@ cpu_moe = "auto"             # auto = offload when the model won't fit OR leaves
 
 # Speculative decoding: a small same-family draft model predicts tokens the main
 # model verifies in a batch (faster on dense models). Filename of a GGUF in models/.
-draft_model = ""             # e.g. "Qwen2.5-Coder-0.5B-Instruct-Q8_0.gguf"; blank = off
+draft_model = ""             # e.g. "Qwen3.5-0.8B-Q4_K_M.gguf"; blank = off
 
 # Multi-Token Prediction (MTP): built-in speculative decoding baked into *-MTP model
-# variants (e.g. qwen3.6-27b-mtp). Auto-enabled when an MTP GGUF is loaded AND the
+# variants (e.g. qwen3.6-35b-mtp). Auto-enabled when an MTP GGUF is loaded AND the
 # engine supports it; harmlessly skipped otherwise. ~1.4-2.2x on dense, ~1.2x on MoE.
 mtp = "auto"                 # "auto" (on for MTP models) | "off"
 mtp_draft_max = 2            # tokens drafted per step (--spec-draft-n-max); 2 is a good default
@@ -147,9 +147,9 @@ extra_server_args = []       # e.g. ["--mlock"] or ["--prio", "2"] or ["--n-cpu-
 [multi]                  # llama-swap, only with ` + "`winc -s ... --multi`" + `
 enabled = false
 ttl_seconds = 600
-sonnet = "qwen2.5-coder-7b"   # Claude Code's claude-sonnet slot -> this local model alias
-opus   = "qwen2.5-coder-7b"
-haiku  = "qwen2.5-coder-7b"
+sonnet = "qwen3.5-9b"   # Claude Code's claude-sonnet slot -> this local model alias
+opus   = "qwen3.5-9b"
+haiku  = "qwen3.5-9b"
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var

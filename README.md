@@ -40,8 +40,8 @@ Then start coding on a local model:
 
 ```
 winc ls                            # list downloaded + available models
-winc -d qwen2.5-coder-7b           # download one
-winc -s claude qwen2.5-coder-7b    # launch Claude Code on it (sandboxed)
+winc -d qwen3.5-9b           # download one
+winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 ```
 
 ---
@@ -78,7 +78,7 @@ Everything lives in `winc.toml` next to the binary — hand-editable, written on
 ```toml
 [general]
 default_app   = "claude"
-default_model = "qwen2.5-coder-7b"
+default_model = "qwen3.5-9b"
 port = 8080
 
 [reasoning]
@@ -102,14 +102,14 @@ flash_attn = true
 cache_type = "q8_0"
 
 [multi]                     # llama-swap model-slot mapping (winc -s ... --multi)
-sonnet = "qwen2.5-coder-7b"
-opus   = "qwen2.5-coder-7b"
-haiku  = "qwen2.5-coder-7b"
+sonnet = "qwen3.5-9b"
+opus   = "qwen3.5-9b"
+haiku  = "qwen3.5-9b"
 ```
 
 ### Adaptive reasoning
 
-Reasoning models (Qwen3, DeepSeek-R1, ...) can over-think trivial prompts. In **adaptive**
+Reasoning models (Qwen3.5, Qwen3.6, ...) can over-think trivial prompts. In **adaptive**
 mode (the default) `winc` runs a tiny in-process router that sets a per-request *thinking
 ceiling* scaled to request size: "hi" answers instantly, while a real coding task gets a
 full budget. Set `mode = "on"` (always think), `"off"` (never), or `"fixed"` for a constant
@@ -121,13 +121,17 @@ budget — those run with **zero proxy hop** (direct to llama-server).
 
 `winc ls` groups the catalogue by memory budget (discrete VRAM or Apple unified memory):
 
-| Tier | Target | Examples |
+| Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
-| `nano` | < 6 GB (phones, weak laptops, iGPUs) | qwen2.5-coder-3b, llama3.2-1b, gemma3-1b, phi4-mini |
-| `small` | 6-8 GB / 8-16 GB unified | qwen2.5-coder-7b, llama3.1-8b |
-| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gpt-oss-20b, qwen3.6-27b |
-| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, qwen2.5-coder-32b |
-| `xl` | 96 GB+ unified | qwen2.5-72b |
+| `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b |
+| `small` | 6-8 GB / 8-16 GB unified | **qwen3.5-9b**, omnicoder-9b, gemma4-e4b |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.6-27b |
+| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.6-27b-q5 |
+| `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
+
+The catalogue advertises **only models released in 2026** — the Qwen3.5 / Qwen3.6 and
+Gemma 4 lines, with full tool-calling down to 0.8B. It's refreshed over time via
+`winc update` (see below), so older rosters are pruned as better models land.
 
 > **Apple Silicon note:** unified memory is shared with the OS and the GPU can only use
 > ~75% of it, so winc budgets ~72% of your RAM when picking a tier — e.g. a 24 GB Mac
@@ -148,36 +152,34 @@ not just the engine and catalogue. `winc check` shows whether your source is beh
 (Prebuilt installs can't self-rebuild — redownload the release for code changes; the
 catalogue + engine still refresh.)
 
-### Low-end picks (`nano` + `small`), with rough benchmarks
+### Low-end picks (`nano` + `small`), 2026 roster
 
 ★ = tier default. Figures are Q4_K_M, fully GPU-offloaded, short context, and
-**approximate** — HumanEval varies by eval harness (use it for relative ranking),
-and tok/s swings with GPU / quant / context. Run `winc detect` to see what your
-machine resolves to.
+**approximate** — benchmarks vary by harness (use them for relative ranking) and tok/s
+swings with GPU / quant / context. All of these are **2026 releases with native
+tool-calling**, so even the tiny ones can drive an agent (call tools, web search). Run
+`winc detect` to see what your machine resolves to.
 
 **`nano` — <6 GB (2-4 GB GPUs, iGPUs, phones)**
 
-| Model | Params | VRAM | HumanEval~ | tok/s (4-6 GB GPU / CPU) | Best for |
-|---|---|---|---|---|---|
-| ★ qwen2.5-coder-3b | 3B | 1.9 GB | ~84% | ~50-70 / ~12-20 | best tiny **coder** |
-| qwen2.5-coder-1.5b | 1.5B | 1.0 GB | ~70% | ~90-120 / ~25-40 | fastest coder (~3 GB) |
-| phi4-mini | 3.8B | 2.5 GB | ~70% | ~45-65 / ~10-18 | math / logic |
-| llama3.2-3b | 3B | 2.0 GB | ~51% | ~55-75 / ~12-22 | general chat |
-| smollm2-1.7b | 1.7B | 1.1 GB | ~25% | ~90-120 / ~25-40 | ultra-light |
-| llama3.2-1b | 1B | 0.8 GB | ~18% | ~120-160 / ~40-60 | phones / edge |
-| gemma3-1b | 1B | 0.8 GB | ~15% | ~120-160 / ~40-60 | flash chat |
+| Model | Params | Size | Released | LiveCodeBench~ | tok/s (4-6 GB GPU / CPU) | Best for |
+|---|---|---|---|---|---|---|
+| ★ qwen3.5-4b | 4B | 2.6 GB | Feb 2026 | ~56 | ~45-65 / ~10-18 | best tiny **coder + tools** |
+| gemma4-e2b | 2.3B eff | 2.9 GB | Mar 2026 | ~44 | ~50-70 / ~12-20 | general, multimodal |
+| qwen3.5-2b | 2B | 1.2 GB | Feb 2026 | — | ~80-110 / ~22-36 | fastest small coder |
+| qwen3.5-0.8b | 0.8B | 0.5 GB | Mar 2026 | — | ~120-160 / ~40-60 | phones / edge / draft |
 
-**`small` — 6-8 GB (GTX 1660 / RTX 3050 / RX 6600-class)**
+**`small` — 6-8 GB (RTX 3050 / RX 6600-class) or 8-16 GB unified**
 
-| Model | Params | VRAM | HumanEval~ | tok/s (6-8 GB GPU / CPU) | Best for |
-|---|---|---|---|---|---|
-| ★ qwen2.5-coder-7b | 7B | 4.7 GB | ~88% | ~25-35 / ~6-10 | best small **coder** |
-| deepseek-r1-8b | 8B | 5.0 GB | strong* | ~25-32 / ~6-10 | math/algorithmic (*reasoning) |
-| llama3.1-8b | 8B | 4.9 GB | ~72% | ~25-32 / ~6-10 | well-rounded general |
-| gemma4-e4b | ~4B eff | 5.0 GB | modest | ~35-50 / ~10-16 | newest, multimodal |
+| Model | Params | Size | Released | LiveCodeBench~ | tok/s (6-8 GB GPU / CPU) | Best for |
+|---|---|---|---|---|---|---|
+| ★ qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
+| omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | agentic **coding** specialist |
+| gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
 
-Anchors: an RTX 3050 8 GB runs an 8B Q4 at ~28 tok/s; a 3B is ~2x that, a 1B ~4-5x;
-GPU is ~5-10x faster than CPU. **For coding at any size, prefer the Qwen2.5-Coder line.**
+Anchors: an RTX 3050 8 GB runs a 9B Q4 at ~25 tok/s; a 4B is ~2x that, a sub-1B ~5x+;
+GPU is ~5-10x faster than CPU. **For coding, prefer the Qwen3.5 line (or OmniCoder-9B);
+all pair with the tiny `qwen3.5-0.8b` draft for speculative decoding.**
 
 ---
 
@@ -252,21 +254,21 @@ extra_server_args = []   # e.g. ["--mlock"] (lock model in RAM) or ["--n-cpu-moe
 ```
 
 **Speculative decoding is automatic for dense models.** When you download a dense
-catalogue model, `winc` offers to also grab its tiny same-tokenizer draft (a 0.5B coder
-for the Qwen2.5-Coder models, Qwen3-0.6B for the Qwen3 dense models, Llama-3.2-1B for
-Llama-3.1-8B). Once the draft is present, `winc` turns on `--spec-draft-model`
+catalogue model, `winc` offers to also grab its tiny same-tokenizer draft (the 0.8B
+`qwen3.5-0.8b` pairs with the Qwen3.5 small coders like `qwen3.5-9b` and `omnicoder-9b`).
+Once the draft is present, `winc` turns on `--spec-draft-model`
 automatically at launch — up to ~2× on predictable code. **MoE models are never paired**
 (only ~3B is active, so a draft just adds overhead). `draft_model` forces a specific
 draft or overrides the auto-pick.
 
-**MTP for Qwen3.6 (`*-mtp` variants).** Qwen3.6 changed tokenizers, so a separate draft
-model is the *wrong* tool — and classic drafts actually regress it. The right lever is
-**Multi-Token Prediction**: prediction heads baked into the model, no second model. Grab
-the MTP build — `winc -d qwen3.6-27b-mtp` (dense, ~1.4–2.2×) or `winc -d qwen3.6-35b-mtp`
-(MoE, ~1.15–1.25× — the only speculative speedup that helps a MoE) — and `winc` adds
-`--spec-type draft-mtp` automatically when it loads, **after probing that your engine
-supports the flag** (older engines just run without it). `winc detect` shows the MTP
-variant for your recommended model; `mtp = "off"` disables it.
+**MTP for the Qwen3.6 MoE (`*-mtp` variants).** Qwen3.6 changed tokenizers, so a separate
+draft model is the *wrong* tool — and classic drafts actually regress it. The right lever
+is **Multi-Token Prediction**: prediction heads baked into the model, no second model.
+Grab the MTP build — `winc -d qwen3.6-35b-mtp` (the IQ3_S 35B MoE) or `winc -d
+qwen3.6-35b-q4-mtp` (the Q4 build for 24 GB+ GPUs / 32 GB+ Macs) — and `winc` adds
+`--spec-type draft-mtp` automatically when it loads (~1.5–2× — the only speculative
+speedup that helps a MoE), **after probing that your engine supports the flag** (older
+engines just run without it). `mtp = "off"` disables it.
 
 **More context at ~the same speed:** set `cache_type = "q4_0"` to halve KV-cache bytes per
 token — `winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM

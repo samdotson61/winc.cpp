@@ -23,7 +23,7 @@ func TestParseCatalog(t *testing.T) {
 func TestOnDiskCatalogOverride(t *testing.T) {
 	t.Setenv("WINC_HOME", t.TempDir())
 	// No override yet -> embedded loads.
-	if Load(nil).Find("qwen2.5-coder-7b") == nil {
+	if Load(nil).Find("qwen3.5-9b") == nil {
 		t.Fatal("embedded catalog should load when no override present")
 	}
 	override := `{"tiers":{"nano":"x"},"models":[
@@ -39,14 +39,14 @@ func TestOnDiskCatalogOverride(t *testing.T) {
 	if c.Find("sentinel-model") == nil {
 		t.Error("on-disk override should be used")
 	}
-	if c.Find("qwen2.5-coder-7b") != nil {
+	if c.Find("qwen3.5-9b") != nil {
 		t.Error("override should fully replace the embedded base")
 	}
 	// Corrupt override -> fall back to embedded (never break ls).
 	if err := os.WriteFile(paths.CatalogPath(), []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if Load(nil).Find("qwen2.5-coder-7b") == nil {
+	if Load(nil).Find("qwen3.5-9b") == nil {
 		t.Error("corrupt override should fall back to embedded")
 	}
 }
@@ -56,8 +56,8 @@ func TestCatalogLoads(t *testing.T) {
 	if len(c.Models) < 15 {
 		t.Fatalf("too few models: %d", len(c.Models))
 	}
-	if c.Find("qwen2.5-coder-7b") == nil {
-		t.Fatal("alias qwen2.5-coder-7b not found")
+	if c.Find("qwen3.5-9b") == nil {
+		t.Fatal("alias qwen3.5-9b not found")
 	}
 	for _, m := range c.Models {
 		if m.Alias == "" || m.Repo == "" || m.File == "" || m.Tier == "" {
@@ -98,17 +98,15 @@ func TestMoEDefaultsForMidAndLarge(t *testing.T) {
 
 func TestDraftFor(t *testing.T) {
 	c := Load(nil)
-	// Dense coder -> its same-tokenizer coder draft.
-	if d := c.DraftFor(c.Find("qwen2.5-coder-32b")); d == nil || d.Alias != "qwen2.5-coder-0.5b-draft" {
-		t.Errorf("qwen2.5-coder-32b draft = %v, want qwen2.5-coder-0.5b-draft", d)
+	// Dense small coders -> the shared tiny Qwen3.5 draft (same tokenizer family).
+	for _, target := range []string{"qwen3.5-9b", "omnicoder-9b"} {
+		if d := c.DraftFor(c.Find(target)); d == nil || d.Alias != "qwen3.5-0.8b" {
+			t.Errorf("%s draft = %v, want qwen3.5-0.8b", target, d)
+		}
 	}
-	// MoE -> no draft (speculative decoding is net-negative on MoE).
+	// MoE -> no draft (speculative decoding is net-negative on MoE; MTP handles it).
 	if d := c.DraftFor(c.Find("qwen3.6-35b")); d != nil {
 		t.Errorf("MoE qwen3.6-35b should have no draft, got %q", d.Alias)
-	}
-	// Llama reuses the catalogued 1B as its draft.
-	if d := c.DraftFor(c.Find("llama3.1-8b")); d == nil || d.Alias != "llama3.2-1b" {
-		t.Errorf("llama3.1-8b draft = %v, want llama3.2-1b", d)
 	}
 	// Referential integrity: every declared draft must resolve to a real entry.
 	for _, m := range c.Models {
@@ -123,8 +121,8 @@ func TestDraftFor(t *testing.T) {
 
 func TestMTPVariants(t *testing.T) {
 	c := Load(nil)
-	// Standard Qwen3.6 models point at their MTP variant.
-	for std, want := range map[string]string{"qwen3.6-35b": "qwen3.6-35b-mtp", "qwen3.6-27b": "qwen3.6-27b-mtp"} {
+	// Standard Qwen3.6 MoE models point at their MTP variant.
+	for std, want := range map[string]string{"qwen3.6-35b": "qwen3.6-35b-mtp", "qwen3.6-35b-q4": "qwen3.6-35b-q4-mtp"} {
 		m := c.Find(std)
 		if m == nil || m.Mtp != want {
 			t.Errorf("%s.Mtp = %q, want %q", std, mtpOf(m), want)
