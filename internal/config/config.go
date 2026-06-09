@@ -72,15 +72,17 @@ type Multi struct {
 	Haiku      string `toml:"haiku"`
 }
 
-// Team is the heterogeneous agent hierarchy (winc -s ... --team): the launched
-// model orchestrates as the main agent (Claude's opus tier), with small CPU
-// worker models mapped onto the sonnet/haiku subagent tiers so a deep-research
-// fan-out spins up many quick workers instead of clones of the big model.
+// Team is the heterogeneous agent hierarchy (the default for a big main model): the
+// launched model orchestrates as the main agent while a small CPU worker handles ALL
+// subagents -- so a deep-research fan-out spins up many quick small agents instead of
+// clones of the big model. Mode gates auto-engagement; Subagents picks which worker all
+// subagents (Task tool AND the Workflow orchestrator's fan-out) are forced onto.
 type Team struct {
-	Enabled  bool   `toml:"enabled"`
-	Sonnet   string `toml:"sonnet"`   // collator / code-review subagents -> this model (sonnet tier)
-	Haiku    string `toml:"haiku"`    // research fan-out + Explore + background -> this model (haiku tier)
-	Parallel int    `toml:"parallel"` // concurrent slots on the haiku worker (research fan-out width)
+	Mode      string `toml:"mode"`      // auto (team for big main models) | on (always) | off (never)
+	Sonnet    string `toml:"sonnet"`    // the "sonnet" worker model (collator / code-review)
+	Haiku     string `toml:"haiku"`     // the "haiku" worker model (research fan-out + Explore)
+	Parallel  int    `toml:"parallel"`  // concurrent slots on the worker (research fan-out width)
+	Subagents string `toml:"subagents"` // which worker ALL subagents use: haiku | sonnet | tiered
 }
 
 type HuggingFace struct {
@@ -163,16 +165,21 @@ sonnet = "qwen3.5-9b"   # Claude Code's claude-sonnet slot -> this local model a
 opus   = "qwen3.5-9b"
 haiku  = "qwen3.5-9b"
 
-[team]                    # heterogeneous agent hierarchy: ` + "`winc -s claude <big> --team`" + `
-# The model you launch becomes the MAIN agent (opus tier). Two small workers run on
-# the CPU (so they never touch the main model's VRAM) and are mapped onto Claude
-# Code's subagent tiers: a deep-research fan-out then spins up many quick haiku
-# workers instead of clones of the big model. winc offers to download missing
-# workers and writes ready-made research/collator/code-reviewer agents.
-enabled  = false          # or just pass --team at launch
-sonnet   = "qwen3.5-4b"   # collator / code-review subagents   (Claude's sonnet tier)
-haiku    = "qwen3.5-0.8b" # research fan-out + Explore + background (haiku tier)
-parallel = 4              # concurrent slots on the haiku worker (fan-out width)
+[team]                     # agent hierarchy -- DEFAULT for a big main model
+# The model you launch orchestrates as the MAIN agent while a small worker runs on the
+# CPU (never touching the main model's VRAM) and handles ALL subagents -- so a
+# deep-research fan-out spins up many quick small agents instead of clones of the big
+# model. winc offers to download a missing worker and ships ready-made research/collator/
+# code-reviewer agents. On by default for mid+ models; pass --noteam for a single model.
+mode      = "auto"          # auto (team for big models) | on (always) | off (never)
+subagents = "haiku"         # which worker ALL subagents use:
+                            #   haiku  -> the 0.8B worker (cheapest, quick fan-out)  [default]
+                            #   sonnet -> the 4B worker   (slower, more capable)
+                            #   tiered -> run BOTH workers; no global override (per-agent pins:
+                            #             research->haiku, collator/review->sonnet)
+sonnet    = "qwen3.5-4b"    # the "sonnet" worker model
+haiku     = "qwen3.5-0.8b"  # the "haiku" worker model
+parallel  = 4               # concurrent slots on the worker (fan-out width)
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var
@@ -305,6 +312,12 @@ func (c *Config) backfill() {
 	}
 	if c.Multi.TTLSeconds == 0 {
 		c.Multi.TTLSeconds = d.Multi.TTLSeconds
+	}
+	if c.Team.Mode == "" {
+		c.Team.Mode = d.Team.Mode
+	}
+	if c.Team.Subagents == "" {
+		c.Team.Subagents = d.Team.Subagents
 	}
 	if c.Team.Sonnet == "" {
 		c.Team.Sonnet = d.Team.Sonnet

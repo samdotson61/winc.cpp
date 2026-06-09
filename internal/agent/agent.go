@@ -23,7 +23,10 @@ type Slots struct{ Sonnet, Opus, Haiku string }
 // mainModel, when set, pins the TOP-LEVEL agent's model (ANTHROPIC_MODEL) -- needed
 // in team mode, where the sonnet/haiku tiers point at small workers and the default
 // main tier (sonnet) would otherwise demote the orchestrator to a worker model.
-func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainModel string) []string {
+// subagentModel, when set, forces EVERY subagent (the Task tool AND the Workflow
+// orchestrator's fan-out) onto that model -- so a deep-research fan-out uses quick small
+// agents instead of clones of the big model.
+func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainModel, subagentModel string) []string {
 	env := os.Environ()
 	add := func(k, v string) {
 		if v != "" {
@@ -40,6 +43,9 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainMo
 	// Pin the main agent (else Claude Code defaults the top-level loop to the sonnet
 	// tier -- which in team mode is a small worker, not the model the user launched).
 	add("ANTHROPIC_MODEL", mainModel)
+	// Force every subagent (Task tool + the Workflow orchestrator's fan-out) onto the
+	// small worker. Highest precedence -- overrides per-agent model pins.
+	add("CLAUDE_CODE_SUBAGENT_MODEL", subagentModel)
 	add("CLAUDE_CONFIG_DIR", paths.ClaudeLocalDir())
 	// 24-bit color + synchronized output (terminal mode 2026) glitch on terminals
 	// that don't support them -- notably macOS Terminal.app. Only advertise them

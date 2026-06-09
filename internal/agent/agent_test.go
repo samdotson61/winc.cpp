@@ -20,7 +20,7 @@ func envVal(env []string, key string) (string, bool) {
 
 func TestEnvMapsTiersAndPinsMain(t *testing.T) {
 	slots := Slots{Sonnet: "small-4b", Opus: "big-35b", Haiku: "tiny-0.8b"}
-	env := Env("http://local", slots, 0, 0, "big-35b")
+	env := Env("http://local", slots, 0, 0, "big-35b", "tiny-0.8b")
 	if v, _ := envVal(env, "ANTHROPIC_DEFAULT_SONNET_MODEL"); v != "small-4b" {
 		t.Errorf("sonnet tier = %q, want small-4b", v)
 	}
@@ -35,12 +35,20 @@ func TestEnvMapsTiersAndPinsMain(t *testing.T) {
 	if v, ok := envVal(env, "ANTHROPIC_MODEL"); !ok || v != "big-35b" {
 		t.Errorf("ANTHROPIC_MODEL = %q ok=%v, want big-35b", v, ok)
 	}
+	// In team mode every subagent (Task + Workflow fan-out) is forced onto the worker.
+	if v, ok := envVal(env, "CLAUDE_CODE_SUBAGENT_MODEL"); !ok || v != "tiny-0.8b" {
+		t.Errorf("CLAUDE_CODE_SUBAGENT_MODEL = %q ok=%v, want tiny-0.8b", v, ok)
+	}
 }
 
 func TestEnvNoPinWhenMainEmpty(t *testing.T) {
 	os.Unsetenv("ANTHROPIC_MODEL")
-	env := Env("http://local", Slots{Sonnet: "s", Opus: "o", Haiku: "h"}, 0, 0, "")
+	os.Unsetenv("CLAUDE_CODE_SUBAGENT_MODEL")
+	env := Env("http://local", Slots{Sonnet: "s", Opus: "o", Haiku: "h"}, 0, 0, "", "")
 	if _, ok := envVal(env, "ANTHROPIC_MODEL"); ok {
 		t.Error("ANTHROPIC_MODEL must not be set in single/multi mode (empty mainModel)")
+	}
+	if _, ok := envVal(env, "CLAUDE_CODE_SUBAGENT_MODEL"); ok {
+		t.Error("CLAUDE_CODE_SUBAGENT_MODEL must not be set when empty")
 	}
 }

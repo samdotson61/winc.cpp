@@ -63,13 +63,17 @@ func TestBackfill(t *testing.T) {
 
 func TestTeamDefaults(t *testing.T) {
 	d := Defaults()
-	if d.Team.Sonnet == "" || d.Team.Haiku == "" {
-		t.Fatalf("team worker defaults missing: %+v", d.Team)
+	if d.Team.Mode != "auto" {
+		t.Fatalf("team mode default = %q, want auto (team is the default)", d.Team.Mode)
+	}
+	if d.Team.Subagents == "" || d.Team.Sonnet == "" || d.Team.Haiku == "" {
+		t.Fatalf("team defaults missing: %+v", d.Team)
 	}
 	if d.Team.Parallel <= 0 {
 		t.Fatalf("team parallel default = %d, want > 0", d.Team.Parallel)
 	}
-	// Backfill must fill team fields when a partial config omits [team] entirely.
+	// Backfill must fill team fields when a config omits [team] entirely -- so an existing
+	// pre-team winc.toml still gets team-by-default (mode auto).
 	dir := t.TempDir()
 	t.Setenv("WINC_HOME", dir)
 	if err := os.WriteFile(filepath.Join(dir, "winc.toml"), []byte("[general]\ndefault_model=\"x\"\n"), 0o644); err != nil {
@@ -79,7 +83,7 @@ func TestTeamDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Team.Sonnet == "" || cfg.Team.Haiku == "" || cfg.Team.Parallel == 0 {
+	if cfg.Team.Mode != "auto" || cfg.Team.Subagents == "" || cfg.Team.Parallel == 0 {
 		t.Fatalf("team backfill failed: %+v", cfg.Team)
 	}
 }

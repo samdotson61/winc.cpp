@@ -42,11 +42,23 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		ui.Warn("could not write team agents: %v", err)
 	}
 
-	// Resolve (and, turnkey, offer to download) the worker tiers.
-	sonnetQ := firstNonEmpty(cfg.Team.Sonnet, "qwen3.5-4b")
-	haikuQ := firstNonEmpty(cfg.Team.Haiku, "qwen3.5-0.8b")
-	sonnetPath, sonnetAlias := ensureWorker(cfg, cat, sonnetQ, "sonnet (collator / code-review)")
-	haikuPath, haikuAlias := ensureWorker(cfg, cat, haikuQ, "haiku (research fan-out)")
+	// Which worker(s) to run depends on the subagents policy: "haiku"/"sonnet" force ALL
+	// subagents (Task tool + Workflow fan-out) onto that one worker; "tiered" runs both
+	// and relies on per-agent pins. Only ensure/download the workers we'll actually run.
+	sub := strings.ToLower(strings.TrimSpace(cfg.Team.Subagents))
+	if sub != "sonnet" && sub != "tiered" {
+		sub = "haiku"
+	}
+	runSonnet := sub == "sonnet" || sub == "tiered"
+	runHaiku := sub == "haiku" || sub == "tiered"
+
+	var sonnetPath, sonnetAlias, haikuPath, haikuAlias string
+	if runSonnet {
+		sonnetPath, sonnetAlias = ensureWorker(cfg, cat, firstNonEmpty(cfg.Team.Sonnet, "qwen3.5-4b"), "sonnet (collator / code-review)")
+	}
+	if runHaiku {
+		haikuPath, haikuAlias = ensureWorker(cfg, cat, firstNonEmpty(cfg.Team.Haiku, "qwen3.5-0.8b"), "haiku (research fan-out)")
+	}
 
 	var procs []*server.Proc
 	stopAll := func() {
@@ -75,20 +87,34 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		par = 4
 	}
 
-	// Workers on the CPU, each on its own port, routed by model name. A tier whose
-	// worker is missing or fails to start simply falls back to the main model.
+	// Workers on the CPU, each on its own port, routed by model name. A worker that's
+	// missing or fails to start simply falls back to the main model.
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
 	var routes []router.Route
-
-	if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, 2, 32768, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
-		procs = append(procs, p)
-		routes = append(routes, router.Route{Model: alias, Upstream: url, Think: ""}) // collator/review: adaptive
-		slots.Sonnet = alias
+	if runSonnet {
+		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, 2, 32768, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
+			procs = append(procs, p)
+			routes = append(routes, router.Route{Model: alias, Upstream: url, Think: ""}) // collator/review: adaptive
+			slots.Sonnet = alias
+		}
 	}
-	if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, par, par*8192, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
-		procs = append(procs, p)
-		routes = append(routes, router.Route{Model: alias, Upstream: url, Think: "low"}) // research fan-out: brief thinking = reliable tool use, still fast
-		slots.Haiku = alias
+	if runHaiku {
+		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, par, par*8192, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
+			procs = append(procs, p)
+			routes = append(routes, router.Route{Model: alias, Upstream: url, Think: "low"}) // research fan-out: brief thinking = reliable tool use, still fast
+			slots.Haiku = alias
+		}
+	}
+
+	// Force every subagent (Task + Workflow fan-out) onto the chosen worker, so a
+	// deep-research fan-out uses it instead of cloning the big model. "tiered" leaves it
+	// unset and relies on per-agent pins (research->haiku, collator/review->sonnet).
+	subagentModel := ""
+	switch sub {
+	case "haiku":
+		subagentModel = slots.Haiku
+	case "sonnet":
+		subagentModel = slots.Sonnet
 	}
 
 	// The model-aware router is mandatory in team mode -- it is what dispatches each
@@ -106,15 +132,23 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	go func() { <-sig; stopAll(); os.Exit(130) }()
 
 	maxOut := engine.ResolveMaxOutput(cfg, loadedCtx)
-	ui.Good("team ready  main=%s  sonnet=%s  haiku=%s", slots.Opus, slots.Sonnet, slots.Haiku)
-	ui.Info("hierarchy: main orchestrates | sonnet = collator/review | haiku = research fan-out + Explore")
-	if slots.Sonnet == mainAlias && slots.Haiku == mainAlias {
-		ui.Warn("no workers running - every tier falls back to the main model (download the workers to enable the hierarchy)")
+	switch {
+	case sub == "tiered":
+		ui.Good("team ready  main=%s  sonnet=%s  haiku=%s", slots.Opus, slots.Sonnet, slots.Haiku)
+		ui.Info("hierarchy: main orchestrates | sonnet=collator/review | haiku=research fan-out + Explore")
+		if slots.Sonnet == mainAlias && slots.Haiku == mainAlias {
+			ui.Warn("no workers running - every tier falls back to the main model")
+		}
+	case subagentModel != "" && subagentModel != mainAlias:
+		ui.Good("team ready  main=%s  all subagents -> %s", mainAlias, subagentModel)
+		ui.Info("every subagent + research fan-out (Task & Workflow) runs on the small worker; main orchestrates")
+	default:
+		ui.Warn("team: the worker didn't start - subagents fall back to the main model (see the worker log)")
 	}
 	if !agent.Available(app) {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
-	env := agent.Env(baseURL, slots, maxOut, loadedCtx, mainAlias) // pin the main agent to the big model
+	env := agent.Env(baseURL, slots, maxOut, loadedCtx, mainAlias, subagentModel) // pin main + force subagents onto the worker
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)
@@ -219,4 +253,45 @@ func gpuOrCPU(cfg *config.Config, hw platform.Hardware) string {
 		return "GPU"
 	}
 	return "CPU"
+}
+
+// wantTeam decides whether to run team mode. Explicit flags win (--noteam off, --team on);
+// otherwise [team].mode governs: "off" never, "on" always, "auto" (default) engages for a
+// big-enough main model. Team's tier env is Claude Code-specific, so other apps stay single.
+func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *catalog.Catalog, model string) bool {
+	if noteamFlag {
+		return false
+	}
+	if teamFlag {
+		return true
+	}
+	if app != "claude" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Team.Mode)) {
+	case "off":
+		return false
+	case "on":
+		return true
+	default: // auto
+		return mainBigEnoughForTeam(cfg, cat, model)
+	}
+}
+
+// mainBigEnoughForTeam reports whether the main model is large enough that offloading
+// subagents to a small worker is worthwhile -- mid tier or larger, or (for a model not in
+// the catalog) a file of at least ~8 GB. Nano/small main models just run single.
+func mainBigEnoughForTeam(cfg *config.Config, cat *catalog.Catalog, model string) bool {
+	if m := cat.Find(model); m != nil {
+		switch m.Tier {
+		case "mid", "large", "xl":
+			return true
+		default:
+			return false
+		}
+	}
+	if p, _ := downloadedPath(cfg, cat, model); p != "" {
+		return engine.FileMB(p) >= 8000
+	}
+	return false
 }
