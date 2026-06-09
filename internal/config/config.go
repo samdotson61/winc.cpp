@@ -82,7 +82,7 @@ type Team struct {
 	Sonnet          string   `toml:"sonnet"`            // the "sonnet" worker model (collator / code-review)
 	Mid             string   `toml:"mid"`               // optional middle rung for dynamic mode (e.g. the 2B); "off" disables
 	Haiku           string   `toml:"haiku"`             // the "haiku" worker model (research fan-out + Explore)
-	Parallel        int      `toml:"parallel"`          // concurrent slots on the worker (research fan-out width)
+	Parallel        int      `toml:"parallel"`          // concurrent slots on the worker (research fan-out width); halved on <=16GB-RAM systems
 	Subagents       string   `toml:"subagents"`         // which worker ALL subagents use: dynamic | haiku | sonnet | tiered
 	WorkerTools     []string `toml:"worker_tools"`      // tools the tiny workers (0.8B/2B) may use; ["all"] = no stripping
 	SonnetTools     []string `toml:"sonnet_tools"`      // tools the 4B worker may use (research + Write); ["all"] = no stripping
@@ -188,7 +188,9 @@ subagents = "dynamic"       # which worker subagents use (HEAD always stays on t
 sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target / sonnet tier)
 mid       = "qwen3.5-2b"    # dynamic-mode middle rung between the 0.8B and 4B; "off" to disable
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
-parallel  = 4               # concurrent slots on the haiku/mid workers (fan-out width)
+parallel  = 4               # concurrent slots on the haiku/mid workers (fan-out width).
+                            # On small-RAM systems (<=16GB) winc halves the slots but keeps
+                            # each worker's total window, doubling per-agent context.
 # Per-tier tool allowlists: winc strips a worker request's tool set to its tier's list (the
 # HEAD model always keeps every tool). Tiny workers stay research-only; the 4B also gets
 # Write for collation/review. Use ["all"] to disable stripping for a tier.

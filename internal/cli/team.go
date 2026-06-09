@@ -121,28 +121,29 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	}
 
 	serverBin := engine.LlamaServerPath()
-	par := cfg.Team.Parallel
-	if par <= 0 {
-		par = 4
+	workerPar, workerCtx, sonnetPar, sonnetCtx := workerGeometry(cfg.Team.Parallel, hw)
+	if smallRAM(hw) {
+		ui.Dim("team: small RAM (%d MB) - halving worker fan-out for double per-agent context (research %dx%d, collator %dx%d)",
+			hw.RAMMB, workerPar, workerCtx/workerPar, sonnetPar, sonnetCtx/sonnetPar)
 	}
 
 	// Launch the worker(s) on the CPU, capturing each one's URL.
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
 	var sonnetURL, midURL, haikuURL string
 	if runSonnet {
-		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, 2, 32768, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
+		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, sonnetPar, sonnetCtx, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
 			procs = append(procs, p)
 			sonnetURL, slots.Sonnet = url, alias
 		}
 	}
 	if runMid {
-		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, par, par*8192, "mid", filepath.Join(logDir, "worker-mid.log")); p != nil {
+		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, workerPar, workerCtx, "mid", filepath.Join(logDir, "worker-mid.log")); p != nil {
 			procs = append(procs, p)
 			midURL = url // ladder-only rung; not mapped to a Claude Code tier
 		}
 	}
 	if runHaiku {
-		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, par, par*8192, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
+		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, workerPar, workerCtx, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
 			procs = append(procs, p)
 			haikuURL, slots.Haiku = url, alias
 		}
@@ -437,6 +438,39 @@ func mainModelSize(cfg *config.Config, cat *catalog.Catalog, model string) (mb i
 		return sizeStrToMB(m.Size), ""
 	}
 	return 0, ""
+}
+
+// smallRAMMB is the threshold below which a system counts as "small RAM" for worker
+// geometry: 16GB plus a margin (16GB boxes report a little under or exactly 16384
+// depending on firmware carve-outs; the next common size, 24GB, is far above it).
+const smallRAMMB = 17408
+
+// smallRAM reports whether this is a small-RAM (<=16GB) system. Unknown RAM (0) is
+// not small -- consistent with workerRAMBudgetMB treating unknown as unlimited.
+func smallRAM(hw platform.Hardware) bool {
+	return hw.RAMMB > 0 && hw.RAMMB <= smallRAMMB
+}
+
+// workerGeometry sizes each worker's --parallel slot count and total context window
+// (llama-server splits the window evenly across slots). cfgPar is [team].parallel
+// (<=0 -> default 4): the research workers (haiku/mid) get cfgPar slots x 8192
+// tokens each; the sonnet collator gets 2 x 16384. On small-RAM systems (<=16GB)
+// every worker keeps its total window but halves its slot count, doubling per-slot
+// context: small boxes pair weak CPUs with the same 8192-token slots, so research
+// agents overflow, escalate to rungs that CPU serves slowly, and contend for cores.
+// Fewer, deeper slots let each agent actually finish. RAM use is unchanged -- the
+// KV cache is sized by the total window, not the slot count.
+func workerGeometry(cfgPar int, hw platform.Hardware) (workerPar, workerCtx, sonnetPar, sonnetCtx int) {
+	if cfgPar <= 0 {
+		cfgPar = 4
+	}
+	workerPar, workerCtx = cfgPar, cfgPar*8192
+	sonnetPar, sonnetCtx = 2, 32768
+	if smallRAM(hw) {
+		workerPar = (workerPar + 1) / 2
+		sonnetPar = 1
+	}
+	return
 }
 
 // workerRAMBudgetMB is the system RAM available for CPU workers after the main model's own

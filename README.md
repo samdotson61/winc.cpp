@@ -114,7 +114,7 @@ subagents = "dynamic"       # dynamic (start small, escalate by load) | haiku | 
 sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target)
 mid       = "qwen3.5-2b"    # dynamic-mode middle rung between 0.8B and 4B ("off" to disable)
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
-parallel  = 4               # concurrent slots on the haiku/mid workers
+parallel  = 4               # concurrent slots on the haiku/mid workers (halved on <=16GB RAM)
 worker_tools = ["WebSearch","WebFetch","Read","Grep","Glob"]          # tools the 0.8B/2B may use
 sonnet_tools = ["WebSearch","WebFetch","Read","Grep","Glob","Write"]  # 4B also gets Write; ["all"]=no strip
 ```
@@ -136,7 +136,10 @@ the nano tier when there's enough system RAM for the workers**: the launched mod
 **main orchestrator** while small workers run alongside it on the **CPU** (never touching the
 main model's VRAM or context) and handle the subagents. The worker set is **fit to available
 RAM** — smallest-first, dropping the largest first, down to just the 0.8B on a tight box —
-and only falls back to a single model when not even the smallest worker fits. `--noteam`
+and only falls back to a single model when not even the smallest worker fits. On a
+small-RAM box (≤16GB) winc also **halves each worker's parallel slots while keeping its
+context window**, so every agent gets double the context — fewer overflows, fewer
+escalations, and less CPU contention on the hardware that feels them most. `--noteam`
 forces a single model; a nano main model stays single automatically.
 
 By default (`subagents = "dynamic"`) every subagent — Task tool **and** Workflow fan-out — is
