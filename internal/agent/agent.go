@@ -65,6 +65,18 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainMo
 		add("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.Itoa(contextWindow))
 		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "93")
 	}
+	// Local models are far slower than the cloud -- a long prefill / time-to-first-token
+	// on a low-end or CPU box trips Claude Code's stream-idle watchdog (~90s default) and
+	// surfaces as "<model> is temporarily unavailable" (then a retry). Raise the overall
+	// request and stream-idle timeouts so slow-but-valid responses complete. Only set a
+	// value the user hasn't chosen themselves.
+	setDefault := func(k, v string) {
+		if os.Getenv(k) == "" {
+			add(k, v)
+		}
+	}
+	setDefault("API_TIMEOUT_MS", "1800000")               // 30 min overall request ceiling
+	setDefault("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "300000") // 5 min time-to-first-token / stall
 	return env
 }
 

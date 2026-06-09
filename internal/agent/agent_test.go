@@ -41,6 +41,25 @@ func TestEnvMapsTiersAndPinsMain(t *testing.T) {
 	}
 }
 
+func TestEnvSetsLocalTimeouts(t *testing.T) {
+	os.Unsetenv("API_TIMEOUT_MS")
+	os.Unsetenv("CLAUDE_STREAM_IDLE_TIMEOUT_MS")
+	env := Env("http://local", Slots{Sonnet: "s", Opus: "o", Haiku: "h"}, 0, 0, "", "")
+	// Generous timeouts so slow local prefill doesn't trip the stream-idle watchdog.
+	if v, ok := envVal(env, "API_TIMEOUT_MS"); !ok || v == "" {
+		t.Error("API_TIMEOUT_MS should be set for slow local models")
+	}
+	if v, ok := envVal(env, "CLAUDE_STREAM_IDLE_TIMEOUT_MS"); !ok || v == "" {
+		t.Error("CLAUDE_STREAM_IDLE_TIMEOUT_MS should be set (the time-to-first-token watchdog)")
+	}
+	// A user-chosen value is respected, not overridden.
+	t.Setenv("API_TIMEOUT_MS", "12345")
+	env2 := Env("http://local", Slots{Opus: "o"}, 0, 0, "", "")
+	if v, _ := envVal(env2, "API_TIMEOUT_MS"); v != "12345" {
+		t.Errorf("user API_TIMEOUT_MS must be respected, got %q", v)
+	}
+}
+
 func TestEnvNoPinWhenMainEmpty(t *testing.T) {
 	os.Unsetenv("ANTHROPIC_MODEL")
 	os.Unsetenv("CLAUDE_CODE_SUBAGENT_MODEL")
