@@ -338,9 +338,10 @@ func gpuOrCPU(cfg *config.Config, hw platform.Hardware) string {
 }
 
 // wantTeam decides whether to run team mode. Explicit flags win (--noteam off, --team on);
-// otherwise [team].mode governs: "off" never, "on" always, "auto" (default) engages for a
-// big-enough main model. Team's tier env is Claude Code-specific, so other apps stay single.
-func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *catalog.Catalog, model string) bool {
+// otherwise [team].mode governs: "off" never, "on" always, "auto" (default) engages when
+// the main model is big enough AND there's RAM for the workers. Team's tier env is Claude
+// Code-specific, so other apps stay single.
+func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, model string) bool {
 	if noteamFlag {
 		return false
 	}
@@ -356,24 +357,70 @@ func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *ca
 	case "on":
 		return true
 	default: // auto
-		return mainBigEnoughForTeam(cfg, cat, model)
+		return teamWorthwhile(cfg, cat, hw, model)
 	}
 }
 
-// mainBigEnoughForTeam reports whether the main model is large enough that offloading
-// subagents to a small worker is worthwhile -- mid tier or larger, or (for a model not in
-// the catalog) a file of at least ~8 GB. Nano/small main models just run single.
-func mainBigEnoughForTeam(cfg *config.Config, cat *catalog.Catalog, model string) bool {
-	if m := cat.Find(model); m != nil {
-		switch m.Tier {
-		case "mid", "large", "xl":
-			return true
-		default:
-			return false
+// teamModelFloorMB is the main-model size (~8 GB) at/above which team mode auto-engages:
+// a model this large benefits from offloading its subagents to small CPU workers.
+const teamModelFloorMB = 8000
+
+// teamWorthwhile reports whether team should auto-engage for a model: the model is large
+// enough (>= ~8 GB, by VRAM/footprint -- this also catches MoE/MTP variants the old tier
+// check missed) AND the box has enough system RAM to host the small CPU workers alongside
+// it. Smaller models, or boxes too tight on RAM, run single.
+func teamWorthwhile(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, model string) bool {
+	mb, path := mainModelSize(cfg, cat, model)
+	if mb < teamModelFloorMB {
+		return false
+	}
+	return enoughRAMForWorkers(cfg, cat, hw, path, mb)
+}
+
+// mainModelSize returns the main model's size in MB (its on-disk size if downloaded, else
+// the catalogue estimate) and its path ("" if not downloaded).
+func mainModelSize(cfg *config.Config, cat *catalog.Catalog, model string) (mb int, path string) {
+	if p, _ := downloadedPath(cfg, cat, model); p != "" {
+		if m := engine.FileMB(p); m > 0 {
+			return m, p
 		}
 	}
-	if p, _ := downloadedPath(cfg, cat, model); p != "" {
-		return engine.FileMB(p) >= 8000
+	if m := cat.Find(model); m != nil {
+		return sizeStrToMB(m.Size), ""
 	}
-	return false
+	return 0, ""
+}
+
+// enoughRAMForWorkers reports whether the system has RAM for the CPU workers on top of what
+// the main model itself consumes -- its full footprint on Apple unified memory or when MoE
+// experts are offloaded to RAM, otherwise just runtime overhead -- with OS slack.
+func enoughRAMForWorkers(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, modelPath string, modelMB int) bool {
+	if hw.RAMMB <= 0 {
+		return true // RAM unknown -> don't block (best effort)
+	}
+	mainRAM := 1024 // runtime overhead when the model sits in discrete VRAM
+	if hw.Unified || (modelPath != "" && engine.WillOffloadExperts(cfg, hw, modelPath)) {
+		mainRAM = modelMB // shared unified pool, or MoE experts offloaded to RAM
+	}
+	const osHeadroomMB = 2048
+	return hw.RAMMB-mainRAM-workersRAMEstimateMB(cfg, cat)-osHeadroomMB >= 0
+}
+
+// workersRAMEstimateMB estimates the RAM the configured CPU workers need: their model
+// weights (catalogue sizes) plus a KV-cache / runtime margin.
+func workersRAMEstimateMB(cfg *config.Config, cat *catalog.Catalog) int {
+	total := 0
+	for _, a := range []string{cfg.Team.Haiku, cfg.Team.Mid, cfg.Team.Sonnet} {
+		a = strings.TrimSpace(a)
+		if a == "" || strings.EqualFold(a, "off") || strings.EqualFold(a, "none") {
+			continue
+		}
+		if m := cat.Find(a); m != nil {
+			total += sizeStrToMB(m.Size)
+		}
+	}
+	if total == 0 {
+		total = 5000 // fallback when worker sizes are unknown (e.g. custom models)
+	}
+	return total + 1536 // KV cache + runtime overhead
 }

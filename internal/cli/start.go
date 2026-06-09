@@ -78,7 +78,7 @@ func cmdStart(args []string) int {
 		return runCliChat(cfg, hw, modelPath)
 	}
 
-	if wantTeam(app, team, noteam, cfg, cat, model) {
+	if wantTeam(app, team, noteam, cfg, cat, hw, model) {
 		return startTeam(cfg, cat, hw, app, model)
 	}
 	if multi {
