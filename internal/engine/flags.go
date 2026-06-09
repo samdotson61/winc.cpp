@@ -276,6 +276,9 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		portVal = portPlaceholder
 	}
 	args := []string{"-m", modelPath, "--host", cfg.General.Host, "--port", portVal, "--jinja"}
+	// Some 2026 templates (Qwen3.5) carry a system-position guard that breaks llama.cpp's
+	// tool-call parser generation -> 400 on every request. Override with a patched copy.
+	args = append(args, ChatTemplateArgs(modelPath)...)
 
 	ngl := GpuLayers(cfg, hw)
 	// MoE expert offload: keep all layers on the GPU (-ngl 99) but move MoE expert
