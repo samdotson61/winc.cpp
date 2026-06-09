@@ -153,6 +153,40 @@ func mustRead(t *testing.T, p string) []byte {
 	return b
 }
 
+func TestTeamToolAllowlists(t *testing.T) {
+	hasWrite := func(ss []string) bool {
+		for _, s := range ss {
+			if s == "Write" {
+				return true
+			}
+		}
+		return false
+	}
+	d := Defaults()
+	if len(d.Team.WorkerTools) == 0 || len(d.Team.SonnetTools) == 0 {
+		t.Fatalf("tool allowlists missing from defaults: %+v", d.Team)
+	}
+	if hasWrite(d.Team.WorkerTools) {
+		t.Error("tiny workers (worker_tools) must NOT include Write")
+	}
+	if !hasWrite(d.Team.SonnetTools) {
+		t.Error("the 4B worker (sonnet_tools) should include Write")
+	}
+	// A config without [team] still gets the allowlists via backfill.
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "winc.toml"), []byte("[general]\ndefault_model=\"x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Team.WorkerTools) == 0 || len(cfg.Team.SonnetTools) == 0 {
+		t.Fatalf("tool allowlists not backfilled: %+v", cfg.Team)
+	}
+}
+
 func TestSyncMissingSections(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WINC_HOME", dir)

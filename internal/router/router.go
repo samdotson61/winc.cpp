@@ -50,7 +50,8 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 		if req.Method == http.MethodPost && isChatPath(req.URL.Path) {
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
-				nb := injectThinking(cfg, body)
+				cb, _, _ := compactRequest(body, nil) // lossless minify only (no tool stripping in single mode)
+				nb := injectThinking(cfg, cb)
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
@@ -101,9 +102,10 @@ func swallowClientCancel(w http.ResponseWriter, r *http.Request, err error) {
 // thinking policy: "" = adaptive (default), "low" = a small fixed budget (small
 // models orchestrate tools best with a LITTLE thinking), "off" = disabled.
 type Route struct {
-	Model    string // the resolved model id Claude Code sends (winc's tier alias)
-	Upstream string // backend base URL
-	Think    string // "" | "low" | "off"
+	Model    string   // the resolved model id Claude Code sends (winc's tier alias)
+	Upstream string   // backend base URL
+	Think    string   // "" | "low" | "off"
+	Tools    []string // tool allowlist for this backend ("" / nil = keep all; ["all"] = keep all)
 }
 
 // Tier is one rung of the subagent escalation ladder (ascending capability). A subagent
@@ -113,7 +115,8 @@ type Route struct {
 type Tier struct {
 	Upstream     string
 	Think        string
-	MaxEstTokens int // route here when estimated load <= this; last rung = catch-all
+	MaxEstTokens int      // route here when estimated load <= this; last rung = catch-all
+	Tools        []string // tool allowlist for this rung (nil / ["all"] = keep all)
 }
 
 // StartTeam launches the team-mode router. It dispatches each chat request by its `model`
@@ -174,19 +177,21 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 				req.Body.Close()
 				model := modelOf(body)
 				think := ""
+				var allow []string // tool allowlist for the chosen worker backend (nil = HEAD, keep all)
 				if ladderTag != "" && model == ladderTag && len(ladder) > 0 {
 					t := pickTier(ladder, body)
-					target, think = t.Upstream, t.Think
+					target, think, allow = t.Upstream, t.Think, t.Tools
 				} else if rt, ok := byModel[model]; ok {
-					target, think = rt.Upstream, rt.Think
+					target, think, allow = rt.Upstream, rt.Think, rt.Tools
 				}
-				nb := injectThinkingPolicy(cfg, body, think)
+				cb, toolsBefore, toolsAfter := compactRequest(body, allow)
+				nb := injectThinkingPolicy(cfg, cb, think)
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
 				req.Header.Del("Accept-Encoding")
 				if rlog != nil {
-					rlog.Printf("model=%q -> %s%s", model, target, thinkTag(think))
+					rlog.Printf("model=%q -> %s%s%s", model, target, thinkTag(think), toolsTag(toolsBefore, toolsAfter))
 				}
 			}
 		}
@@ -273,6 +278,130 @@ func injectThinkingPolicy(cfg *config.Config, body []byte, think string) []byte 
 		}
 		return injectThinking(cfg, body)
 	}
+}
+
+// compactRequest shrinks a chat request for a local model: strips the tools array to a
+// per-backend allowlist (worker tiers) and losslessly minifies it. allow nil/empty or
+// ["all"] = keep all tools (the HEAD model). Returns the new body and the tool counts
+// before/after (for the router log). Deterministic per (body, allow), so a stripped worker
+// prefix stays byte-stable and llama.cpp's prefix cache still reuses it.
+func compactRequest(body []byte, allow []string) (out []byte, toolsBefore, toolsAfter int) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return body, 0, 0
+	}
+	if arr, ok := toolsArray(m); ok {
+		toolsBefore = len(arr)
+	}
+	changed := false
+	if len(allow) > 0 && !containsFold(allow, "all") {
+		changed = stripToolsToAllowlist(m, allow) || changed
+	}
+	changed = minifyRequest(m) || changed
+	if arr, ok := toolsArray(m); ok {
+		toolsAfter = len(arr)
+	} else {
+		toolsAfter = toolsBefore
+	}
+	if !changed {
+		return body, toolsBefore, toolsAfter
+	}
+	if nb, err := json.Marshal(m); err == nil {
+		return nb, toolsBefore, toolsAfter
+	}
+	return body, toolsBefore, toolsAfter
+}
+
+func toolsArray(m map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	raw, ok := m["tools"]
+	if !ok {
+		return nil, false
+	}
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) != nil {
+		return nil, false
+	}
+	return arr, true
+}
+
+func containsFold(ss []string, s string) bool {
+	for _, x := range ss {
+		if strings.EqualFold(strings.TrimSpace(x), s) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripToolsToAllowlist filters the tools array to those whose name is in allow, preserving
+// order. No-op if nothing matches (never hand a worker an empty tool set) or nothing is
+// removed -- so it's safe and deterministic.
+func stripToolsToAllowlist(m map[string]json.RawMessage, allow []string) bool {
+	arr, ok := toolsArray(m)
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	keep := map[string]bool{}
+	for _, a := range allow {
+		keep[strings.ToLower(strings.TrimSpace(a))] = true
+	}
+	out := make([]json.RawMessage, 0, len(arr))
+	for _, t := range arr {
+		var nm struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(t, &nm)
+		if keep[strings.ToLower(nm.Name)] {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 || len(out) == len(arr) {
+		return false
+	}
+	nb, err := json.Marshal(out)
+	if err != nil {
+		return false
+	}
+	m["tools"] = nb
+	return true
+}
+
+// minifyRequest losslessly trims the tools array: drops the optional input_examples field
+// from each tool. Names / descriptions / input_schema are required and left intact.
+func minifyRequest(m map[string]json.RawMessage) bool {
+	arr, ok := toolsArray(m)
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	changed := false
+	for i, t := range arr {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(t, &obj) != nil {
+			continue
+		}
+		if _, has := obj["input_examples"]; has {
+			delete(obj, "input_examples")
+			if nb, err := json.Marshal(obj); err == nil {
+				arr[i] = nb
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return false
+	}
+	if nb, err := json.Marshal(arr); err == nil {
+		m["tools"] = nb
+		return true
+	}
+	return false
+}
+
+func toolsTag(before, after int) string {
+	if before != after {
+		return fmt.Sprintf(" tools=%d->%d", before, after)
+	}
+	return ""
 }
 
 func isChatPath(p string) bool {

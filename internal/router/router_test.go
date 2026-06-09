@@ -242,3 +242,90 @@ func TestTeamLadderEscalation(t *testing.T) {
 		t.Errorf("large request should escalate to big, got %q", who)
 	}
 }
+
+func toolNames(b []byte) []string {
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	arr, _ := m["tools"].([]any)
+	var out []string
+	for _, t := range arr {
+		if o, ok := t.(map[string]any); ok {
+			if n, ok := o["name"].(string); ok {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+func TestCompactRequestStripsAndMinifies(t *testing.T) {
+	body := []byte(`{"model":"m","tools":[` +
+		`{"name":"WebSearch","description":"s"},` +
+		`{"name":"Bash","description":"b"},` +
+		`{"name":"Read","description":"r","input_examples":["x"]},` +
+		`{"name":"Edit","description":"e"}],` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	out, before, after := compactRequest(body, []string{"WebSearch", "Read", "Grep", "Glob"})
+	if before != 4 || after != 2 {
+		t.Fatalf("tool counts before=%d after=%d, want 4->2", before, after)
+	}
+	got := toolNames(out)
+	if len(got) != 2 || got[0] != "WebSearch" || got[1] != "Read" {
+		t.Fatalf("expected [WebSearch Read] in order, got %v", got)
+	}
+	if strings.Contains(string(out), "input_examples") {
+		t.Error("input_examples should be minified out")
+	}
+}
+
+func TestCompactRequestHeadAndAllKeepEverything(t *testing.T) {
+	body := []byte(`{"model":"m","tools":[{"name":"Bash"},{"name":"Edit"}],"messages":[]}`)
+	for _, allow := range [][]string{nil, {"all"}} {
+		if _, before, after := compactRequest(body, allow); before != 2 || after != 2 {
+			t.Errorf("allow=%v must keep all tools, got %d->%d", allow, before, after)
+		}
+	}
+}
+
+func TestCompactRequestEmptyIntersectionKeepsAll(t *testing.T) {
+	body := []byte(`{"model":"m","tools":[{"name":"Bash"},{"name":"Edit"}],"messages":[]}`)
+	if _, before, after := compactRequest(body, []string{"WebSearch", "Read"}); before != 2 || after != 2 {
+		t.Errorf("empty intersection must keep all tools (never zero), got %d->%d", before, after)
+	}
+}
+
+// TestTeamRouterStripsWorkerToolsOnly: a worker (ladder) request is stripped to its tier's
+// allowlist; the HEAD (fallback) request keeps every tool.
+func TestTeamRouterStripsWorkerToolsOnly(t *testing.T) {
+	cfg := config.Defaults()
+	worker := newTeamBackend("worker")
+	main := newTeamBackend("main")
+	defer worker.srv.Close()
+	defer main.srv.Close()
+
+	ladder := []Tier{{Upstream: worker.srv.URL, Think: "low", MaxEstTokens: 1 << 30, Tools: []string{"WebSearch", "Read"}}}
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	tools := `"tools":[{"name":"WebSearch"},{"name":"Bash"},{"name":"Read"},{"name":"Edit"}]`
+	post := func(model string) {
+		body := `{"model":"` + model + `",` + tools + `,"messages":[{"role":"user","content":"hi"}]}`
+		resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json", bytes.NewReader([]byte(body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post("worker") // -> worker backend, stripped to 2
+	post("big")    // -> main (fallback), untouched
+
+	if got := toolNames(worker.got); len(got) != 2 {
+		t.Errorf("worker tools should be stripped to 2 (WebSearch, Read), got %v", got)
+	}
+	if got := toolNames(main.got); len(got) != 4 {
+		t.Errorf("HEAD (fallback) tools must be untouched (4), got %v", got)
+	}
+}

@@ -115,6 +115,8 @@ sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target)
 mid       = "qwen3.5-2b"    # dynamic-mode middle rung between 0.8B and 4B ("off" to disable)
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
 parallel  = 4               # concurrent slots on the haiku/mid workers
+worker_tools = ["WebSearch","WebFetch","Read","Grep","Glob"]          # tools the 0.8B/2B may use
+sonnet_tools = ["WebSearch","WebFetch","Read","Grep","Glob","Write"]  # 4B also gets Write; ["all"]=no strip
 ```
 
 ### Adaptive reasoning
@@ -160,6 +162,15 @@ search/fetch and read-only tools are pre-approved** in winc's sandbox, so you're
 prompted to grant them every launch. `winc` offers to download a missing worker and ships
 ready-made `research`, `collator`, and `code-reviewer` agents — your project `.claude/agents`
 always win.
+
+**Prompt compaction.** Worker requests are trimmed to a **per-tier tool allowlist** (the
+tools array, not the system prose, is what bloats a request): the 0.8B/2B get a research-only
+set, the 4B also gets `Write`, and the HEAD model keeps every tool. This is the bulk of the
+savings — fewer tools means a smaller prefill (faster first token, fewer stream-idle
+timeouts) and better tool-selection on tiny models. Stripping is deterministic per tier, so
+llama.cpp's prompt-prefix cache still reuses the worker's head across the fan-out; `winc` also
+adds `--cache-reuse` (probed) and losslessly drops optional `input_examples`. Set
+`worker_tools` / `sonnet_tools` in `[team]` (`["all"]` disables stripping for a tier).
 
 ---
 

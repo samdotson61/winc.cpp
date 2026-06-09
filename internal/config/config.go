@@ -78,12 +78,14 @@ type Multi struct {
 // clones of the big model. Mode gates auto-engagement; Subagents picks which worker all
 // subagents (Task tool AND the Workflow orchestrator's fan-out) are forced onto.
 type Team struct {
-	Mode      string `toml:"mode"`      // auto (team for big main models) | on (always) | off (never)
-	Sonnet    string `toml:"sonnet"`    // the "sonnet" worker model (collator / code-review)
-	Mid       string `toml:"mid"`       // optional middle rung for dynamic mode (e.g. the 2B); "off" disables
-	Haiku     string `toml:"haiku"`     // the "haiku" worker model (research fan-out + Explore)
-	Parallel  int    `toml:"parallel"`  // concurrent slots on the worker (research fan-out width)
-	Subagents string `toml:"subagents"` // which worker ALL subagents use: dynamic | haiku | sonnet | tiered
+	Mode        string   `toml:"mode"`         // auto (team for big main models) | on (always) | off (never)
+	Sonnet      string   `toml:"sonnet"`       // the "sonnet" worker model (collator / code-review)
+	Mid         string   `toml:"mid"`          // optional middle rung for dynamic mode (e.g. the 2B); "off" disables
+	Haiku       string   `toml:"haiku"`        // the "haiku" worker model (research fan-out + Explore)
+	Parallel    int      `toml:"parallel"`     // concurrent slots on the worker (research fan-out width)
+	Subagents   string   `toml:"subagents"`    // which worker ALL subagents use: dynamic | haiku | sonnet | tiered
+	WorkerTools []string `toml:"worker_tools"` // tools the tiny workers (0.8B/2B) may use; ["all"] = no stripping
+	SonnetTools []string `toml:"sonnet_tools"` // tools the 4B worker may use (research + Write); ["all"] = no stripping
 }
 
 type HuggingFace struct {
@@ -185,6 +187,11 @@ sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target / son
 mid       = "qwen3.5-2b"    # dynamic-mode middle rung between the 0.8B and 4B; "off" to disable
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
 parallel  = 4               # concurrent slots on the haiku/mid workers (fan-out width)
+# Per-tier tool allowlists: winc strips a worker request's tool set to its tier's list (the
+# HEAD model always keeps every tool). Tiny workers stay research-only; the 4B also gets
+# Write for collation/review. Use ["all"] to disable stripping for a tier.
+worker_tools = ["WebSearch", "WebFetch", "Read", "Grep", "Glob"]           # 0.8B / 2B
+sonnet_tools = ["WebSearch", "WebFetch", "Read", "Grep", "Glob", "Write"]  # 4B (collator/review)
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var
@@ -335,5 +342,11 @@ func (c *Config) backfill() {
 	}
 	if c.Team.Parallel == 0 {
 		c.Team.Parallel = d.Team.Parallel
+	}
+	if len(c.Team.WorkerTools) == 0 {
+		c.Team.WorkerTools = d.Team.WorkerTools
+	}
+	if len(c.Team.SonnetTools) == 0 {
+		c.Team.SonnetTools = d.Team.SonnetTools
 	}
 }

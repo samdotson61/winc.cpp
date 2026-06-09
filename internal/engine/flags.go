@@ -132,6 +132,45 @@ func mtpProbeEnv(bin string) []string {
 	return env
 }
 
+var (
+	helpMu    sync.Mutex
+	helpCache = map[string]string{}
+)
+
+// serverHelp returns the (cached) `--help` output of a llama-server binary, used to feature-
+// detect optional flags so an older engine can't break a launch.
+func serverHelp(bin string) string {
+	if bin == "" {
+		return ""
+	}
+	helpMu.Lock()
+	defer helpMu.Unlock()
+	if v, ok := helpCache[bin]; ok {
+		return v
+	}
+	cmd := exec.Command(bin, "--help")
+	cmd.Env = mtpProbeEnv(bin)
+	out, _ := cmd.CombinedOutput()
+	helpCache[bin] = string(out)
+	return helpCache[bin]
+}
+
+// serverSupportsFlag reports whether the engine's --help mentions a flag.
+func serverSupportsFlag(bin, flag string) bool {
+	return bin != "" && strings.Contains(serverHelp(bin), flag)
+}
+
+// CacheReuseArgs enables KV-shift prompt-cache reuse (recovers the prefix cache after a
+// small mid-prompt change) when the engine supports it. Prompt-prefix caching itself is on
+// by default; this just extends it. Probed via --help, so an older build that lacks the
+// flag simply runs without it.
+func CacheReuseArgs(serverBin string) []string {
+	if serverSupportsFlag(serverBin, "--cache-reuse") {
+		return []string{"--cache-reuse", "256"}
+	}
+	return nil
+}
+
 // MTPArgs returns the Multi-Token-Prediction flags for an MTP model, or nil when the
 // model isn't MTP, config disables it, or the engine is too old to support it (pass
 // serverBin to probe; "" skips the probe). Never breaks a launch -- a model that fits

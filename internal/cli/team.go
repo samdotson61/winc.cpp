@@ -155,42 +155,49 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	var routes []router.Route
 	var ladder []router.Tier
 	var ladderTag, subagentModel string
+	// Per-tier tool allowlists: tiny workers (0.8B/2B) stay research-only; the 4B also gets
+	// Write (collation/review); the HEAD model keeps every tool (nil = no stripping).
+	workerTools := cfg.Team.WorkerTools
+	sonnetTools := cfg.Team.SonnetTools
 	switch sub {
 	case "tiered": // per-agent pins; generic/Workflow agents inherit the main model
 		if sonnetURL != "" {
-			routes = append(routes, router.Route{Model: slots.Sonnet, Upstream: sonnetURL, Think: ""})
+			routes = append(routes, router.Route{Model: slots.Sonnet, Upstream: sonnetURL, Think: "", Tools: sonnetTools})
 		}
 		if haikuURL != "" {
-			routes = append(routes, router.Route{Model: slots.Haiku, Upstream: haikuURL, Think: "low"})
+			routes = append(routes, router.Route{Model: slots.Haiku, Upstream: haikuURL, Think: "low", Tools: workerTools})
 		}
 	case "sonnet": // force all subagents to the 4B
 		subagentModel, ladderTag = sonnetAlias, sonnetAlias
 		if sonnetURL != "" {
-			ladder = []router.Tier{{Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll}}
+			ladder = []router.Tier{{Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll, Tools: sonnetTools}}
 		}
 	case "haiku": // force all subagents to the 0.8B
 		subagentModel, ladderTag = haikuAlias, haikuAlias
 		if haikuURL != "" {
-			ladder = []router.Tier{{Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll}}
+			ladder = []router.Tier{{Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll, Tools: workerTools}}
 		}
 	default: // dynamic: tag every subagent with the haiku alias, escalate by request load
 		subagentModel, ladderTag = haikuAlias, haikuAlias
 		// Ascending rungs from whichever workers came up (0.8B -> 2B -> 4B -> main), with
 		// ascending load thresholds; the last rung is the catch-all. A subagent starts on
 		// the smallest rung and climbs as its estimated load grows.
-		type rung struct{ url, think string }
+		type rung struct {
+			url, think string
+			tools      []string
+		}
 		var rungs []rung
 		if haikuURL != "" {
-			rungs = append(rungs, rung{haikuURL, "low"})
+			rungs = append(rungs, rung{haikuURL, "low", workerTools})
 		}
 		if midURL != "" {
-			rungs = append(rungs, rung{midURL, "low"})
+			rungs = append(rungs, rung{midURL, "low", workerTools})
 		}
 		if sonnetURL != "" {
-			rungs = append(rungs, rung{sonnetURL, "low"})
+			rungs = append(rungs, rung{sonnetURL, "low", sonnetTools})
 		}
 		if mainEscalate {
-			rungs = append(rungs, rung{mainURL, ""})
+			rungs = append(rungs, rung{mainURL, "", nil}) // HEAD model: keep all tools
 		}
 		thresholds := []int{2048, 6144, 16384, 49152}
 		for i, r := range rungs {
@@ -198,7 +205,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 			if i < len(rungs)-1 && i < len(thresholds) {
 				max = thresholds[i]
 			}
-			ladder = append(ladder, router.Tier{Upstream: r.url, Think: r.think, MaxEstTokens: max})
+			ladder = append(ladder, router.Tier{Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools})
 		}
 	}
 
@@ -313,6 +320,9 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 	// Loop-safe, family-appropriate sampling: tiny models repeat and emit bad tool-call
 	// JSON under default sampling. No-op for families we have no profile for.
 	args = append(args, engine.SmallModelSamplingArgs(modelPath)...)
+	// Extend prompt-prefix cache reuse (recovers the cache after small mid-prompt edits);
+	// probed, so an older engine that lacks the flag just runs without it.
+	args = append(args, engine.CacheReuseArgs(serverBin)...)
 	proc, err := server.Start(serverBin, args, logPath)
 	if err != nil {
 		ui.Warn("team: %s worker failed to launch: %v - tier falls back to main", role, err)

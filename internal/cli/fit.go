@@ -19,6 +19,7 @@ func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serve
 		if !noMTP {
 			args = append(args, engine.MTPArgs(cfg, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
 		}
+		args = append(args, engine.CacheReuseArgs(serverBin)...) // extend prompt-cache reuse (probed)
 		proc, err := server.Start(serverBin, args, logPath)
 		if err != nil {
 			continue
