@@ -132,8 +132,10 @@ fans out — is a clone of the model you launched, so a deep-research fan-out ru
 your big model: slow and wasteful. **winc runs team mode by default for any main model above
 the nano tier when there's enough system RAM for the workers**: the launched model stays the
 **main orchestrator** while small workers run alongside it on the **CPU** (never touching the
-main model's VRAM or context) and handle the subagents. `--noteam` runs a single model; a
-nano main model — or a box too tight on RAM — stays single automatically.
+main model's VRAM or context) and handle the subagents. The worker set is **fit to available
+RAM** — smallest-first, dropping the largest first, down to just the 0.8B on a tight box —
+and only falls back to a single model when not even the smallest worker fits. `--noteam`
+forces a single model; a nano main model stays single automatically.
 
 By default (`subagents = "dynamic"`) every subagent — Task tool **and** Workflow fan-out — is
 tagged onto the workers and **starts on the 0.8B, escalating by request load** through the

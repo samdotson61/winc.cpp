@@ -36,10 +36,15 @@ func TestWantTeam(t *testing.T) {
 		t.Error("auto should not team-ify a nano main model")
 	}
 
-	// Not enough RAM for the workers -> no auto-team, even for a big model.
+	// Not even the smallest worker fits -> fall back to a single model.
 	tight := platform.Hardware{RAMMB: 4096, VRAMMB: 16000}
 	if wantTeam("claude", false, false, &cfg, cat, tight, "big") {
-		t.Error("auto should not team-ify when there isn't RAM for the workers")
+		t.Error("auto should fall back to single only when not even the smallest worker fits")
+	}
+	// Room for the smallest worker (even if not the whole set) -> still team.
+	moderate := platform.Hardware{RAMMB: 8000, VRAMMB: 16000}
+	if !wantTeam("claude", false, false, &cfg, cat, moderate, "big") {
+		t.Error("auto should team (with whatever workers fit) once the smallest worker fits")
 	}
 
 	// Team's tier env is Claude Code-specific.

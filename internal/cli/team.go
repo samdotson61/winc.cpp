@@ -54,6 +54,28 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	runHaiku := sub == "haiku" || sub == "tiered" || sub == "dynamic"
 	runMid := sub == "dynamic" && midEnabled(cfg.Team.Mid) // optional middle rung (e.g. the 2B)
 
+	// Fit the workers to available RAM, smallest-first: keep as many as fit alongside the
+	// main model and drop the largest first. Graceful degradation -- a tight box runs only
+	// the worker(s) that fit (down to just the 0.8B), and falls back to a single model only
+	// when not even the smallest fits (teamWorthwhile already gated that case out).
+	budget := workerRAMBudgetMB(cfg, hw, mainPath, engine.FileMB(mainPath))
+	usedRAM := 0
+	fitsRAM := func(run bool, alias string) bool {
+		if !run {
+			return false
+		}
+		r := workerRAMMB(cat, alias)
+		if usedRAM+r <= budget {
+			usedRAM += r
+			return true
+		}
+		ui.Dim("team: not enough RAM for the %s worker - skipping it (the ladder just tops out lower)", alias)
+		return false
+	}
+	runHaiku = fitsRAM(runHaiku, firstNonEmpty(cfg.Team.Haiku, "qwen3.5-0.8b"))
+	runMid = fitsRAM(runMid, cfg.Team.Mid)
+	runSonnet = fitsRAM(runSonnet, firstNonEmpty(cfg.Team.Sonnet, "qwen3.5-4b"))
+
 	var sonnetPath, sonnetAlias, haikuPath, haikuAlias, midPath, midAlias string
 	if runSonnet {
 		sonnetPath, sonnetAlias = ensureWorker(cfg, cat, firstNonEmpty(cfg.Team.Sonnet, "qwen3.5-4b"), "sonnet (collator / code-review)")
@@ -206,6 +228,9 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		ui.Warn("team: no worker started - subagents fall back to the main model (see the worker logs)")
 	case sub == "dynamic":
 		top := haikuAlias
+		if midURL != "" {
+			top = cfg.Team.Mid
+		}
 		if sonnetURL != "" {
 			top = slots.Sonnet
 		}
@@ -363,14 +388,15 @@ func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *ca
 
 // teamWorthwhile reports whether team should auto-engage for a model: the main model is
 // ABOVE THE NANO TIER (the tier the CPU workers themselves come from, so offloading
-// subagents to them is worthwhile) AND the box has enough system RAM to host those workers
-// alongside it. Nano main models, or boxes too tight on RAM, run single.
+// subagents to them is worthwhile) AND there's RAM for at least the SMALLEST worker. The
+// worker set is then fit to RAM at launch (smallest-first); only a model that can't host
+// even the smallest worker falls back to a single model.
 func teamWorthwhile(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, model string) bool {
 	if !aboveNanoTier(cfg, cat, model) {
 		return false
 	}
 	mb, path := mainModelSize(cfg, cat, model)
-	return enoughRAMForWorkers(cfg, cat, hw, path, mb)
+	return smallestWorkerRAMMB(cfg, cat) <= workerRAMBudgetMB(cfg, hw, path, mb)
 }
 
 // aboveNanoTier reports whether the main model is bigger than the nano tier: a catalogued
@@ -400,36 +426,52 @@ func mainModelSize(cfg *config.Config, cat *catalog.Catalog, model string) (mb i
 	return 0, ""
 }
 
-// enoughRAMForWorkers reports whether the system has RAM for the CPU workers on top of what
-// the main model itself consumes -- its full footprint on Apple unified memory or when MoE
-// experts are offloaded to RAM, otherwise just runtime overhead -- with OS slack.
-func enoughRAMForWorkers(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, modelPath string, modelMB int) bool {
+// workerRAMBudgetMB is the system RAM available for CPU workers after the main model's own
+// RAM use -- its full footprint on Apple unified memory or when MoE experts are offloaded;
+// otherwise just runtime overhead -- and OS headroom. Huge (no limit) when RAM is unknown.
+func workerRAMBudgetMB(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB int) int {
 	if hw.RAMMB <= 0 {
-		return true // RAM unknown -> don't block (best effort)
+		return 1 << 30
 	}
 	mainRAM := 1024 // runtime overhead when the model sits in discrete VRAM
 	if hw.Unified || (modelPath != "" && engine.WillOffloadExperts(cfg, hw, modelPath)) {
 		mainRAM = modelMB // shared unified pool, or MoE experts offloaded to RAM
 	}
 	const osHeadroomMB = 2048
-	return hw.RAMMB-mainRAM-workersRAMEstimateMB(cfg, cat)-osHeadroomMB >= 0
+	if b := hw.RAMMB - mainRAM - osHeadroomMB; b > 0 {
+		return b
+	}
+	return 0
 }
 
-// workersRAMEstimateMB estimates the RAM the configured CPU workers need: their model
-// weights (catalogue sizes) plus a KV-cache / runtime margin.
-func workersRAMEstimateMB(cfg *config.Config, cat *catalog.Catalog) int {
-	total := 0
+// workerRAMMB estimates the RAM one CPU worker needs: its weights (catalogue size) plus a
+// KV-cache / runtime margin.
+func workerRAMMB(cat *catalog.Catalog, alias string) int {
+	size := 0
+	if m := cat.Find(alias); m != nil {
+		size = sizeStrToMB(m.Size)
+	}
+	if size == 0 {
+		size = 1500 // unknown (e.g. a custom worker) -> rough estimate
+	}
+	return size + 512
+}
+
+// smallestWorkerRAMMB is the RAM the smallest configured worker needs -- the cheapest rung
+// team could run, used to decide team-vs-single.
+func smallestWorkerRAMMB(cfg *config.Config, cat *catalog.Catalog) int {
+	min := 0
 	for _, a := range []string{cfg.Team.Haiku, cfg.Team.Mid, cfg.Team.Sonnet} {
 		a = strings.TrimSpace(a)
 		if a == "" || strings.EqualFold(a, "off") || strings.EqualFold(a, "none") {
 			continue
 		}
-		if m := cat.Find(a); m != nil {
-			total += sizeStrToMB(m.Size)
+		if r := workerRAMMB(cat, a); min == 0 || r < min {
+			min = r
 		}
 	}
-	if total == 0 {
-		total = 5000 // fallback when worker sizes are unknown (e.g. custom models)
+	if min == 0 {
+		min = 1024
 	}
-	return total + 1536 // KV cache + runtime overhead
+	return min
 }
