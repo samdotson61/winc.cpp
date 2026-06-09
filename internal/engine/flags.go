@@ -214,13 +214,13 @@ func atoiOr(s string, def int) int {
 	return def
 }
 
-// SmallModelSamplingArgs returns loop-safe, family-appropriate sampling flags for a
-// small/nano model used as a tool-calling agent. Tiny models repeat and emit noisy
-// tool-call JSON under default sampling (and never tolerate greedy decoding); these are
-// the model authors' recommended values plus a presence penalty as a loop guard. Returns
-// nil for families with no profile, leaving llama.cpp's defaults. Client-sent params
-// still override these, so they set only what Claude Code omits (top_k / min_p / etc.).
-func SmallModelSamplingArgs(modelPath string) []string {
+// FamilySamplingArgs returns the model authors' recommended sampling for a known model
+// family (ANY size, main or worker) used as a tool-calling agent. Correct sampling
+// materially affects tool-call reliability and avoids repetition loops; running a model at
+// the wrong temperature (e.g. Gemma wants 1.0, not llama.cpp's default) degrades it. Returns
+// nil for families with no profile, leaving llama.cpp's defaults. Client-sent params still
+// override these, so they set mainly what Claude Code omits (top_k / min_p / presence).
+func FamilySamplingArgs(modelPath string) []string {
 	name := strings.ToLower(filepath.Base(modelPath))
 	switch {
 	case strings.Contains(name, "qwen"):
@@ -429,6 +429,11 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 			args = append(args, "--spec-draft-model", dp)
 		}
 	}
+
+	// Family-correct sampling (Qwen / Gemma published values) for tool-call reliability;
+	// no-op for unknown families. Applies to every model -- main, single, and workers --
+	// not just the small ones. Before ExtraServerArgs so a user's own flags win.
+	args = append(args, FamilySamplingArgs(modelPath)...)
 
 	// Advanced escape hatch: any extra llama-server flags, verbatim.
 	args = append(args, cfg.Performance.ExtraServerArgs...)

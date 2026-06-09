@@ -315,11 +315,8 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 	wc.Reasoning.Mode = "adaptive"
 	wc.General.Port = pnum
 
-	args := engine.ServerArgs(&wc, hw, modelPath, pnum, "", ctx)
+	args := engine.ServerArgs(&wc, hw, modelPath, pnum, "", ctx) // ServerArgs adds family-correct sampling
 	args = append(args, "--parallel", strconv.Itoa(parallel))
-	// Loop-safe, family-appropriate sampling: tiny models repeat and emit bad tool-call
-	// JSON under default sampling. No-op for families we have no profile for.
-	args = append(args, engine.SmallModelSamplingArgs(modelPath)...)
 	// Extend prompt-prefix cache reuse (recovers the cache after small mid-prompt edits);
 	// probed, so an older engine that lacks the flag just runs without it.
 	args = append(args, engine.CacheReuseArgs(serverBin)...)
