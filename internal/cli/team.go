@@ -361,20 +361,29 @@ func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *ca
 	}
 }
 
-// teamModelFloorMB is the main-model size (~8 GB) at/above which team mode auto-engages:
-// a model this large benefits from offloading its subagents to small CPU workers.
-const teamModelFloorMB = 8000
-
-// teamWorthwhile reports whether team should auto-engage for a model: the model is large
-// enough (>= ~8 GB, by VRAM/footprint -- this also catches MoE/MTP variants the old tier
-// check missed) AND the box has enough system RAM to host the small CPU workers alongside
-// it. Smaller models, or boxes too tight on RAM, run single.
+// teamWorthwhile reports whether team should auto-engage for a model: the main model is
+// ABOVE THE NANO TIER (the tier the CPU workers themselves come from, so offloading
+// subagents to them is worthwhile) AND the box has enough system RAM to host those workers
+// alongside it. Nano main models, or boxes too tight on RAM, run single.
 func teamWorthwhile(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, model string) bool {
-	mb, path := mainModelSize(cfg, cat, model)
-	if mb < teamModelFloorMB {
+	if !aboveNanoTier(cfg, cat, model) {
 		return false
 	}
+	mb, path := mainModelSize(cfg, cat, model)
 	return enoughRAMForWorkers(cfg, cat, hw, path, mb)
+}
+
+// aboveNanoTier reports whether the main model is bigger than the nano tier: a catalogued
+// model by its tier, an uncatalogued downloaded model by size (the largest nano model is
+// only ~3 GB, so >=4 GB is comfortably above it).
+func aboveNanoTier(cfg *config.Config, cat *catalog.Catalog, model string) bool {
+	if m := cat.Find(model); m != nil {
+		return !strings.EqualFold(m.Tier, "nano")
+	}
+	if p, _ := downloadedPath(cfg, cat, model); p != "" {
+		return engine.FileMB(p) >= 4000
+	}
+	return false
 }
 
 // mainModelSize returns the main model's size in MB (its on-disk size if downloaded, else

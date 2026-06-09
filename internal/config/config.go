@@ -171,9 +171,9 @@ haiku  = "qwen3.5-9b"
 # CPU (never touching the main model's VRAM) and handles ALL subagents -- so a
 # deep-research fan-out spins up many quick small agents instead of clones of the big
 # model. winc offers to download a missing worker and ships ready-made research/collator/
-# code-reviewer agents. On by default for models >=8GB when there's RAM for the workers;
-# pass --noteam for a single model.
-mode      = "auto"          # auto (team for >=8GB models w/ RAM to spare) | on (always) | off (never)
+# code-reviewer agents. On by default for any model above the nano tier when there's RAM
+# for the workers; pass --noteam for a single model.
+mode      = "auto"          # auto (team for >nano-tier models w/ RAM to spare) | on (always) | off (never)
 subagents = "dynamic"       # which worker subagents use (HEAD always stays on the big model):
                             #   dynamic -> start on the 0.8B and ESCALATE by request load through
                             #              mid (2B) -> 4B -> main model (only if VRAM allows)  [default]

@@ -12,6 +12,7 @@ func TestWantTeam(t *testing.T) {
 	cfg := config.Defaults() // mode = "auto"
 	cat := &catalog.Catalog{Models: []catalog.Model{
 		{Alias: "big", Tier: "mid", Size: "13 GB"},
+		{Alias: "smallm", Tier: "small", Size: "6 GB"},
 		{Alias: "tiny", Tier: "nano", Size: "1 GB"},
 	}}
 	roomy := platform.Hardware{RAMMB: 32000, VRAMMB: 16000}
@@ -21,15 +22,18 @@ func TestWantTeam(t *testing.T) {
 		t.Error("--noteam must force single mode")
 	}
 	if !wantTeam("claude", true, false, &cfg, cat, roomy, "tiny") {
-		t.Error("--team must force team even for a small main model")
+		t.Error("--team must force team even for a nano main model")
 	}
 
-	// auto: team for a >=8 GB main model with RAM to spare; single for a smaller one.
+	// auto: team for anything ABOVE the nano tier with RAM to spare; nano stays single.
 	if !wantTeam("claude", false, false, &cfg, cat, roomy, "big") {
-		t.Error("auto should engage team for a >=8 GB main model (team is the default)")
+		t.Error("auto should engage team for a mid main model")
+	}
+	if !wantTeam("claude", false, false, &cfg, cat, roomy, "smallm") {
+		t.Error("auto should engage team for a small (above-nano) main model")
 	}
 	if wantTeam("claude", false, false, &cfg, cat, roomy, "tiny") {
-		t.Error("auto should not team-ify a sub-8 GB main model")
+		t.Error("auto should not team-ify a nano main model")
 	}
 
 	// Not enough RAM for the workers -> no auto-team, even for a big model.
