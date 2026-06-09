@@ -1,0 +1,102 @@
+# Changelog
+
+All notable changes to winc.cpp, newest first. Each release is a single
+`vX.Y.Z: description` commit; tagged releases ship binaries via CI.
+
+## v1.5.0 — 2026-06-09
+
+Observability, integrity, and release hygiene.
+
+### Added
+- `winc doctor` — read-only health snapshot: hardware, engine binaries
+  (file checks only, nothing executed), model files with a GGUF header check,
+  config summary (token never shown), agents on PATH, port status, log
+  inventory. Doctor only looks; it never starts, stops, or identifies
+  processes.
+- `winc logs [name] [--bundle]` — print log tails; `--bundle` zips a support
+  archive (doctor report + token-redacted winc.toml + all logs) ready to
+  attach to a bug report.
+- Team-mode worker watchdog: winc notices a dead or unresponsive worker
+  (process exit, or 3 failed health checks) and reroutes its traffic up the
+  escalation ladder; pinned routes fall back to the main model. Detection
+  only — winc never kills or restarts anything.
+- Router session stats, printed after the agent exits: requests per backend,
+  context-overflow rewrites, max_tokens caps applied, dead-worker reroutes.
+- Single-model sessions report how often the context-overflow rewrite saved
+  the session.
+- sha256 verification of engine downloads against GitHub's published release
+  digests. A mismatch is a hard fail (the archive is discarded, never
+  extracted); a missing digest (offline tag fallback) proceeds with a note.
+- GGUF header validation after every model download — an auth/error page
+  saved as a `.gguf` is caught and removed at download time instead of
+  failing confusingly at engine load. Pre-existing files are never touched.
+- Version stamping: `make release` stamps the binary with the git tag via
+  `-ldflags -X`.
+
+### Changed
+- winc.toml is now written owner-only (0o600) — it can hold a HuggingFace
+  token.
+- A download whose connection drops exactly at a chunk boundary is now
+  detected by length, kept as `.part`, and resumed on the next run instead
+  of being installed truncated.
+- CI: gofmt + vet + tests on Linux, Windows, and macOS now gate every
+  release build.
+
+### Fixed
+- Engine child processes can no longer outlive winc after a hard kill
+  (closed console window, Task Manager): Job Objects with
+  KILL_ON_JOB_CLOSE on Windows, PDEATHSIG on Linux. Best-effort — normal
+  shutdown behavior is unchanged.
+
+## v1.4.x — 2026-06-09
+- v1.4.5: halve worker fan-out on <=16GB-RAM systems for double per-agent context
+- v1.4.4: cap worker generation (loop guard) so a runaway can't burn minutes of CPU
+- v1.4.3: always front single mode with the router so the overflow rewrite applies in every reasoning mode
+- v1.4.2: rewrite llama context-overflow into Claude Code's "prompt is too long"
+- v1.4.1: family-correct sampling for all tiers (not just small/nano)
+- v1.4.0: compact worker requests (per-tier tool allowlist + minify + cache-reuse)
+
+## v1.3.x — 2026-06-09
+- v1.3.6: RAM-fit team workers smallest-first instead of all-or-nothing
+- v1.3.5: team auto-engages for any model above the nano tier (with RAM for the workers)
+- v1.3.4: team auto-engages for any >=8GB model with RAM for the workers
+- v1.3.3: raise local-model timeouts so slow / low-end boxes don't error mid-turn
+- v1.3.2: winc update reconciles winc.toml (repair stale default_model, add new sections)
+- v1.3.1: add an optional 2B middle rung to the dynamic ladder
+- v1.3.0: dynamic infra-driven subagent tiering + pre-approved web search
+
+## v1.2.x — 2026-06-08
+- v1.2.2: team mode by default + force subagents (incl. Workflow fan-out) onto the small worker
+- v1.2.1: reliable tool use for nano models (low-think + loop-safe sampling)
+- v1.2.0: agent team mode (--team) — big model orchestrates small CPU workers
+
+## v1.1.x — 2026-06-06 to 2026-06-08
+- v1.1.20: fix 400 "Unable to generate parser" on Qwen3.5 templates
+- v1.1.19: prune to a 2026-only catalog (Qwen3.5/3.6 + Gemma 4)
+- v1.1.18: Apple Silicon memory haircut so Macs aren't over-recommended
+- v1.1.17: winc update always rebuilds (clone) + confirms/skips engine refresh
+- v1.1.16: stop proxy "context canceled" noise from bleeding into the agent's terminal
+- v1.1.15: skip thinking on context-compaction requests
+- v1.1.14: halve the auto-compaction buffer (85% -> 93%)
+- v1.1.13: macOS fixes (Terminal glitches, MTP infinite-retry), accurate MTP sizes + cache freshness
+- v1.1.12: larger context for tight-fit MoE/MTP + tell Claude Code the real window
+- v1.1.11: winc update pulls ALL repo files + rebuilds (clone); check reports staleness
+- v1.1.10: winc update refreshes the model catalog too
+- v1.1.9: MTP (Multi-Token Prediction) support for Qwen3.6 variants
+- v1.1.8: auto-paired speculative drafts for dense models + cache-type-aware context + accurate sizes
+- v1.1.7: MoE expert offload + speculative decoding + Performance docs
+- v1.1.6: recommend MoE models for mid/large tiers (speed-first)
+- v1.1.5: detect dedicated VRAM for AMD and Intel GPUs
+- v1.1.4: size model recommendations by dedicated VRAM, not shared/system RAM
+- v1.1.3: wait for the model to load (/health) before launching the agent
+- v1.1.2: fix Linux/macOS engine shared-library loading
+- v1.1.1: robust engine backend selection for low-end / older-driver GPUs
+- v1.1.0: cross-platform install + vendored offline build; context fix
+
+## v1.0.0 — 2026-06-06
+- Full conversion to a single portable Go binary (no PowerShell, no Python);
+  README + MIT license.
+
+## v0.x — 2026-06-05 to 2026-06-06
+- Original script-based prototype: installer, model management, launcher,
+  truecolor/tmux fixes, uninstall. Superseded by the Go rewrite in v1.0.0.

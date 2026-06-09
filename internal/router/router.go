@@ -19,8 +19,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"winc/internal/config"
 	"winc/internal/paths"
@@ -28,11 +30,24 @@ import (
 )
 
 type Router struct {
-	srv  *http.Server
-	ln   net.Listener
-	base string
-	logf *os.File // team-mode routing log (nil otherwise)
+	srv     *http.Server
+	ln      net.Listener
+	base    string
+	logf    *os.File // team-mode routing log (nil otherwise)
+	logPath string   // "" when the routing log could not be created
+
+	mu        sync.Mutex
+	rlog      *log.Logger
+	requests  map[string]int  // chat requests routed, by backend name
+	dead      map[string]bool // upstreams the watchdog marked dead
+	deadNames []string        // human names of dead backends (for stats)
+	overflows int             // context-overflow errors rewritten for the agent
+	capsLow   int             // requests whose max_tokens was lowered to a tier cap
+	deadSkips int             // requests re-routed past a dead backend
 }
+
+// fallbackName is the stats/log name for the fallback backend (the main model).
+const fallbackName = "main"
 
 // Start launches the router in front of upstream (the llama-server/-swap URL) on
 // an ephemeral localhost port.
@@ -41,9 +56,10 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 	if err != nil {
 		return nil, err
 	}
+	r := &Router{requests: map[string]int{}, dead: map[string]bool{}}
 	rp := httputil.NewSingleHostReverseProxy(u)
 	rp.ErrorHandler = swallowClientCancel
-	rp.ModifyResponse = rewriteContextOverflowError
+	rp.ModifyResponse = r.rewriteOverflow
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -72,7 +88,7 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 	// Send any remaining server-internal log lines to the void rather than the shared
 	// terminal, so nothing from winc ever corrupts the agent's TUI.
 	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
-	r := &Router{srv: srv, ln: ln, base: "http://" + ln.Addr().String()}
+	r.srv, r.ln, r.base = srv, ln, "http://"+ln.Addr().String()
 	go srv.Serve(ln)
 	return r, nil
 }
@@ -80,7 +96,16 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 // BaseURL is the local URL the agent should point ANTHROPIC_BASE_URL at.
 func (r *Router) BaseURL() string { return r.base }
 
-// Stop shuts the router down.
+// LogPath is the routing log's path. "" means the log file could not be created
+// (routing still works; only the diagnostics file is missing) or single mode.
+func (r *Router) LogPath() string {
+	if r == nil {
+		return ""
+	}
+	return r.logPath
+}
+
+// Stop shuts the router down, writing the session stats to the routing log first.
 func (r *Router) Stop() {
 	if r == nil {
 		return
@@ -88,10 +113,138 @@ func (r *Router) Stop() {
 	if r.srv != nil {
 		_ = r.srv.Close()
 	}
-	if r.logf != nil {
-		_ = r.logf.Close()
-		r.logf = nil
+	r.mu.Lock()
+	logf, rlog := r.logf, r.rlog
+	r.logf, r.rlog = nil, nil
+	r.mu.Unlock()
+	if rlog != nil {
+		rlog.Printf("session stats: %s", r.Stats())
 	}
+	if logf != nil {
+		_ = logf.Close()
+	}
+}
+
+// Stats is a snapshot of the router's session counters. Team mode fills Requests
+// per backend name; in single mode only Overflows is meaningful.
+type Stats struct {
+	Requests    map[string]int // chat requests routed, by backend name
+	Dead        []string       // backends the watchdog marked dead (sorted)
+	Overflows   int            // context-overflow errors rewritten for the agent
+	CapsLowered int            // requests whose max_tokens was lowered to a tier cap
+	DeadSkips   int            // requests re-routed past a dead backend
+}
+
+// String renders a compact one-line summary, backends sorted by name.
+func (s Stats) String() string {
+	var b strings.Builder
+	names := make([]string, 0, len(s.Requests))
+	for n := range s.Requests {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	b.WriteString("requests:")
+	if len(names) == 0 {
+		b.WriteString(" none")
+	}
+	for _, n := range names {
+		fmt.Fprintf(&b, " %s=%d", n, s.Requests[n])
+	}
+	if s.Overflows > 0 {
+		fmt.Fprintf(&b, "  overflows-rewritten=%d", s.Overflows)
+	}
+	if s.CapsLowered > 0 {
+		fmt.Fprintf(&b, "  caps-lowered=%d", s.CapsLowered)
+	}
+	if s.DeadSkips > 0 {
+		fmt.Fprintf(&b, "  dead-skips=%d", s.DeadSkips)
+	}
+	if len(s.Dead) > 0 {
+		fmt.Fprintf(&b, "  dead: %s", strings.Join(s.Dead, ","))
+	}
+	return b.String()
+}
+
+// Stats returns a snapshot of the session counters. Safe on a nil Router.
+func (r *Router) Stats() Stats {
+	s := Stats{Requests: map[string]int{}}
+	if r == nil {
+		return s
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, v := range r.requests {
+		s.Requests[k] = v
+	}
+	s.Dead = append(s.Dead, r.deadNames...)
+	sort.Strings(s.Dead)
+	s.Overflows, s.CapsLowered, s.DeadSkips = r.overflows, r.capsLow, r.deadSkips
+	return s
+}
+
+// MarkDead records that a backend stopped responding (set by the worker watchdog
+// in team mode). Routing skips dead backends from then on: ladder picks re-run
+// over the alive rungs and pinned routes fall back to the main model. Detection
+// only -- the router never kills or restarts anything.
+func (r *Router) MarkDead(name, upstream string) {
+	if r == nil || upstream == "" {
+		return
+	}
+	r.mu.Lock()
+	if r.dead == nil {
+		r.dead = map[string]bool{}
+	}
+	already := r.dead[upstream]
+	if !already {
+		r.dead[upstream] = true
+		r.deadNames = append(r.deadNames, nameOr(name, upstream))
+	}
+	rlog := r.rlog
+	r.mu.Unlock()
+	if !already && rlog != nil {
+		rlog.Printf("watchdog: %s (%s) marked dead - rerouting its traffic", nameOr(name, upstream), upstream)
+	}
+}
+
+func (r *Router) isDead(upstream string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dead[upstream]
+}
+
+func (r *Router) note(name string) {
+	r.mu.Lock()
+	if r.requests == nil {
+		r.requests = map[string]int{}
+	}
+	r.requests[name]++
+	r.mu.Unlock()
+}
+
+func (r *Router) countDeadSkip() {
+	r.mu.Lock()
+	r.deadSkips++
+	r.mu.Unlock()
+}
+
+// nameOr falls back to the upstream URL when a route/tier has no human name.
+func nameOr(name, upstream string) string {
+	if name != "" {
+		return name
+	}
+	return upstream
+}
+
+// rewriteOverflow is the proxy's ModifyResponse hook: it applies the context-
+// overflow rewrite and counts each rewrite for the end-of-session stats.
+func (r *Router) rewriteOverflow(resp *http.Response) error {
+	rewritten, err := rewriteContextOverflowError(resp)
+	if rewritten {
+		r.mu.Lock()
+		r.overflows++
+		r.mu.Unlock()
+	}
+	return err
 }
 
 // swallowClientCancel is the proxy ErrorHandler. Claude Code routinely cancels
@@ -113,31 +266,32 @@ func swallowClientCancel(w http.ResponseWriter, r *http.Request, err error) {
 var llamaCtxOverflow = regexp.MustCompile(`\((\d+)\s*tokens?\)\s*exceeds the available context size\s*\((\d+)\s*tokens?\)`)
 
 // rewriteContextOverflowError translates llama-server's context-overflow error into the
-// exact wording Claude Code recognizes. llama-server says "...exceeds the available context
-// size...", but Claude Code only detects an over-long prompt when the error message contains
-// the literal "prompt is too long: N tokens > M maximum" -- used by BOTH the main loop's
-// context handling AND auto mode's command-safety classifier. Without this, an overflow
-// (common when a large bash tool_result balloons the request on a small local context) is
-// misread as the model being DOWN: auto mode reports "<model> is temporarily unavailable, so
-// auto mode cannot determine the safety of <command>" and blocks the command (fail-closed),
+// exact wording Claude Code recognizes, reporting whether it rewrote the response.
+// llama-server says "...exceeds the available context size...", but Claude Code only
+// detects an over-long prompt when the error message contains the literal "prompt is
+// too long: N tokens > M maximum" -- used by BOTH the main loop's context handling AND
+// auto mode's command-safety classifier. Without this, an overflow (common when a large
+// bash tool_result balloons the request on a small local context) is misread as the
+// model being DOWN: auto mode reports "<model> is temporarily unavailable, so auto mode
+// cannot determine the safety of <command>" and blocks the command (fail-closed),
 // instead of compacting and retrying. We rewrite ONLY this specific error; every other
-// response -- including success streams -- passes through untouched (we return immediately
-// for any status < 400, so SSE bodies are never buffered).
-func rewriteContextOverflowError(resp *http.Response) error {
+// response -- including success streams -- passes through untouched (we return
+// immediately for any status < 400, so SSE bodies are never buffered).
+func rewriteContextOverflowError(resp *http.Response) (bool, error) {
 	if resp == nil || resp.StatusCode < 400 {
-		return nil
+		return false, nil
 	}
 	if resp.Header.Get("Content-Encoding") != "" {
-		return nil // compressed; leave as-is
+		return false, nil // compressed; leave as-is
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "json") {
-		return nil
+		return false, nil
 	}
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	restore := func() error { resp.Body = io.NopCloser(bytes.NewReader(body)); return nil }
 	if err != nil {
-		return restore()
+		return false, restore()
 	}
 	var le struct {
 		Error struct {
@@ -148,12 +302,12 @@ func rewriteContextOverflowError(resp *http.Response) error {
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &le) != nil {
-		return restore()
+		return false, restore()
 	}
 	isOverflow := le.Error.Type == "exceed_context_size_error" ||
 		strings.Contains(le.Error.Message, "exceeds the available context size")
 	if !isOverflow {
-		return restore()
+		return false, restore()
 	}
 	actual, limit := le.Error.NPrompt, le.Error.NCtx
 	if actual == 0 || limit == 0 {
@@ -163,7 +317,7 @@ func rewriteContextOverflowError(resp *http.Response) error {
 		}
 	}
 	if actual == 0 || limit == 0 {
-		return restore() // couldn't extract counts; don't fabricate numbers
+		return false, restore() // couldn't extract counts; don't fabricate numbers
 	}
 	msg := fmt.Sprintf("prompt is too long: %d tokens > %d maximum", actual, limit)
 	// Encode WITHOUT HTML-escaping so the ">" stays literal (json.Marshal would emit
@@ -175,7 +329,7 @@ func rewriteContextOverflowError(resp *http.Response) error {
 		"type":  "error",
 		"error": map[string]any{"type": "invalid_request_error", "message": msg},
 	}) != nil {
-		return restore()
+		return false, restore()
 	}
 	nb := bytes.TrimRight(buf.Bytes(), "\n")
 	resp.StatusCode = http.StatusBadRequest
@@ -184,13 +338,14 @@ func rewriteContextOverflowError(resp *http.Response) error {
 	resp.ContentLength = int64(len(nb))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(nb)))
 	resp.Header.Set("Content-Type", "application/json")
-	return nil
+	return true, nil
 }
 
 // Route maps an exact on-the-wire model string to a backend, with a per-route
 // thinking policy: "" = adaptive (default), "low" = a small fixed budget (small
 // models orchestrate tools best with a LITTLE thinking), "off" = disabled.
 type Route struct {
+	Name      string   // short human name for logs/stats (e.g. "sonnet"); falls back to Upstream
 	Model     string   // the resolved model id Claude Code sends (winc's tier alias)
 	Upstream  string   // backend base URL
 	Think     string   // "" | "low" | "off"
@@ -203,6 +358,7 @@ type Route struct {
 // covers its estimated load; the last rung is the catch-all. Lets subagents START small
 // and escalate by the degree of load, deterministically (infra-driven, no model judgment).
 type Tier struct {
+	Name         string // short human name for logs/stats (e.g. "haiku"); falls back to Upstream
 	Upstream     string
 	Think        string
 	MaxEstTokens int      // route here when estimated load <= this; last rung = catch-all
@@ -215,6 +371,7 @@ type Tier struct {
 // by degree); explicit routes map a model to a fixed backend; anything else (the HEAD) goes
 // to fallback. One ANTHROPIC_BASE_URL fronts the main model and its small CPU workers.
 func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fallback string) (*Router, error) {
+	r := &Router{requests: map[string]int{}, dead: map[string]bool{}}
 	proxies := map[string]*httputil.ReverseProxy{}
 	mkProxy := func(target string) error {
 		if target == "" || proxies[target] != nil {
@@ -226,7 +383,7 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 		}
 		rp := httputil.NewSingleHostReverseProxy(u)
 		rp.ErrorHandler = swallowClientCancel
-		rp.ModifyResponse = rewriteContextOverflowError
+		rp.ModifyResponse = r.rewriteOverflow
 		proxies[target] = rp
 		return nil
 	}
@@ -254,12 +411,18 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 		return nil, err
 	}
 	// Routing decisions go to a file (never the shared terminal) -- both diagnostics
-	// and a way to verify each tier reaches the right worker on first run.
-	logf, _ := os.Create(filepath.Join(paths.InstallDir(), "winc-router.log"))
+	// and a way to verify each tier reaches the right worker on first run. A failure
+	// to create it is surfaced via LogPath() (""), not fatal: routing still works.
+	logPath := filepath.Join(paths.InstallDir(), "winc-router.log")
+	logf, lerr := os.Create(logPath)
+	if lerr != nil {
+		logPath, logf = "", nil
+	}
 	var rlog *log.Logger
 	if logf != nil {
 		rlog = log.New(logf, "", log.LstdFlags)
 	}
+	r.logf, r.logPath, r.rlog = logf, logPath, rlog
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
@@ -268,30 +431,42 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
 				model := modelOf(body)
+				name := fallbackName
 				think := ""
 				var allow []string // tool allowlist for the chosen worker backend (nil = HEAD, keep all)
 				maxTok := 0        // generation cap for the chosen worker backend (0 = uncapped, e.g. the HEAD)
 				if ladderTag != "" && model == ladderTag && len(ladder) > 0 {
-					t := pickTier(ladder, body)
-					target, think, allow, maxTok = t.Upstream, t.Think, t.Tools, t.MaxTokens
+					if t, ok := r.pickAliveTier(ladder, body); ok {
+						target, name, think, allow, maxTok = t.Upstream, nameOr(t.Name, t.Upstream), t.Think, t.Tools, t.MaxTokens
+					}
 				} else if rt, ok := byModel[model]; ok {
-					target, think, allow, maxTok = rt.Upstream, rt.Think, rt.Tools, rt.MaxTokens
+					if r.isDead(rt.Upstream) {
+						r.countDeadSkip() // pinned route's backend died -> fall back to main
+					} else {
+						target, name, think, allow, maxTok = rt.Upstream, nameOr(rt.Name, rt.Upstream), rt.Think, rt.Tools, rt.MaxTokens
+					}
 				}
 				cb, toolsBefore, toolsAfter := compactRequest(body, allow)
-				nb := clampMaxTokens(injectThinkingPolicy(cfg, cb, think), maxTok)
+				nb, lowered := clampMaxTokens(injectThinkingPolicy(cfg, cb, think), maxTok)
+				if lowered {
+					r.mu.Lock()
+					r.capsLow++
+					r.mu.Unlock()
+				}
+				r.note(name)
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
 				req.Header.Del("Accept-Encoding")
 				if rlog != nil {
-					rlog.Printf("model=%q -> %s%s%s", model, target, thinkTag(think), toolsTag(toolsBefore, toolsAfter))
+					rlog.Printf("model=%q -> %s (%s)%s%s", model, name, target, thinkTag(think), toolsTag(toolsBefore, toolsAfter))
 				}
 			}
 		}
 		proxies[target].ServeHTTP(w, req)
 	})
 	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
-	r := &Router{srv: srv, ln: ln, base: "http://" + ln.Addr().String(), logf: logf}
+	r.srv, r.ln, r.base = srv, ln, "http://"+ln.Addr().String()
 	go srv.Serve(ln)
 	return r, nil
 }
@@ -301,6 +476,28 @@ func thinkTag(think string) string {
 		return ""
 	}
 	return " (think:" + think + ")"
+}
+
+// pickAliveTier picks the load-appropriate rung, skipping rungs whose backend the
+// watchdog marked dead: the pick re-runs over only the alive rungs, so requests
+// escalate past a dead rung (or settle on the highest alive one when the top died).
+// ok=false when every rung is dead -- the caller then uses the fallback backend.
+func (r *Router) pickAliveTier(ladder []Tier, body []byte) (Tier, bool) {
+	t := pickTier(ladder, body)
+	if !r.isDead(t.Upstream) {
+		return t, true
+	}
+	r.countDeadSkip()
+	alive := make([]Tier, 0, len(ladder))
+	for _, x := range ladder {
+		if !r.isDead(x.Upstream) {
+			alive = append(alive, x)
+		}
+	}
+	if len(alive) == 0 {
+		return Tier{}, false
+	}
+	return pickTier(alive, body), true
 }
 
 // pickTier selects an escalation rung by the request's estimated load (start small), then
@@ -541,27 +738,28 @@ func ensureMaxTokens(m map[string]json.RawMessage, budget int) {
 // of CPU time producing truncated garbage). cap <= 0 is a no-op -- the HEAD model is never
 // capped. It only lowers: a request already at/below cap is left untouched; an absent
 // max_tokens is set to cap. Runs after injectThinkingPolicy, so the thinking floor still
-// holds as long as cap exceeds the thinking budget (the defaults do).
-func clampMaxTokens(body []byte, maxTok int) []byte {
+// holds as long as cap exceeds the thinking budget (the defaults do). lowered reports
+// whether the request was actually capped (for the session stats).
+func clampMaxTokens(body []byte, maxTok int) (out []byte, lowered bool) {
 	if maxTok <= 0 {
-		return body
+		return body, false
 	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
-		return body
+		return body, false
 	}
 	if raw, ok := m["max_tokens"]; ok {
 		var cur int
 		if json.Unmarshal(raw, &cur) == nil && cur <= maxTok {
-			return body // already within the cap -- don't touch
+			return body, false // already within the cap -- don't touch
 		}
 	}
 	v, _ := json.Marshal(maxTok)
 	m["max_tokens"] = v
-	if out, err := json.Marshal(m); err == nil {
-		return out
+	if nb, err := json.Marshal(m); err == nil {
+		return nb, true
 	}
-	return body
+	return body, false
 }
 
 func mergeKwargs(existing json.RawMessage, key string, val any) json.RawMessage {

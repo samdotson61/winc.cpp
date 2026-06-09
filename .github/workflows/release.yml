@@ -9,15 +9,40 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+      - name: gofmt gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          out=$(gofmt -l ./cmd ./internal)
+          if [ -n "$out" ]; then
+            echo "gofmt needed on:" && echo "$out" && exit 1
+          fi
+      - name: Vet
+        run: go vet ./cmd/... ./internal/...
       - name: Test
         run: go test ./cmd/... ./internal/...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so git describe sees the tag
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
       - name: Cross-compile
         run: make release
       - name: Publish release binaries

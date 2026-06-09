@@ -232,7 +232,7 @@ func Defaults() Config {
 func Load() (*Config, error) {
 	p := paths.ConfigPath()
 	if _, err := os.Stat(p); os.IsNotExist(err) {
-		if werr := os.WriteFile(p, []byte(defaultTOML), 0o644); werr != nil {
+		if werr := os.WriteFile(p, []byte(defaultTOML), 0o600); werr != nil {
 			return nil, werr
 		}
 	}
@@ -263,7 +263,7 @@ func UpdateDefaultModel(alias string) error {
 		return nil
 	}
 	out := defaultModelLine.ReplaceAll(data, []byte(`${1}"`+alias+`"`))
-	return os.WriteFile(p, out, 0o644)
+	return os.WriteFile(p, out, 0o600)
 }
 
 // EnsureExists writes the default template if winc.toml is missing. Returns true
@@ -273,7 +273,7 @@ func EnsureExists() (bool, error) {
 	if _, err := os.Stat(p); err == nil {
 		return false, nil
 	}
-	return true, os.WriteFile(p, []byte(defaultTOML), 0o644)
+	return true, os.WriteFile(p, []byte(defaultTOML), 0o600)
 }
 
 func (c *Config) backfill() {

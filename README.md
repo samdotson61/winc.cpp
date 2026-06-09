@@ -64,6 +64,8 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 | `winc -s ... --noteam` | Disable team mode — run a single model |
 | `winc -s ... --reasoning <mode>` | Override reasoning mode for this launch |
 | `winc serve [--multi]` | Run the server(s)/router only (point your own client at it) |
+| `winc doctor` | Read-only health snapshot: hardware, engine, models (GGUF check), config, agents, ports, logs |
+| `winc logs [name] [--bundle]` | Show log tails; `--bundle` zips a support archive for bug reports |
 | `winc -c` / `winc check` | Update status: winc version, source freshness, engine, catalog |
 | `winc -u` / `winc update` | Update **everything**: pull + rebuild (clone), refresh engine + catalog, and reconcile `winc.toml` (repair a stale `default_model`, add new config sections) |
 | `winc -n` / `winc uninstall [-y]` | Remove installed components + PATH entry |
@@ -345,6 +347,32 @@ balance.
 
 Run `winc detect` to see exactly what `winc` resolved for your machine (backend, VRAM,
 context, MoE offload, recommended tier).
+
+---
+
+## Diagnostics & integrity
+
+**When something's off, start with `winc doctor`** — a read-only snapshot of everything
+that matters: hardware, engine binaries (checked on disk, never executed), model files
+(with a GGUF header check), config, agents on PATH, port status, and which logs exist.
+It never starts, stops, or identifies any process. **`winc logs`** prints the tail of any
+winc log, and **`winc logs --bundle`** zips a support archive — the doctor report, a
+**token-redacted** `winc.toml`, and all logs — ready to attach to a bug report.
+
+**Team sessions watch their workers.** If a worker process dies or stops answering health
+checks, the router **reroutes its traffic up the escalation ladder** (pinned routes fall
+back to the main model) and notes it in `winc-router.log` — detection only; winc never
+kills or restarts anything. After the agent exits, winc prints **session stats**: requests
+per backend, context-overflow rewrites, output caps applied, and dead-worker reroutes.
+
+**Downloads are verified.** Engine archives are **sha256-checked** against GitHub's
+published release digests before extraction (a mismatch is discarded, never installed;
+offline installs proceed with a note). Model downloads get a **GGUF header check**, so an
+auth/error page saved as a `.gguf` is caught immediately instead of failing at engine
+load, and a connection that drops mid-download is detected by length and **resumed** on
+the next run. `winc.toml` is written **owner-only** (it can hold your HuggingFace token),
+and engine processes are tied to winc's lifetime (Job Objects on Windows, PDEATHSIG on
+Linux) so a hard kill can't leave a stray server holding your GPU.
 
 ---
 

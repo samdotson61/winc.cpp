@@ -148,6 +148,12 @@ func cmdStart(args []string) int {
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)
 	}
+	// Surface how often the session hit the context wall (each one was rewritten into
+	// Claude Code's compaction signal). A recurring count means the context is too
+	// small for the workload -- the actionable follow-up lives in the warning above.
+	if n := r.Stats().Overflows; n > 0 {
+		ui.Info("session: hit the context limit %d time(s) - each was rewritten so the agent compacts instead of stalling", n)
+	}
 	return 0
 }
 

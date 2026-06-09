@@ -44,6 +44,10 @@ func Run(args []string) int {
 		return cmdSetup()
 	case "detect":
 		return cmdDetect()
+	case "doctor":
+		return cmdDoctor()
+	case "logs":
+		return cmdLogs(rest)
 	case "serve":
 		return cmdServe(rest)
 	case "version", "-v", "--version":

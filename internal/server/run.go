@@ -31,10 +31,12 @@ func Start(bin string, args []string, logPath string) (*Proc, error) {
 	c.Env = EnvWithLibPath(filepath.Dir(bin)) // find .so/.dylib shipped beside the binary
 	c.Stdout = lf
 	c.Stderr = lf
+	configureChild(c) // linux: pdeathsig, so children die if winc is hard-killed
 	if err := c.Start(); err != nil {
 		lf.Close()
 		return nil, err
 	}
+	addToJob(c) // windows: job object w/ KILL_ON_JOB_CLOSE; best-effort
 	p := &Proc{cmd: c, log: lf, done: make(chan struct{})}
 	go func() {
 		c.Wait()

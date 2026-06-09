@@ -1,7 +1,15 @@
 # winc.cpp - build + cross-compile
 BINARY  := winc
 PKG     := ./cmd/winc
+# Stamp the binary with the git tag, minus the "v" prefix so it matches the
+# in-source form the update check compares against (falls back to the short
+# hash, then to the in-source default if git is unavailable).
+# Override: make release VERSION=1.5.0
+VERSION ?= $(shell git describe --tags --always 2>/dev/null | sed 's/^v//')
 LDFLAGS := -s -w
+ifneq ($(VERSION),)
+LDFLAGS += -X winc/internal/cli.Version=$(VERSION)
+endif
 GOFLAGS :=
 
 .PHONY: build test vet tidy release clean

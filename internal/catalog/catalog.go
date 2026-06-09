@@ -29,8 +29,8 @@ type Model struct {
 	Name  string `json:"name"`
 	Size  string `json:"size"`
 	Repo  string `json:"repo"`
-	File  string `json:"file"`           // filename in the HF repo to download
-	Save  string `json:"save,omitempty"` // local filename to save as (default: File); used to disambiguate MTP variants
+	File  string `json:"file"`            // filename in the HF repo to download
+	Save  string `json:"save,omitempty"`  // local filename to save as (default: File); used to disambiguate MTP variants
 	Draft string `json:"draft,omitempty"` // alias of a same-tokenizer draft model (speculative decoding); "" = none
 	Mtp   string `json:"mtp,omitempty"`   // alias of this model's Multi-Token-Prediction variant; "" = none
 	Note  string `json:"note"`

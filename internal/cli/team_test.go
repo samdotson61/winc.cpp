@@ -3,6 +3,7 @@ package cli
 import (
 	"testing"
 
+	"winc/internal/agent"
 	"winc/internal/catalog"
 	"winc/internal/config"
 	"winc/internal/platform"
@@ -117,6 +118,55 @@ func TestWorkerGeometry(t *testing.T) {
 	}
 	if sc/sp != 32768 {
 		t.Errorf("small-system collator per-slot context = %d, want 32768 (double the 16384 default)", sc/sp)
+	}
+}
+
+func TestBuildDispatch(t *testing.T) {
+	cfg := config.Defaults()
+	slots := agent.Slots{Opus: "main-m", Sonnet: "son-4b", Haiku: "hk-0.8b"}
+
+	// dynamic, every worker up + main escalation: 4 ascending rungs, last is catch-all.
+	d := buildDispatch(&cfg, "dynamic", slots, "http://s", "http://h", "http://m", "http://main", "son-4b", "hk-0.8b", true)
+	if d.ladderTag != "hk-0.8b" || d.subagentModel != "hk-0.8b" {
+		t.Errorf("dynamic should tag subagents with the haiku alias, got tag=%q model=%q", d.ladderTag, d.subagentModel)
+	}
+	if len(d.routes) != 0 || len(d.ladder) != 4 {
+		t.Fatalf("dynamic full house should be ladder-only with 4 rungs, got %d routes / %d rungs", len(d.routes), len(d.ladder))
+	}
+	for i, n := range []string{"haiku", "mid", "sonnet", "escalated"} {
+		if d.ladder[i].Name != n {
+			t.Errorf("rung %d name = %q, want %q", i, d.ladder[i].Name, n)
+		}
+	}
+	for i := 0; i < len(d.ladder)-1; i++ {
+		if d.ladder[i].MaxEstTokens >= d.ladder[i+1].MaxEstTokens {
+			t.Errorf("thresholds must ascend: rung %d (%d) >= rung %d (%d)", i, d.ladder[i].MaxEstTokens, i+1, d.ladder[i+1].MaxEstTokens)
+		}
+	}
+	last := d.ladder[len(d.ladder)-1]
+	if last.MaxEstTokens != 1<<30 || last.Tools != nil || last.MaxTokens != 0 {
+		t.Errorf("the escalated (main) rung must be the uncapped catch-all with all tools, got %+v", last)
+	}
+
+	// dynamic with only the haiku worker: a single catch-all rung.
+	d = buildDispatch(&cfg, "dynamic", slots, "", "http://h", "", "http://main", "son-4b", "hk-0.8b", false)
+	if len(d.ladder) != 1 || d.ladder[0].Name != "haiku" || d.ladder[0].MaxEstTokens != 1<<30 {
+		t.Fatalf("haiku-only dynamic should be one catch-all rung, got %+v", d.ladder)
+	}
+
+	// tiered: per-agent pins, no ladder.
+	d = buildDispatch(&cfg, "tiered", slots, "http://s", "http://h", "", "http://main", "son-4b", "hk-0.8b", false)
+	if len(d.ladder) != 0 || d.ladderTag != "" || len(d.routes) != 2 {
+		t.Fatalf("tiered should be routes-only, got %d routes, tag %q", len(d.routes), d.ladderTag)
+	}
+	if d.routes[0].Name != "sonnet" || d.routes[0].Model != "son-4b" || d.routes[1].Name != "haiku" || d.routes[1].Model != "hk-0.8b" {
+		t.Errorf("tiered routes mis-built: %+v", d.routes)
+	}
+
+	// forced sonnet with its worker missing: tag still set (requests just fall back to main).
+	d = buildDispatch(&cfg, "sonnet", slots, "", "", "", "http://main", "son-4b", "hk-0.8b", false)
+	if d.ladderTag != "son-4b" || len(d.ladder) != 0 {
+		t.Errorf("sonnet-forced with no worker: want tag son-4b + empty ladder, got tag=%q rungs=%d", d.ladderTag, len(d.ladder))
 	}
 }
 

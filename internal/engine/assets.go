@@ -43,23 +43,46 @@ const (
 func LatestWincTag() string { return latestTag(wincRepo, "") }
 
 // latestTag asks the GitHub releases API; falls back to a known-good tag offline.
-func latestTag(repo, fallback string) string {
+func latestTag(repo, fallback string) string { return latestRelease(repo, fallback).Tag }
+
+// releaseInfo is the GitHub release metadata winc uses: the tag, plus each asset's
+// published sha256 (the API's per-asset `digest` field, present on releases since 2025).
+type releaseInfo struct {
+	Tag     string
+	Digests map[string]string // asset filename -> "sha256:<hex>"; empty when unavailable
+}
+
+// latestRelease fetches the newest release's tag and asset digests in one API call.
+// Offline (or rate-limited) it falls back to a known-good tag with NO digests --
+// callers then download without verification and say so, rather than refusing to
+// install at all.
+func latestRelease(repo, fallback string) releaseInfo {
 	c := &http.Client{Timeout: 10 * time.Second}
 	resp, err := c.Get("https://api.github.com/repos/" + repo + "/releases/latest")
 	if err != nil {
-		return fallback
+		return releaseInfo{Tag: fallback}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fallback
+		return releaseInfo{Tag: fallback}
 	}
 	var r struct {
 		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&r) != nil || r.TagName == "" {
-		return fallback
+		return releaseInfo{Tag: fallback}
 	}
-	return r.TagName
+	ri := releaseInfo{Tag: r.TagName, Digests: map[string]string{}}
+	for _, a := range r.Assets {
+		if a.Digest != "" {
+			ri.Digests[a.Name] = a.Digest
+		}
+	}
+	return ri
 }
 
 // LatestLlamaTag / LatestSwapTag expose the newest upstream release tags.
@@ -69,22 +92,24 @@ func LatestSwapTag() string  { return latestTag(swapRepo, swapFallbackTag) }
 // LlamaAsset is one downloadable engine archive (plus any runtime companion).
 type LlamaAsset struct {
 	Backend string
-	URLs    []string // main archive [+ CUDA cudart runtime]
-	Archive string   // "zip" | "tar.gz"
+	URLs    []string          // main archive [+ CUDA cudart runtime]
+	Archive string            // "zip" | "tar.gz"
+	Digests map[string]string // release digests by filename ("sha256:<hex>"); empty = unverifiable
 }
 
 // LlamaCandidates returns the ordered prebuilt llama.cpp archives to try for this
 // hardware, best backend first, always ending in a CPU fallback that exists.
 // NOTE: there is no prebuilt Linux CUDA archive (source build only).
 func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
-	tag := latestTag(llamaRepo, llamaFallbackTag)
+	rel := latestRelease(llamaRepo, llamaFallbackTag)
+	tag := rel.Tag
 	base := "https://github.com/" + llamaRepo + "/releases/download/" + tag + "/"
 	mk := func(backend, archive string, files ...string) LlamaAsset {
 		urls := make([]string, len(files))
 		for i, f := range files {
 			urls[i] = base + f
 		}
-		return LlamaAsset{Backend: backend, URLs: urls, Archive: archive}
+		return LlamaAsset{Backend: backend, URLs: urls, Archive: archive, Digests: rel.Digests}
 	}
 	var out []LlamaAsset
 	switch hw.OS {
@@ -123,9 +148,11 @@ func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
 	return out
 }
 
-// SwapAsset returns the prebuilt llama-swap archive URL for this hardware.
-func SwapAsset(hw platform.Hardware) (url, archive string, ok bool) {
-	ver := strings.TrimPrefix(latestTag(swapRepo, swapFallbackTag), "v")
+// SwapAsset returns the prebuilt llama-swap archive URL for this hardware, plus
+// the release's published digests for verification (empty when unavailable).
+func SwapAsset(hw platform.Hardware) (url, archive string, digests map[string]string, ok bool) {
+	rel := latestRelease(swapRepo, swapFallbackTag)
+	ver := strings.TrimPrefix(rel.Tag, "v")
 	var osName, arch, ext string
 	switch hw.OS {
 	case "windows":
@@ -135,11 +162,11 @@ func SwapAsset(hw platform.Hardware) (url, archive string, ok bool) {
 	case "darwin":
 		osName, arch, ext = "darwin", goArch(hw.Arch), "tar.gz"
 	default:
-		return "", "", false
+		return "", "", nil, false
 	}
 	file := fmt.Sprintf("llama-swap_%s_%s_%s.%s", ver, osName, arch, ext)
 	url = fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", swapRepo, ver, file)
-	return url, ext, true
+	return url, ext, rel.Digests, true
 }
 
 func goArch(a string) string {

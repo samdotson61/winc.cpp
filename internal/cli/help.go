@@ -20,6 +20,8 @@ func usage() {
 	ui.Say("        team mode is DEFAULT on a big model: subagents start on a small CPU worker")
 	ui.Say("        and escalate by load; web search is pre-approved; --noteam = single model")
 	ui.Say("  winc serve [--multi]            run the server(s)/router only")
+	ui.Say("  winc doctor                     health snapshot: hardware, engine, models, logs")
+	ui.Say("  winc logs [name] [--bundle]     show log tails; --bundle zips a support archive")
 	ui.Say("  winc -c | check                 check for updates")
 	ui.Say("  winc -u | update                update winc + engine + catalog; reconcile winc.toml")
 	ui.Say("  winc -n | uninstall [-y]        remove installed components")

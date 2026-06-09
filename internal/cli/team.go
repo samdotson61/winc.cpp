@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"winc/internal/agent"
@@ -130,105 +131,62 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	// Launch the worker(s) on the CPU, capturing each one's URL.
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
 	var sonnetURL, midURL, haikuURL string
+	var workers []teamWorker
 	if runSonnet {
-		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, sonnetPar, sonnetCtx, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
+		lp := filepath.Join(logDir, "worker-sonnet.log")
+		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, sonnetPar, sonnetCtx, "sonnet", lp); p != nil {
 			procs = append(procs, p)
 			sonnetURL, slots.Sonnet = url, alias
+			workers = append(workers, teamWorker{proc: p, name: "sonnet", url: url, logPath: lp})
 		}
 	}
 	if runMid {
-		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, workerPar, workerCtx, "mid", filepath.Join(logDir, "worker-mid.log")); p != nil {
+		lp := filepath.Join(logDir, "worker-mid.log")
+		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, workerPar, workerCtx, "mid", lp); p != nil {
 			procs = append(procs, p)
 			midURL = url // ladder-only rung; not mapped to a Claude Code tier
+			workers = append(workers, teamWorker{proc: p, name: "mid", url: url, logPath: lp})
 		}
 	}
 	if runHaiku {
-		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, workerPar, workerCtx, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
+		lp := filepath.Join(logDir, "worker-haiku.log")
+		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, workerPar, workerCtx, "haiku", lp); p != nil {
 			procs = append(procs, p)
 			haikuURL, slots.Haiku = url, alias
+			workers = append(workers, teamWorker{proc: p, name: "haiku", url: url, logPath: lp})
 		}
 	}
 
 	// Build the dispatch: explicit per-agent routes (tiered), or a subagent tag + escalation
 	// ladder (dynamic/haiku/sonnet) that forces every subagent (Task + Workflow) onto the
 	// worker(s). The HEAD (pinned to the main model) always reaches the main backend.
-	const catchAll = 1 << 30
-	var routes []router.Route
-	var ladder []router.Tier
-	var ladderTag, subagentModel string
-	// Per-tier tool allowlists: tiny workers (0.8B/2B) stay research-only; the 4B also gets
-	// Write (collation/review); the HEAD model keeps every tool (nil = no stripping).
-	workerTools := cfg.Team.WorkerTools
-	sonnetTools := cfg.Team.SonnetTools
-	// Per-tier generation caps (loop guard): the tiny research workers can run away and burn
-	// minutes of CPU generating until they hit the context wall; the router lowers an
-	// over-large max_tokens to these. The HEAD model is never capped.
-	workerCap := cfg.Team.WorkerMaxTokens
-	sonnetCap := cfg.Team.SonnetMaxTokens
-	switch sub {
-	case "tiered": // per-agent pins; generic/Workflow agents inherit the main model
-		if sonnetURL != "" {
-			routes = append(routes, router.Route{Model: slots.Sonnet, Upstream: sonnetURL, Think: "", Tools: sonnetTools, MaxTokens: sonnetCap})
-		}
-		if haikuURL != "" {
-			routes = append(routes, router.Route{Model: slots.Haiku, Upstream: haikuURL, Think: "low", Tools: workerTools, MaxTokens: workerCap})
-		}
-	case "sonnet": // force all subagents to the 4B
-		subagentModel, ladderTag = sonnetAlias, sonnetAlias
-		if sonnetURL != "" {
-			ladder = []router.Tier{{Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll, Tools: sonnetTools, MaxTokens: sonnetCap}}
-		}
-	case "haiku": // force all subagents to the 0.8B
-		subagentModel, ladderTag = haikuAlias, haikuAlias
-		if haikuURL != "" {
-			ladder = []router.Tier{{Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll, Tools: workerTools, MaxTokens: workerCap}}
-		}
-	default: // dynamic: tag every subagent with the haiku alias, escalate by request load
-		subagentModel, ladderTag = haikuAlias, haikuAlias
-		// Ascending rungs from whichever workers came up (0.8B -> 2B -> 4B -> main), with
-		// ascending load thresholds; the last rung is the catch-all. A subagent starts on
-		// the smallest rung and climbs as its estimated load grows.
-		type rung struct {
-			url, think string
-			tools      []string
-			cap        int
-		}
-		var rungs []rung
-		if haikuURL != "" {
-			rungs = append(rungs, rung{haikuURL, "low", workerTools, workerCap})
-		}
-		if midURL != "" {
-			rungs = append(rungs, rung{midURL, "low", workerTools, workerCap})
-		}
-		if sonnetURL != "" {
-			rungs = append(rungs, rung{sonnetURL, "low", sonnetTools, sonnetCap})
-		}
-		if mainEscalate {
-			rungs = append(rungs, rung{mainURL, "", nil, 0}) // HEAD model: keep all tools, no cap
-		}
-		thresholds := []int{2048, 6144, 16384, 49152}
-		for i, r := range rungs {
-			max := catchAll
-			if i < len(rungs)-1 && i < len(thresholds) {
-				max = thresholds[i]
-			}
-			ladder = append(ladder, router.Tier{Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools, MaxTokens: r.cap})
-		}
-	}
+	disp := buildDispatch(cfg, sub, slots, sonnetURL, haikuURL, midURL, mainURL, sonnetAlias, haikuAlias, mainEscalate)
 
 	// The model-aware router is mandatory in team mode -- it dispatches every request to
 	// its backend (and applies adaptive reasoning where appropriate).
-	rtr, err := router.StartTeam(cfg, routes, ladder, ladderTag, mainURL)
+	rtr, err := router.StartTeam(cfg, disp.routes, disp.ladder, disp.ladderTag, mainURL)
 	if err != nil {
 		ui.Err("team router failed: %v", err)
 		return 1
 	}
 	defer rtr.Stop()
 	baseURL := rtr.BaseURL()
+	if rtr.LogPath() == "" {
+		ui.Dim("note: could not create the router log - routing diagnostics are off this session")
+	}
+
+	// Watch each worker for the life of the session: one that exits or stops answering
+	// /health gets its rung marked dead, so the ladder re-routes around it instead of
+	// feeding it requests that fail (which Claude Code would misread as the model being
+	// unavailable). Detection only -- winc never kills or restarts anything.
+	var teardown atomic.Bool
+	for _, w := range workers {
+		go watchWorker(rtr, w, &teardown)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
-	go func() { <-sig; stopAll(); os.Exit(130) }()
+	go func() { <-sig; teardown.Store(true); stopAll(); os.Exit(130) }()
 
 	maxOut := engine.ResolveMaxOutput(cfg, headCtx)
 	switch {
@@ -238,7 +196,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		if slots.Sonnet == mainAlias && slots.Haiku == mainAlias {
 			ui.Warn("no workers running - every tier falls back to the main model")
 		}
-	case len(ladder) == 0:
+	case len(disp.ladder) == 0:
 		ui.Warn("team: no worker started - subagents fall back to the main model (see the worker logs)")
 	case sub == "dynamic":
 		top := haikuAlias
@@ -254,17 +212,149 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		ui.Good("team ready  main=%s  subagents start on %s, escalate by load up to %s", mainAlias, haikuAlias, top)
 		ui.Info("every subagent + Workflow fan-out starts small and escalates by request load; main orchestrates")
 	default: // haiku / sonnet single-tier
-		ui.Good("team ready  main=%s  all subagents -> %s", mainAlias, subagentModel)
+		ui.Good("team ready  main=%s  all subagents -> %s", mainAlias, disp.subagentModel)
 	}
 	if !agent.Available(app) {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
-	env := agent.Env(baseURL, slots, maxOut, headCtx, mainAlias, subagentModel) // pin main + force subagents onto the worker(s)
+	env := agent.Env(baseURL, slots, maxOut, headCtx, mainAlias, disp.subagentModel) // pin main + force subagents onto the worker(s)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)
 	}
+	teardown.Store(true) // watchdogs stand down; worker deaths from here on are expected
+	reportTeamStats(rtr)
 	return 0
+}
+
+// dispatch is the request-routing plan startTeam hands the router: explicit per-model
+// routes (tiered mode) or an escalation ladder behind a subagent tag (dynamic/forced).
+type dispatch struct {
+	routes        []router.Route
+	ladder        []router.Tier
+	ladderTag     string // the model tag subagent requests carry ("" = no ladder)
+	subagentModel string // the model alias Claude Code's subagents are pinned to
+}
+
+// buildDispatch translates the subagent policy + whichever workers actually came up into
+// the router's dispatch plan. Extracted from startTeam so the policy switch is testable
+// without launching servers.
+func buildDispatch(cfg *config.Config, sub string, slots agent.Slots, sonnetURL, haikuURL, midURL, mainURL, sonnetAlias, haikuAlias string, mainEscalate bool) dispatch {
+	const catchAll = 1 << 30
+	var d dispatch
+	// Per-tier tool allowlists: tiny workers (0.8B/2B) stay research-only; the 4B also gets
+	// Write (collation/review); the HEAD model keeps every tool (nil = no stripping).
+	workerTools := cfg.Team.WorkerTools
+	sonnetTools := cfg.Team.SonnetTools
+	// Per-tier generation caps (loop guard): the tiny research workers can run away and burn
+	// minutes of CPU generating until they hit the context wall; the router lowers an
+	// over-large max_tokens to these. The HEAD model is never capped.
+	workerCap := cfg.Team.WorkerMaxTokens
+	sonnetCap := cfg.Team.SonnetMaxTokens
+	switch sub {
+	case "tiered": // per-agent pins; generic/Workflow agents inherit the main model
+		if sonnetURL != "" {
+			d.routes = append(d.routes, router.Route{Name: "sonnet", Model: slots.Sonnet, Upstream: sonnetURL, Think: "", Tools: sonnetTools, MaxTokens: sonnetCap})
+		}
+		if haikuURL != "" {
+			d.routes = append(d.routes, router.Route{Name: "haiku", Model: slots.Haiku, Upstream: haikuURL, Think: "low", Tools: workerTools, MaxTokens: workerCap})
+		}
+	case "sonnet": // force all subagents to the 4B
+		d.subagentModel, d.ladderTag = sonnetAlias, sonnetAlias
+		if sonnetURL != "" {
+			d.ladder = []router.Tier{{Name: "sonnet", Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll, Tools: sonnetTools, MaxTokens: sonnetCap}}
+		}
+	case "haiku": // force all subagents to the 0.8B
+		d.subagentModel, d.ladderTag = haikuAlias, haikuAlias
+		if haikuURL != "" {
+			d.ladder = []router.Tier{{Name: "haiku", Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll, Tools: workerTools, MaxTokens: workerCap}}
+		}
+	default: // dynamic: tag every subagent with the haiku alias, escalate by request load
+		d.subagentModel, d.ladderTag = haikuAlias, haikuAlias
+		// Ascending rungs from whichever workers came up (0.8B -> 2B -> 4B -> main), with
+		// ascending load thresholds; the last rung is the catch-all. A subagent starts on
+		// the smallest rung and climbs as its estimated load grows.
+		type rung struct {
+			name, url, think string
+			tools            []string
+			cap              int
+		}
+		var rungs []rung
+		if haikuURL != "" {
+			rungs = append(rungs, rung{"haiku", haikuURL, "low", workerTools, workerCap})
+		}
+		if midURL != "" {
+			rungs = append(rungs, rung{"mid", midURL, "low", workerTools, workerCap})
+		}
+		if sonnetURL != "" {
+			rungs = append(rungs, rung{"sonnet", sonnetURL, "low", sonnetTools, sonnetCap})
+		}
+		if mainEscalate {
+			rungs = append(rungs, rung{"escalated", mainURL, "", nil, 0}) // HEAD model: keep all tools, no cap
+		}
+		thresholds := []int{2048, 6144, 16384, 49152}
+		for i, r := range rungs {
+			max := catchAll
+			if i < len(rungs)-1 && i < len(thresholds) {
+				max = thresholds[i]
+			}
+			d.ladder = append(d.ladder, router.Tier{Name: r.name, Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools, MaxTokens: r.cap})
+		}
+	}
+	return d
+}
+
+// teamWorker is one launched CPU worker, as the watchdog sees it.
+type teamWorker struct {
+	proc    *server.Proc
+	name    string // rung name: "haiku" | "mid" | "sonnet"
+	url     string
+	logPath string
+}
+
+// watchWorker monitors one CPU worker for the life of the session: a worker that exits
+// or stops answering /health gets its rung marked dead in the router, so the ladder
+// re-routes around it. Detection only -- winc never kills or restarts anything. Events
+// go to the router log, never the shared terminal (the agent's TUI owns it); the
+// end-of-session summary surfaces any deaths. Stands down once teardown begins.
+func watchWorker(rtr *router.Router, w teamWorker, teardown *atomic.Bool) {
+	const (
+		interval    = 15 * time.Second
+		maxFailures = 3 // consecutive /health failures before the rung is declared dead
+	)
+	failures := 0
+	for {
+		time.Sleep(interval)
+		if teardown.Load() {
+			return // session is shutting down; worker deaths from here on are expected
+		}
+		if w.proc.Dead() {
+			rtr.MarkDead(w.name, w.url)
+			return
+		}
+		if server.HealthOK(w.url) {
+			failures = 0
+			continue
+		}
+		failures++
+		if failures >= maxFailures {
+			rtr.MarkDead(w.name, w.url)
+			return
+		}
+	}
+}
+
+// reportTeamStats prints the router's end-of-session summary -- only after the agent
+// has exited, so nothing ever prints into its TUI mid-session.
+func reportTeamStats(rtr *router.Router) {
+	st := rtr.Stats()
+	if len(st.Requests) == 0 && st.Overflows == 0 && len(st.Dead) == 0 {
+		return
+	}
+	ui.Info("router session: %s", st)
+	if len(st.Dead) > 0 {
+		ui.Warn("team: worker(s) died mid-session: %s - their rungs fell back (see the worker logs)", strings.Join(st.Dead, ", "))
+	}
 }
 
 // ensureWorker resolves a worker model to a local path, offering to download it when

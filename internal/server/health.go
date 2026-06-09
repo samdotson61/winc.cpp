@@ -28,3 +28,17 @@ func WaitReady(baseURL, path string, timeout time.Duration, dead func() bool) bo
 	}
 	return false
 }
+
+// HealthOK is a single non-blocking health probe: does baseURL+"/health" answer
+// 200 right now? Used by the team-mode worker watchdog (WaitReady is for startup;
+// this is for the steady state). A generous timeout avoids declaring a worker dead
+// just because every slot is busy with slow CPU inference.
+func HealthOK(baseURL string) bool {
+	c := &http.Client{Timeout: 4 * time.Second}
+	resp, err := c.Get(baseURL + "/health")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}

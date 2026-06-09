@@ -2,8 +2,14 @@ package cli
 
 import "winc/internal/ui"
 
-// Version is the winc release version.
-const Version = "1.4.5"
+// Version is the winc release version. It is a var (not a const) so release
+// builds can stamp the exact git tag via:
+//
+//	-ldflags "-X winc/internal/cli.Version=1.5.0"
+//
+// No "v" prefix -- the update check compares against tags with the "v"
+// stripped. A plain `go build` keeps this default.
+var Version = "1.5.0"
 
 func cmdVersion() int {
 	ui.Say("winc %s", Version)

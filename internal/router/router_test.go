@@ -448,17 +448,25 @@ func maxTokOf(b []byte) (float64, bool) {
 }
 
 func TestClampMaxTokens(t *testing.T) {
-	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"max_tokens":8000}`), 1536)); v != 1536 {
-		t.Errorf("over-large should clamp to 1536, got %v", v)
+	clamp := func(body string, cap int) ([]byte, bool) {
+		t.Helper()
+		return clampMaxTokens([]byte(body), cap)
 	}
-	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"max_tokens":512}`), 1536)); v != 512 {
-		t.Errorf("already-small should be untouched (512), got %v", v)
+	out, lowered := clamp(`{"max_tokens":8000}`, 1536)
+	if v, _ := maxTokOf(out); v != 1536 || !lowered {
+		t.Errorf("over-large should clamp to 1536 (lowered=true), got %v lowered=%v", v, lowered)
 	}
-	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"messages":[]}`), 1536)); v != 1536 {
-		t.Errorf("absent should be set to cap (1536), got %v", v)
+	out, lowered = clamp(`{"max_tokens":512}`, 1536)
+	if v, _ := maxTokOf(out); v != 512 || lowered {
+		t.Errorf("already-small should be untouched (512, lowered=false), got %v lowered=%v", v, lowered)
 	}
-	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"max_tokens":8000}`), 0)); v != 8000 {
-		t.Errorf("cap<=0 must be a no-op (8000), got %v", v)
+	out, lowered = clamp(`{"messages":[]}`, 1536)
+	if v, _ := maxTokOf(out); v != 1536 || !lowered {
+		t.Errorf("absent should be set to cap (1536, lowered=true), got %v lowered=%v", v, lowered)
+	}
+	out, lowered = clamp(`{"max_tokens":8000}`, 0)
+	if v, _ := maxTokOf(out); v != 8000 || lowered {
+		t.Errorf("cap<=0 must be a no-op (8000, lowered=false), got %v lowered=%v", v, lowered)
 	}
 }
 
@@ -493,5 +501,117 @@ func TestTeamRouterCapsWorkerMaxTokens(t *testing.T) {
 	}
 	if v, _ := maxTokOf(main.got); v != 8000 {
 		t.Errorf("HEAD max_tokens must be untouched (8000), got %v", v)
+	}
+
+	// Session counters: one worker request was capped, both requests counted by name.
+	st := rt.Stats()
+	if st.CapsLowered != 1 {
+		t.Errorf("caps-lowered counter = %d, want 1", st.CapsLowered)
+	}
+	if st.Requests["main"] != 1 {
+		t.Errorf("main request count = %d, want 1", st.Requests["main"])
+	}
+}
+
+// TestRouterCountsOverflows: each context-overflow rewrite increments the session
+// counter surfaced at shutdown ("how often did the agent hit the context wall?").
+func TestRouterCountsOverflows(t *testing.T) {
+	llamaErr := `{"error":{"code":400,"message":"request (7810 tokens) exceeds the available context size (2048 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":7810,"n_ctx":2048}}`
+	rt, done := errUpstream(t, http.StatusBadRequest, llamaErr)
+	defer done()
+	postErr(t, rt)
+	postErr(t, rt)
+	if n := rt.Stats().Overflows; n != 2 {
+		t.Fatalf("overflow counter = %d, want 2", n)
+	}
+}
+
+// TestMarkDeadReroutes is the watchdog contract: after MarkDead, ladder picks skip the
+// dead rung (escalating to the next alive one, or main when none are left) and the
+// dead-skip counter + dead list record it for the end-of-session summary.
+func TestMarkDeadReroutes(t *testing.T) {
+	cfg := config.Defaults()
+	haiku := newTeamBackend("haiku")
+	sonnet := newTeamBackend("sonnet")
+	main := newTeamBackend("main")
+	defer haiku.srv.Close()
+	defer sonnet.srv.Close()
+	defer main.srv.Close()
+
+	ladder := []Tier{
+		{Name: "haiku", Upstream: haiku.srv.URL, Think: "low", MaxEstTokens: 4096},
+		{Name: "sonnet", Upstream: sonnet.srv.URL, Think: "", MaxEstTokens: 1 << 30},
+	}
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	post := func() string {
+		body := `{"model":"worker","messages":[{"role":"user","content":"hi"}]}`
+		resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json", bytes.NewReader([]byte(body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(out, &m)
+		who, _ := m["who"].(string)
+		return who
+	}
+
+	if who := post(); who != "haiku" { // healthy: tiny request -> first rung
+		t.Fatalf("healthy ladder should pick haiku, got %q", who)
+	}
+	rt.MarkDead("haiku", haiku.srv.URL)
+	if who := post(); who != "sonnet" { // haiku dead -> next alive rung
+		t.Errorf("dead haiku rung should escalate to sonnet, got %q", who)
+	}
+	rt.MarkDead("sonnet", sonnet.srv.URL)
+	if who := post(); who != "main" { // whole ladder dead -> fallback
+		t.Errorf("fully dead ladder should fall back to main, got %q", who)
+	}
+
+	st := rt.Stats()
+	if st.DeadSkips != 2 {
+		t.Errorf("dead-skip counter = %d, want 2", st.DeadSkips)
+	}
+	if len(st.Dead) != 2 || st.Dead[0] != "haiku" || st.Dead[1] != "sonnet" {
+		t.Errorf("dead list = %v, want [haiku sonnet]", st.Dead)
+	}
+	if st.Requests["haiku"] != 1 || st.Requests["sonnet"] != 1 || st.Requests["main"] != 1 {
+		t.Errorf("per-rung request counts = %v, want haiku/sonnet/main = 1 each", st.Requests)
+	}
+}
+
+// MarkDead must be idempotent (the watchdog can only fire once per worker, but a
+// pinned route + ladder rung can share an upstream).
+func TestMarkDeadIdempotent(t *testing.T) {
+	r := &Router{}
+	r.MarkDead("haiku", "http://127.0.0.1:9999")
+	r.MarkDead("haiku", "http://127.0.0.1:9999")
+	st := r.Stats()
+	if len(st.Dead) != 1 {
+		t.Fatalf("dead list = %v, want exactly [haiku]", st.Dead)
+	}
+}
+
+func TestStatsString(t *testing.T) {
+	s := Stats{
+		Requests:    map[string]int{"sonnet": 3, "haiku": 12, "main": 5},
+		Dead:        []string{"sonnet"},
+		Overflows:   2,
+		CapsLowered: 4,
+		DeadSkips:   1,
+	}
+	got := s.String()
+	want := "requests: haiku=12 main=5 sonnet=3  overflows-rewritten=2  caps-lowered=4  dead-skips=1  dead: sonnet"
+	if got != want {
+		t.Errorf("Stats.String() =\n  %q\nwant\n  %q", got, want)
+	}
+	if empty := (Stats{}).String(); empty != "requests: none" {
+		t.Errorf("empty stats = %q, want \"requests: none\"", empty)
 	}
 }

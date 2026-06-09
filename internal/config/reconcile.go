@@ -72,5 +72,5 @@ func SyncMissingSections() ([]string, error) {
 	if len(added) == 0 {
 		return nil, nil
 	}
-	return added, os.WriteFile(p, []byte(b.String()), 0o644)
+	return added, os.WriteFile(p, []byte(b.String()), 0o600)
 }

@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +83,13 @@ func AcquireLlamaExcluding(hw platform.Hardware, exclude map[string]bool) (strin
 				ok = false
 				break
 			}
+			if err := verifyArchive(arc, a.Digests); err != nil {
+				ui.Warn("  %s: %v", a.Backend, err)
+				_ = os.Remove(arc) // never resume or reuse a bad archive
+				lastErr = err
+				ok = false
+				break
+			}
 			if err := extractFlat(arc, paths.BinDir(), a.Archive); err != nil {
 				ui.Warn("  extract %s: %v", a.Backend, err)
 				lastErr = err
@@ -107,7 +117,7 @@ func AcquireSwap(hw platform.Hardware) (string, error) {
 	if p := LlamaSwapPath(); p != "" {
 		return p, nil
 	}
-	url, archive, ok := SwapAsset(hw)
+	url, archive, digests, ok := SwapAsset(hw)
 	if !ok {
 		return "", fmt.Errorf("no llama-swap asset for %s/%s", hw.OS, hw.Arch)
 	}
@@ -119,6 +129,10 @@ func AcquireSwap(hw platform.Hardware) (string, error) {
 	if err := download.Fetch(url, arc, map[string]string{"User-Agent": "winc.cpp"}, filepath.Base(url)); err != nil {
 		return "", err
 	}
+	if err := verifyArchive(arc, digests); err != nil {
+		_ = os.Remove(arc) // never resume or reuse a bad archive
+		return "", err
+	}
 	if err := extractFlat(arc, paths.BinDir(), archive); err != nil {
 		return "", err
 	}
@@ -128,4 +142,31 @@ func AcquireSwap(hw platform.Hardware) (string, error) {
 	}
 	ui.Good("llama-swap ready")
 	return p, nil
+}
+
+// verifyArchive checks a downloaded archive against its GitHub-published sha256.
+// A missing digest (offline tag fallback / older release without digests) is not an
+// error -- winc proceeds and says so. A MISMATCH is a hard error: a corrupt or
+// tampered archive must never be extracted into bin/.
+func verifyArchive(path string, digests map[string]string) error {
+	want := digests[filepath.Base(path)]
+	if want == "" {
+		ui.Dim("  (no published digest for %s - skipping verification)", filepath.Base(path))
+		return nil
+	}
+	want = strings.TrimPrefix(want, "sha256:")
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("sha256 mismatch for %s: got %s, want %s (corrupt or tampered download)", filepath.Base(path), got, want)
+	}
+	return nil
 }

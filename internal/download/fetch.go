@@ -62,13 +62,20 @@ func Fetch(url, dest string, headers map[string]string, label string) error {
 	}
 	pr := newProgress(total, label)
 	pr.done = startAt
-	if _, err := io.Copy(io.MultiWriter(f, pr), resp.Body); err != nil {
+	written, err := io.Copy(io.MultiWriter(f, pr), resp.Body)
+	if err != nil {
 		f.Close()
 		return err
 	}
 	pr.finish()
 	if err := f.Close(); err != nil {
 		return err
+	}
+	// A connection that drops at a chunk boundary ends the stream WITHOUT an error
+	// from io.Copy -- only this length check stops a truncated file being renamed
+	// into place as if complete. The .part stays, so the next attempt resumes.
+	if resp.ContentLength > 0 && written != resp.ContentLength {
+		return fmt.Errorf("incomplete download: got %d of %d bytes (re-run to resume)", startAt+written, total)
 	}
 	return os.Rename(part, dest)
 }

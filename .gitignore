@@ -31,6 +31,9 @@
 /llama-swap.yaml
 *.log
 
+# Support bundles written by 'winc logs --bundle'
+winc-support-*.zip
+
 # Legacy stack (no longer used; kept out of the tree)
 /venv/
 /llama.cpp/
