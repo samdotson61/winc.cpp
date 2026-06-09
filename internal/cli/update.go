@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"winc/internal/catalog"
+	"winc/internal/config"
 	"winc/internal/engine"
 	"winc/internal/paths"
 	"winc/internal/platform"
@@ -39,6 +40,9 @@ func cmdCheck() int {
 		ui.Info("engine installed : (version unknown)")
 	}
 	ui.Info("model catalog   : %d models (%s)", len(catalog.Load(nil).Models), catalog.Source())
+	if cfg := loadConfig(); !modelResolvable(cfg, catalog.Load(cfg.CustomModels), cfg.General.DefaultModel) {
+		ui.Warn("config: default_model %q is unavailable - 'winc update' will repair it", cfg.General.DefaultModel)
+	}
 	if isGitClone(dir) {
 		switch n := gitBehindCount(dir); {
 		case n > 0:
@@ -80,9 +84,50 @@ func cmdUpdate() int {
 		ui.Info("prebuilt install - redownload the release binary for winc code changes")
 	}
 
+	reconcileConfig(hw)
 	refreshEngine(hw)
 	ui.Good("update complete.")
 	return 0
+}
+
+// reconcileConfig brings winc.toml forward after an update: it repoints an unresolvable
+// default_model to the hardware-recommended model (so e.g. team mode still auto-engages on
+// a big model) and appends any config sections new in this version. Non-destructive -- it
+// only repairs a broken model reference and APPENDS missing sections; existing user edits
+// are left intact.
+func reconcileConfig(hw platform.Hardware) {
+	cfg := loadConfig()
+	cat := catalog.Load(cfg.CustomModels)
+
+	if !modelResolvable(cfg, cat, cfg.General.DefaultModel) {
+		if rec := firstInTier(cat, catalog.VramTier(hw.MemoryBudgetMB())); rec != nil {
+			if err := config.UpdateDefaultModel(rec.Alias); err != nil {
+				ui.Warn("config: couldn't repair default_model: %v", err)
+			} else {
+				ui.Good("config: default_model %q is unavailable -> %q (recommended for this machine)", cfg.General.DefaultModel, rec.Alias)
+			}
+		}
+	}
+
+	if added, err := config.SyncMissingSections(); err != nil {
+		ui.Warn("config: couldn't add new sections: %v", err)
+	} else if len(added) > 0 {
+		ui.Good("config: added new winc.toml section(s): [%s]", strings.Join(added, "], ["))
+	}
+}
+
+// modelResolvable reports whether a model query maps to something winc can actually run --
+// a catalogue alias (downloadable) or an already-downloaded file. A stale alias from an old
+// catalogue (e.g. qwen2.5-coder-7b, since removed) is neither.
+func modelResolvable(cfg *config.Config, cat *catalog.Catalog, q string) bool {
+	if strings.TrimSpace(q) == "" {
+		return false
+	}
+	if cat.Find(q) != nil {
+		return true
+	}
+	p, _ := downloadedPath(cfg, cat, q)
+	return p != ""
 }
 
 // refreshEngine updates the llama.cpp engine -- but only when it's actually behind,

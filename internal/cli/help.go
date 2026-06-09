@@ -21,7 +21,7 @@ func usage() {
 	ui.Say("        and escalate by load; web search is pre-approved; --noteam = single model")
 	ui.Say("  winc serve [--multi]            run the server(s)/router only")
 	ui.Say("  winc -c | check                 check for updates")
-	ui.Say("  winc -u | update                update engine binaries + winc")
+	ui.Say("  winc -u | update                update winc + engine + catalog; reconcile winc.toml")
 	ui.Say("  winc -n | uninstall [-y]        remove installed components")
 	ui.Say("  winc help                       this help")
 	ui.Say("")

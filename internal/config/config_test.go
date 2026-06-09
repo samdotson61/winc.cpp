@@ -152,3 +152,40 @@ func mustRead(t *testing.T, p string) []byte {
 	}
 	return b
 }
+
+func TestSyncMissingSections(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	// A pre-[team] config: custom [general] + a partial [performance], no [team].
+	old := "[general]\ndefault_model = \"my-model\"\nhost = \"10.0.0.1\"\n\n[performance]\nbackend = \"cuda\"\n"
+	p := filepath.Join(dir, "winc.toml")
+	if err := os.WriteFile(p, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	added, err := SyncMissingSections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, a := range added {
+		got[a] = true
+	}
+	if !got["team"] {
+		t.Errorf("expected [team] to be appended, got %v", added)
+	}
+
+	out := string(mustRead(t, p))
+	// Existing user content is preserved verbatim (append-only).
+	if !strings.Contains(out, `default_model = "my-model"`) || !strings.Contains(out, `host = "10.0.0.1"`) || !strings.Contains(out, `backend = "cuda"`) {
+		t.Errorf("existing content not preserved:\n%s", out)
+	}
+	// The new section is now present and tunable.
+	if !strings.Contains(out, "[team]") || !strings.Contains(out, "subagents") {
+		t.Errorf("[team] not appended:\n%s", out)
+	}
+	// Idempotent: a second sync adds nothing.
+	if again, err := SyncMissingSections(); err != nil || len(again) != 0 {
+		t.Errorf("second sync should be a no-op, got %v (err %v)", again, err)
+	}
+}

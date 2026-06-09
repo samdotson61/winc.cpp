@@ -65,7 +65,7 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 | `winc -s ... --reasoning <mode>` | Override reasoning mode for this launch |
 | `winc serve [--multi]` | Run the server(s)/router only (point your own client at it) |
 | `winc -c` / `winc check` | Update status: winc version, source freshness, engine, catalog |
-| `winc -u` / `winc update` | Update **everything**: pull + rebuild (clone), refresh engine binaries + model catalog |
+| `winc -u` / `winc update` | Update **everything**: pull + rebuild (clone), refresh engine + catalog, and reconcile `winc.toml` (repair a stale `default_model`, add new config sections) |
 | `winc -n` / `winc uninstall [-y]` | Remove installed components + PATH entry |
 | `winc version` | Print version |
 
@@ -194,6 +194,14 @@ On a **git clone**, `winc update` goes further: it `git pull`s the whole repo an
 not just the engine and catalogue. `winc check` shows whether your source is behind origin.
 (Prebuilt installs can't self-rebuild — redownload the release for code changes; the
 catalogue + engine still refresh.)
+
+`winc update` also **reconciles `winc.toml`** so an update never strands you on a stale
+config that silently disables newer defaults: if your `default_model` points at a model
+that's no longer in the catalogue (or was never downloaded), it's repointed to the model
+recommended for your hardware, and any config sections added since your file was written
+(e.g. `[team]`) are appended. It only repairs that one reference and *appends* missing
+sections — your existing edits and comments are left untouched. `winc check` flags a stale
+`default_model` so you know a repair is pending.
 
 ### Low-end picks (`nano` + `small`), 2026 roster
 
