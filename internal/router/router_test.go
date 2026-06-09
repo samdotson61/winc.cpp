@@ -410,6 +410,21 @@ func TestRewriteContextOverflowFromMessageOnly(t *testing.T) {
 	}
 }
 
+// In a non-adaptive mode the router still runs (for the overflow rewrite + minify) but
+// must NOT inject a thinking budget -- on/off/fixed are owned by the server's own flags.
+func TestNonAdaptiveModeNoThinkingInjected(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Reasoning.Mode = "off"
+	m := roundtrip(t, &cfg, "/v1/messages",
+		`{"messages":[{"role":"user","content":"write a bunny calculator with full tests"}],"max_tokens":50}`)
+	if _, ok := m["thinking"]; ok {
+		t.Fatalf("non-adaptive mode must not inject thinking, got %v", m)
+	}
+	if _, ok := m["chat_template_kwargs"]; ok {
+		t.Fatalf("non-adaptive mode must not touch chat_template_kwargs, got %v", m)
+	}
+}
+
 func TestRewritePassesThroughNonOverflow(t *testing.T) {
 	other := `{"error":{"code":400,"message":"some other problem","type":"invalid_request_error"}}`
 	rt, done := errUpstream(t, http.StatusBadRequest, other)

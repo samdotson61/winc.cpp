@@ -123,15 +123,18 @@ func cmdStart(args []string) int {
 		}
 	}
 
-	// Adaptive reasoning: front the server with the in-process router.
+	// Always front the server with the in-process router: in adaptive mode it injects the
+	// thinking budget, and in EVERY mode it rewrites llama-server's context-overflow error
+	// into the wording Claude Code recognizes (so a big tool_result doesn't surface as
+	// "<model> is temporarily unavailable" and block the command in auto mode).
 	baseURL := serverURL
-	if cfg.Reasoning.Mode == "adaptive" {
-		r, rerr := router.Start(cfg, serverURL)
-		if rerr != nil {
-			ui.Warn("router failed (%v); using direct serving", rerr)
-		} else {
-			defer r.Stop()
-			baseURL = r.BaseURL()
+	r, rerr := router.Start(cfg, serverURL)
+	if rerr != nil {
+		ui.Warn("router failed (%v); using direct serving", rerr)
+	} else {
+		defer r.Stop()
+		baseURL = r.BaseURL()
+		if cfg.Reasoning.Mode == "adaptive" {
 			ui.Info("adaptive reasoning router: %s -> %s", baseURL, serverURL)
 		}
 	}

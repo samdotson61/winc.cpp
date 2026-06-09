@@ -54,7 +54,13 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
 				cb, _, _ := compactRequest(body, nil) // lossless minify only (no tool stripping in single mode)
-				nb := injectThinking(cfg, cb)
+				// Thinking is rewritten only in adaptive mode; on/off/fixed are set by the
+				// server's own flags, so pass those through untouched. The router still runs
+				// in every mode (minify + the context-overflow rewrite below apply always).
+				nb := cb
+				if cfg.Reasoning.Mode == "adaptive" {
+					nb = injectThinking(cfg, cb)
+				}
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
