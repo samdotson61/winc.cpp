@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -327,5 +328,97 @@ func TestTeamRouterStripsWorkerToolsOnly(t *testing.T) {
 	}
 	if got := toolNames(main.got); len(got) != 4 {
 		t.Errorf("HEAD (fallback) tools must be untouched (4), got %v", got)
+	}
+}
+
+// errUpstream serves a fixed status + JSON body, to exercise ModifyResponse.
+func errUpstream(t *testing.T, status int, body string) (*Router, func()) {
+	t.Helper()
+	cfg := config.Defaults()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	rt, err := Start(&cfg, up.URL)
+	if err != nil {
+		up.Close()
+		t.Fatal(err)
+	}
+	return rt, func() { rt.Stop(); up.Close() }
+}
+
+func postErr(t *testing.T, rt *Router) (int, string) {
+	t.Helper()
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		bytes.NewReader([]byte(`{"messages":[{"role":"user","content":"hi"}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// ccPromptTooLong mirrors Claude Code's exact context-overflow detector regex
+// (function QX8 in the CLI). If our rewrite matches this, Claude Code treats the
+// error as "transcript too long" (compact + retry / manual approval) instead of
+// "model unavailable" (fail-closed block in auto mode).
+var ccPromptTooLong = regexp.MustCompile(`(?i)prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)`)
+
+func TestRewriteContextOverflowError(t *testing.T) {
+	llamaErr := `{"error":{"code":400,"message":"request (7810 tokens) exceeds the available context size (2048 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":7810,"n_ctx":2048}}`
+	rt, done := errUpstream(t, http.StatusBadRequest, llamaErr)
+	defer done()
+
+	code, body := postErr(t, rt)
+	if code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", code)
+	}
+	var m struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatalf("rewritten body not JSON: %v (%s)", err, body)
+	}
+	if m.Type != "error" || m.Error.Type != "invalid_request_error" {
+		t.Fatalf("want anthropic error envelope, got %s", body)
+	}
+	mm := ccPromptTooLong.FindStringSubmatch(m.Error.Message)
+	if mm == nil {
+		t.Fatalf("rewritten message must match Claude Code's detector; got %q", m.Error.Message)
+	}
+	if mm[1] != "7810" || mm[2] != "2048" {
+		t.Fatalf("want 7810 tokens > 2048, got %q", m.Error.Message)
+	}
+}
+
+// Older/variant engines may omit the structured token fields; the message-regex
+// fallback must still recover the counts.
+func TestRewriteContextOverflowFromMessageOnly(t *testing.T) {
+	llamaErr := `{"error":{"message":"request (5000 tokens) exceeds the available context size (4096 tokens)","type":"exceed_context_size_error"}}`
+	rt, done := errUpstream(t, http.StatusBadRequest, llamaErr)
+	defer done()
+	_, body := postErr(t, rt)
+	mm := ccPromptTooLong.FindStringSubmatch(body)
+	if mm == nil || mm[1] != "5000" || mm[2] != "4096" {
+		t.Fatalf("fallback parse failed; got %s", body)
+	}
+}
+
+func TestRewritePassesThroughNonOverflow(t *testing.T) {
+	other := `{"error":{"code":400,"message":"some other problem","type":"invalid_request_error"}}`
+	rt, done := errUpstream(t, http.StatusBadRequest, other)
+	defer done()
+	_, body := postErr(t, rt)
+	if strings.Contains(body, "prompt is too long") {
+		t.Fatalf("non-overflow 400 must pass through unchanged, got %s", body)
+	}
+	if !strings.Contains(body, "some other problem") {
+		t.Fatalf("original error must be preserved, got %s", body)
 	}
 }

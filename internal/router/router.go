@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"winc/internal/config"
@@ -41,6 +43,7 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 	}
 	rp := httputil.NewSingleHostReverseProxy(u)
 	rp.ErrorHandler = swallowClientCancel
+	rp.ModifyResponse = rewriteContextOverflowError
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -98,6 +101,86 @@ func swallowClientCancel(w http.ResponseWriter, r *http.Request, err error) {
 	w.WriteHeader(http.StatusBadGateway)
 }
 
+// llamaCtxOverflow matches llama-server's context-overflow message as a fallback for when
+// the structured fields are absent: "request (N tokens) exceeds the available context size
+// (M tokens)".
+var llamaCtxOverflow = regexp.MustCompile(`\((\d+)\s*tokens?\)\s*exceeds the available context size\s*\((\d+)\s*tokens?\)`)
+
+// rewriteContextOverflowError translates llama-server's context-overflow error into the
+// exact wording Claude Code recognizes. llama-server says "...exceeds the available context
+// size...", but Claude Code only detects an over-long prompt when the error message contains
+// the literal "prompt is too long: N tokens > M maximum" -- used by BOTH the main loop's
+// context handling AND auto mode's command-safety classifier. Without this, an overflow
+// (common when a large bash tool_result balloons the request on a small local context) is
+// misread as the model being DOWN: auto mode reports "<model> is temporarily unavailable, so
+// auto mode cannot determine the safety of <command>" and blocks the command (fail-closed),
+// instead of compacting and retrying. We rewrite ONLY this specific error; every other
+// response -- including success streams -- passes through untouched (we return immediately
+// for any status < 400, so SSE bodies are never buffered).
+func rewriteContextOverflowError(resp *http.Response) error {
+	if resp == nil || resp.StatusCode < 400 {
+		return nil
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		return nil // compressed; leave as-is
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	restore := func() error { resp.Body = io.NopCloser(bytes.NewReader(body)); return nil }
+	if err != nil {
+		return restore()
+	}
+	var le struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			NPrompt int    `json:"n_prompt_tokens"`
+			NCtx    int    `json:"n_ctx"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &le) != nil {
+		return restore()
+	}
+	isOverflow := le.Error.Type == "exceed_context_size_error" ||
+		strings.Contains(le.Error.Message, "exceeds the available context size")
+	if !isOverflow {
+		return restore()
+	}
+	actual, limit := le.Error.NPrompt, le.Error.NCtx
+	if actual == 0 || limit == 0 {
+		if m := llamaCtxOverflow.FindStringSubmatch(le.Error.Message); m != nil {
+			actual, _ = strconv.Atoi(m[1])
+			limit, _ = strconv.Atoi(m[2])
+		}
+	}
+	if actual == 0 || limit == 0 {
+		return restore() // couldn't extract counts; don't fabricate numbers
+	}
+	msg := fmt.Sprintf("prompt is too long: %d tokens > %d maximum", actual, limit)
+	// Encode WITHOUT HTML-escaping so the ">" stays literal (json.Marshal would emit
+	// ">"); harmless after JSON-decode, but a literal ">" is unambiguous on the wire.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "invalid_request_error", "message": msg},
+	}) != nil {
+		return restore()
+	}
+	nb := bytes.TrimRight(buf.Bytes(), "\n")
+	resp.StatusCode = http.StatusBadRequest
+	resp.Status = "400 Bad Request"
+	resp.Body = io.NopCloser(bytes.NewReader(nb))
+	resp.ContentLength = int64(len(nb))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(nb)))
+	resp.Header.Set("Content-Type", "application/json")
+	return nil
+}
+
 // Route maps an exact on-the-wire model string to a backend, with a per-route
 // thinking policy: "" = adaptive (default), "low" = a small fixed budget (small
 // models orchestrate tools best with a LITTLE thinking), "off" = disabled.
@@ -135,6 +218,7 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 		}
 		rp := httputil.NewSingleHostReverseProxy(u)
 		rp.ErrorHandler = swallowClientCancel
+		rp.ModifyResponse = rewriteContextOverflowError
 		proxies[target] = rp
 		return nil
 	}
