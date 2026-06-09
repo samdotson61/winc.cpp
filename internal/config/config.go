@@ -17,6 +17,7 @@ type Config struct {
 	Reasoning    Reasoning     `toml:"reasoning"`
 	Performance  Performance   `toml:"performance"`
 	Multi        Multi         `toml:"multi"`
+	Team         Team          `toml:"team"`
 	HuggingFace  HuggingFace   `toml:"huggingface"`
 	Paths        Paths         `toml:"paths"`
 	CustomModels []CustomModel `toml:"custom_models"`
@@ -48,19 +49,19 @@ type TierBudget struct {
 }
 
 type Performance struct {
-	Backend   string `toml:"backend"`    // auto | cuda | metal | vulkan | rocm | cpu
-	GpuLayers string `toml:"gpu_layers"` // "auto" or integer
-	Context   string `toml:"context"`    // "auto" or integer
-	Batch     string `toml:"batch"`      // "auto" or integer
+	Backend         string   `toml:"backend"`    // auto | cuda | metal | vulkan | rocm | cpu
+	GpuLayers       string   `toml:"gpu_layers"` // "auto" or integer
+	Context         string   `toml:"context"`    // "auto" or integer
+	Batch           string   `toml:"batch"`      // "auto" or integer
 	FlashAttn       bool     `toml:"flash_attn"`
-	CacheType       string   `toml:"cache_type"`         // e.g. q8_0, f16
-	Threads         string   `toml:"threads"`            // "auto" or integer
-	MaxOutputTokens string   `toml:"max_output_tokens"`  // "auto" (~half context) or integer
-	CpuMoe          string   `toml:"cpu_moe"`            // auto | on | off | <layer count>
-	DraftModel      string   `toml:"draft_model"`        // filename of a small draft model (speculative decoding)
-	Mtp             string   `toml:"mtp"`                // auto | off  (Multi-Token Prediction for *-MTP models)
-	MtpDraftMax     int      `toml:"mtp_draft_max"`      // --spec-draft-n-max for MTP (default 2)
-	ExtraServerArgs []string `toml:"extra_server_args"`  // advanced: extra llama-server flags
+	CacheType       string   `toml:"cache_type"`        // e.g. q8_0, f16
+	Threads         string   `toml:"threads"`           // "auto" or integer
+	MaxOutputTokens string   `toml:"max_output_tokens"` // "auto" (~half context) or integer
+	CpuMoe          string   `toml:"cpu_moe"`           // auto | on | off | <layer count>
+	DraftModel      string   `toml:"draft_model"`       // filename of a small draft model (speculative decoding)
+	Mtp             string   `toml:"mtp"`               // auto | off  (Multi-Token Prediction for *-MTP models)
+	MtpDraftMax     int      `toml:"mtp_draft_max"`     // --spec-draft-n-max for MTP (default 2)
+	ExtraServerArgs []string `toml:"extra_server_args"` // advanced: extra llama-server flags
 }
 
 type Multi struct {
@@ -69,6 +70,17 @@ type Multi struct {
 	Sonnet     string `toml:"sonnet"`
 	Opus       string `toml:"opus"`
 	Haiku      string `toml:"haiku"`
+}
+
+// Team is the heterogeneous agent hierarchy (winc -s ... --team): the launched
+// model orchestrates as the main agent (Claude's opus tier), with small CPU
+// worker models mapped onto the sonnet/haiku subagent tiers so a deep-research
+// fan-out spins up many quick workers instead of clones of the big model.
+type Team struct {
+	Enabled  bool   `toml:"enabled"`
+	Sonnet   string `toml:"sonnet"`   // collator / code-review subagents -> this model (sonnet tier)
+	Haiku    string `toml:"haiku"`    // research fan-out + Explore + background -> this model (haiku tier)
+	Parallel int    `toml:"parallel"` // concurrent slots on the haiku worker (research fan-out width)
 }
 
 type HuggingFace struct {
@@ -150,6 +162,17 @@ ttl_seconds = 600
 sonnet = "qwen3.5-9b"   # Claude Code's claude-sonnet slot -> this local model alias
 opus   = "qwen3.5-9b"
 haiku  = "qwen3.5-9b"
+
+[team]                    # heterogeneous agent hierarchy: ` + "`winc -s claude <big> --team`" + `
+# The model you launch becomes the MAIN agent (opus tier). Two small workers run on
+# the CPU (so they never touch the main model's VRAM) and are mapped onto Claude
+# Code's subagent tiers: a deep-research fan-out then spins up many quick haiku
+# workers instead of clones of the big model. winc offers to download missing
+# workers and writes ready-made research/collator/code-reviewer agents.
+enabled  = false          # or just pass --team at launch
+sonnet   = "qwen3.5-4b"   # collator / code-review subagents   (Claude's sonnet tier)
+haiku    = "qwen3.5-0.8b" # research fan-out + Explore + background (haiku tier)
+parallel = 4              # concurrent slots on the haiku worker (fan-out width)
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var
@@ -282,5 +305,14 @@ func (c *Config) backfill() {
 	}
 	if c.Multi.TTLSeconds == 0 {
 		c.Multi.TTLSeconds = d.Multi.TTLSeconds
+	}
+	if c.Team.Sonnet == "" {
+		c.Team.Sonnet = d.Team.Sonnet
+	}
+	if c.Team.Haiku == "" {
+		c.Team.Haiku = d.Team.Haiku
+	}
+	if c.Team.Parallel == 0 {
+		c.Team.Parallel = d.Team.Parallel
 	}
 }

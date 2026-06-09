@@ -20,7 +20,10 @@ type Slots struct{ Sonnet, Opus, Haiku string }
 // > 0, raises Claude Code's response-length cap. contextWindow, when > 0, tells
 // Claude Code the local model's REAL context size so its auto-compaction fires
 // before the server overflows (it otherwise assumes a ~200k cloud window).
-func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int) []string {
+// mainModel, when set, pins the TOP-LEVEL agent's model (ANTHROPIC_MODEL) -- needed
+// in team mode, where the sonnet/haiku tiers point at small workers and the default
+// main tier (sonnet) would otherwise demote the orchestrator to a worker model.
+func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainModel string) []string {
 	env := os.Environ()
 	add := func(k, v string) {
 		if v != "" {
@@ -34,6 +37,9 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int) []stri
 	add("ANTHROPIC_DEFAULT_SONNET_MODEL", slots.Sonnet)
 	add("ANTHROPIC_DEFAULT_OPUS_MODEL", slots.Opus)
 	add("ANTHROPIC_DEFAULT_HAIKU_MODEL", slots.Haiku)
+	// Pin the main agent (else Claude Code defaults the top-level loop to the sonnet
+	// tier -- which in team mode is a small worker, not the model the user launched).
+	add("ANTHROPIC_MODEL", mainModel)
 	add("CLAUDE_CONFIG_DIR", paths.ClaudeLocalDir())
 	// 24-bit color + synchronized output (terminal mode 2026) glitch on terminals
 	// that don't support them -- notably macOS Terminal.app. Only advertise them

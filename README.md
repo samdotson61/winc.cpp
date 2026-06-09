@@ -60,6 +60,7 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 | `winc -s openclaw <model>` | Start OpenClaw |
 | `winc -s cli <model>` | Raw llama.cpp chat |
 | `winc -s ... --multi` | Route through llama-swap (multiple models, hot-swapped) |
+| `winc -s claude <model> --team` | Agent team: big model orchestrates; small CPU workers do research fan-out + review |
 | `winc -s ... --reasoning <mode>` | Override reasoning mode for this launch |
 | `winc serve [--multi]` | Run the server(s)/router only (point your own client at it) |
 | `winc -c` / `winc check` | Update status: winc version, source freshness, engine, catalog |
@@ -105,6 +106,11 @@ cache_type = "q8_0"
 sonnet = "qwen3.5-9b"
 opus   = "qwen3.5-9b"
 haiku  = "qwen3.5-9b"
+
+[team]                      # agent hierarchy (winc -s claude <big> --team)
+sonnet   = "qwen3.5-4b"     # collator / code-review subagents
+haiku    = "qwen3.5-0.8b"   # research fan-out + Explore + background
+parallel = 4                # concurrent slots on the haiku worker
 ```
 
 ### Adaptive reasoning
@@ -114,6 +120,26 @@ mode (the default) `winc` runs a tiny in-process router that sets a per-request 
 ceiling* scaled to request size: "hi" answers instantly, while a real coding task gets a
 full budget. Set `mode = "on"` (always think), `"off"` (never), or `"fixed"` for a constant
 budget — those run with **zero proxy hop** (direct to llama-server).
+
+### Agent team (`--team`)
+
+Normally every subagent Claude Code spawns is a clone of the model you launched — so a
+deep-research fan-out runs N copies of your big model, which is slow and wasteful. With
+`winc -s claude <big-model> --team`, the launched model stays the **main orchestrator**
+while two small models run alongside it on the **CPU** (so they never touch the main
+model's VRAM or shrink its context), mapped onto Claude Code's subagent tiers:
+
+| Tier | Model (default) | Role |
+|------|-----------------|------|
+| main (opus) | the model you launch | orchestrates, writes code, makes decisions |
+| sonnet | `qwen3.5-4b` | collator / code-review subagents |
+| haiku | `qwen3.5-0.8b` | research fan-out + the built-in **Explore** agent + background |
+
+A model-aware router dispatches each request to the right backend by its model name, and
+research-tier calls run with thinking **off** so a swarm of tiny agents stays fast even on
+CPU. `winc` offers to download any missing worker and ships ready-made `research`,
+`collator`, and `code-reviewer` agents — your own project `.claude/agents` always win.
+Set the worker models and fan-out width under `[team]` in `winc.toml`.
 
 ---
 

@@ -130,7 +130,7 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 	sonnetPath := models[slots.Sonnet]
 	ctxWin := engine.ResolveContext(cfg, hw, engine.FileMB(sonnetPath), engine.WillOffloadExperts(cfg, hw, sonnetPath))
 	maxOut := engine.ResolveMaxOutput(cfg, ctxWin)
-	env := agent.Env(baseURL, slots, maxOut, ctxWin)
+	env := agent.Env(baseURL, slots, maxOut, ctxWin, "")
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)

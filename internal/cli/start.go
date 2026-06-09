@@ -24,6 +24,7 @@ func cmdStart(args []string) int {
 	cat := catalog.Load(cfg.CustomModels)
 
 	var multi bool
+	var team bool
 	var reasoning string
 	var pos []string
 	for i := 0; i < len(args); i++ {
@@ -31,6 +32,8 @@ func cmdStart(args []string) int {
 		switch {
 		case a == "--multi":
 			multi = true
+		case a == "--team":
+			team = true
 		case a == "--reasoning":
 			if i+1 < len(args) {
 				reasoning = args[i+1]
@@ -72,6 +75,9 @@ func cmdStart(args []string) int {
 		return runCliChat(cfg, hw, modelPath)
 	}
 
+	if team || cfg.Team.Enabled {
+		return startTeam(cfg, cat, hw, app, model)
+	}
 	if multi {
 		return startMulti(cfg, cat, hw, app)
 	}
@@ -130,7 +136,7 @@ func cmdStart(args []string) int {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
 	slots := agent.Slots{Sonnet: alias, Opus: alias, Haiku: alias}
-	env := agent.Env(baseURL, slots, maxOut, loadedCtx)
+	env := agent.Env(baseURL, slots, maxOut, loadedCtx, "")
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)

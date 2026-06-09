@@ -16,9 +16,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"winc/internal/config"
+	"winc/internal/paths"
 	"winc/internal/reasoning"
 )
 
@@ -26,6 +29,7 @@ type Router struct {
 	srv  *http.Server
 	ln   net.Listener
 	base string
+	logf *os.File // team-mode routing log (nil otherwise)
 }
 
 // Start launches the router in front of upstream (the llama-server/-swap URL) on
@@ -36,17 +40,7 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 		return nil, err
 	}
 	rp := httputil.NewSingleHostReverseProxy(u)
-	// Claude Code routinely cancels in-flight requests (Esc, abandoned background
-	// calls, early SSE close, client timeouts). Go's default proxy ErrorHandler logs
-	// "http: proxy error: context canceled" to stderr -- which, since winc shares the
-	// terminal with the agent, prints into Claude Code's chat box. Swallow expected
-	// client cancellations silently; surface only genuine upstream failures (502).
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
-			return // client hung up on purpose -- nothing to report
-		}
-		w.WriteHeader(http.StatusBadGateway)
-	}
+	rp.ErrorHandler = swallowClientCancel
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -78,9 +72,150 @@ func (r *Router) BaseURL() string { return r.base }
 
 // Stop shuts the router down.
 func (r *Router) Stop() {
-	if r != nil && r.srv != nil {
+	if r == nil {
+		return
+	}
+	if r.srv != nil {
 		_ = r.srv.Close()
 	}
+	if r.logf != nil {
+		_ = r.logf.Close()
+		r.logf = nil
+	}
+}
+
+// swallowClientCancel is the proxy ErrorHandler. Claude Code routinely cancels
+// in-flight requests (Esc, abandoned background calls, early SSE close, client
+// timeouts); Go's default handler logs "http: proxy error: context canceled" to
+// stderr, which -- since winc shares the terminal with the agent -- prints into
+// Claude Code's chat box. Swallow expected client cancellations silently; surface
+// only genuine upstream failures (502).
+func swallowClientCancel(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+		return // client hung up on purpose -- nothing to report
+	}
+	w.WriteHeader(http.StatusBadGateway)
+}
+
+// Route maps an exact on-the-wire model string to a backend, with a per-route
+// thinking policy. ThinkOff forces thinking off (fast workers).
+type Route struct {
+	Model    string // the resolved model id Claude Code sends (winc's tier alias)
+	Upstream string // backend base URL
+	ThinkOff bool   // force enable_thinking=false for this tier
+}
+
+// StartTeam launches the team-mode router: it inspects each chat request's `model`
+// field and reverse-proxies it to the matching backend (fallback otherwise), applying
+// that route's thinking policy. This is what makes the main model and its small
+// sonnet/haiku workers reachable behind one ANTHROPIC_BASE_URL.
+func StartTeam(cfg *config.Config, routes []Route, fallback string) (*Router, error) {
+	proxies := map[string]*httputil.ReverseProxy{}
+	mkProxy := func(target string) error {
+		if target == "" || proxies[target] != nil {
+			return nil
+		}
+		u, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		rp := httputil.NewSingleHostReverseProxy(u)
+		rp.ErrorHandler = swallowClientCancel
+		proxies[target] = rp
+		return nil
+	}
+	if err := mkProxy(fallback); err != nil {
+		return nil, err
+	}
+	byModel := map[string]Route{}
+	for _, rt := range routes {
+		if rt.Model == "" || rt.Upstream == "" {
+			continue
+		}
+		if err := mkProxy(rt.Upstream); err != nil {
+			return nil, err
+		}
+		byModel[rt.Model] = rt
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	// Routing decisions go to a file (never the shared terminal) -- both diagnostics
+	// and a way to verify each tier reaches the right worker on first run.
+	logf, _ := os.Create(filepath.Join(paths.InstallDir(), "winc-router.log"))
+	var rlog *log.Logger
+	if logf != nil {
+		rlog = log.New(logf, "", log.LstdFlags)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		target := fallback
+		if req.Method == http.MethodPost && isChatPath(req.URL.Path) {
+			if body, rerr := io.ReadAll(req.Body); rerr == nil {
+				req.Body.Close()
+				model := modelOf(body)
+				thinkOff := false
+				if rt, ok := byModel[model]; ok {
+					target, thinkOff = rt.Upstream, rt.ThinkOff
+				}
+				nb := injectThinkingPolicy(cfg, body, thinkOff)
+				req.Body = io.NopCloser(bytes.NewReader(nb))
+				req.ContentLength = int64(len(nb))
+				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
+				req.Header.Del("Accept-Encoding")
+				if rlog != nil {
+					rlog.Printf("model=%q -> %s%s", model, target, thinkOffTag(thinkOff))
+				}
+			}
+		}
+		proxies[target].ServeHTTP(w, req)
+	})
+	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
+	r := &Router{srv: srv, ln: ln, base: "http://" + ln.Addr().String(), logf: logf}
+	go srv.Serve(ln)
+	return r, nil
+}
+
+func thinkOffTag(off bool) string {
+	if off {
+		return " (think:off)"
+	}
+	return ""
+}
+
+// modelOf extracts the request's `model` field ("" if absent/unparseable).
+func modelOf(body []byte) string {
+	var m struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &m)
+	return m.Model
+}
+
+// injectThinkingPolicy decides how a team-mode request's thinking is set. Worker tiers
+// flagged forceOff always run think-free (fast fan-out), regardless of reasoning mode.
+// Other tiers mirror single mode: only ADAPTIVE rewrites requests; on/off/fixed are set
+// by server flags on each backend, so the request passes through untouched.
+func injectThinkingPolicy(cfg *config.Config, body []byte, forceOff bool) []byte {
+	if forceOff {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(body, &m); err != nil {
+			return body
+		}
+		delete(m, "thinking")
+		m["chat_template_kwargs"] = mergeKwargs(m["chat_template_kwargs"], "enable_thinking", false)
+		if out, err := json.Marshal(m); err == nil {
+			return out
+		}
+		return body
+	}
+	if cfg.Reasoning.Mode != "adaptive" {
+		return body
+	}
+	return injectThinking(cfg, body)
 }
 
 func isChatPath(p string) bool {
