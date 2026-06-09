@@ -106,11 +106,21 @@ type Route struct {
 	Think    string // "" | "low" | "off"
 }
 
-// StartTeam launches the team-mode router: it inspects each chat request's `model`
-// field and reverse-proxies it to the matching backend (fallback otherwise), applying
-// that route's thinking policy. This is what makes the main model and its small
-// sonnet/haiku workers reachable behind one ANTHROPIC_BASE_URL.
-func StartTeam(cfg *config.Config, routes []Route, fallback string) (*Router, error) {
+// Tier is one rung of the subagent escalation ladder (ascending capability). A subagent
+// request tagged with the ladder's model is routed to the first rung whose MaxEstTokens
+// covers its estimated load; the last rung is the catch-all. Lets subagents START small
+// and escalate by the degree of load, deterministically (infra-driven, no model judgment).
+type Tier struct {
+	Upstream     string
+	Think        string
+	MaxEstTokens int // route here when estimated load <= this; last rung = catch-all
+}
+
+// StartTeam launches the team-mode router. It dispatches each chat request by its `model`
+// field: the subagent ladderTag escalates across the ladder by load (start small, escalate
+// by degree); explicit routes map a model to a fixed backend; anything else (the HEAD) goes
+// to fallback. One ANTHROPIC_BASE_URL fronts the main model and its small CPU workers.
+func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fallback string) (*Router, error) {
 	proxies := map[string]*httputil.ReverseProxy{}
 	mkProxy := func(target string) error {
 		if target == "" || proxies[target] != nil {
@@ -138,6 +148,11 @@ func StartTeam(cfg *config.Config, routes []Route, fallback string) (*Router, er
 		}
 		byModel[rt.Model] = rt
 	}
+	for _, t := range ladder {
+		if err := mkProxy(t.Upstream); err != nil {
+			return nil, err
+		}
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -159,7 +174,10 @@ func StartTeam(cfg *config.Config, routes []Route, fallback string) (*Router, er
 				req.Body.Close()
 				model := modelOf(body)
 				think := ""
-				if rt, ok := byModel[model]; ok {
+				if ladderTag != "" && model == ladderTag && len(ladder) > 0 {
+					t := pickTier(ladder, body)
+					target, think = t.Upstream, t.Think
+				} else if rt, ok := byModel[model]; ok {
 					target, think = rt.Upstream, rt.Think
 				}
 				nb := injectThinkingPolicy(cfg, body, think)
@@ -185,6 +203,23 @@ func thinkTag(think string) string {
 		return ""
 	}
 	return " (think:" + think + ")"
+}
+
+// pickTier selects an escalation rung by the request's estimated load (start small), then
+// bumps one rung for code-heavy requests. The last rung is the catch-all.
+func pickTier(ladder []Tier, body []byte) Tier {
+	est := reasoning.EstimateInputTokens(body)
+	idx := len(ladder) - 1
+	for i, t := range ladder {
+		if est <= t.MaxEstTokens {
+			idx = i
+			break
+		}
+	}
+	if reasoning.Heavy(body) && idx < len(ladder)-1 {
+		idx++
+	}
+	return ladder[idx]
 }
 
 // modelOf extracts the request's `model` field ("" if absent/unparseable).

@@ -24,6 +24,17 @@ var buildVerbs = []string{
 // EstimateInputTokens approximates tokens from the raw request body (~4 chars/token).
 func EstimateInputTokens(body []byte) int { return len(body) / 4 }
 
+// Heavy reports whether a request looks compute-heavy for model-tier escalation: it
+// carries several fenced code blocks (>=3), i.e. real code/analysis work a tiny model
+// handles poorly. A high threshold avoids false-positives from a stray example in the
+// system prompt or a tool description. Raw request load is the primary escalation signal;
+// this is the orthogonal "kind of task" hint.
+func Heavy(body []byte) bool {
+	return bytesCount(body, "```") >= 6 // 6 fences = 3 code blocks (open + close)
+}
+
+func bytesCount(b []byte, sub string) int { return strings.Count(string(b), sub) }
+
 // contentText flattens an Anthropic content field (a plain string or an array of
 // {type,text} blocks) into one string.
 func contentText(raw json.RawMessage) string {

@@ -42,15 +42,16 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		ui.Warn("could not write team agents: %v", err)
 	}
 
-	// Which worker(s) to run depends on the subagents policy: "haiku"/"sonnet" force ALL
-	// subagents (Task tool + Workflow fan-out) onto that one worker; "tiered" runs both
-	// and relies on per-agent pins. Only ensure/download the workers we'll actually run.
+	// Subagent policy: "dynamic" (default) runs both workers behind a load-based escalation
+	// ladder; "haiku"/"sonnet" force one worker; "tiered" runs both with per-agent pins.
 	sub := strings.ToLower(strings.TrimSpace(cfg.Team.Subagents))
-	if sub != "sonnet" && sub != "tiered" {
-		sub = "haiku"
+	switch sub {
+	case "haiku", "sonnet", "tiered", "dynamic":
+	default:
+		sub = "dynamic"
 	}
-	runSonnet := sub == "sonnet" || sub == "tiered"
-	runHaiku := sub == "haiku" || sub == "tiered"
+	runSonnet := sub == "sonnet" || sub == "tiered" || sub == "dynamic"
+	runHaiku := sub == "haiku" || sub == "tiered" || sub == "dynamic"
 
 	var sonnetPath, sonnetAlias, haikuPath, haikuAlias string
 	if runSonnet {
@@ -68,6 +69,14 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	}
 	defer stopAll()
 
+	// Dynamic mode may escalate heavy subagents onto the main GPU model -- but only when
+	// there's VRAM headroom to serve them concurrently. When so, give the main server a
+	// second parallel slot (which halves its per-slot context -> headCtx below).
+	mainEscalate := sub == "dynamic" && engine.MainEscalationOK(cfg, hw, mainPath)
+	if mainEscalate {
+		cfg.Performance.ExtraServerArgs = append([]string{"--parallel", "2"}, cfg.Performance.ExtraServerArgs...)
+	}
+
 	// Main model on the primary port (GPU, full fitting ladder), as in single mode.
 	port := cfg.General.Port
 	mainURL := fmt.Sprintf("http://%s:%d", cfg.General.Host, port)
@@ -80,6 +89,10 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		return 1
 	}
 	procs = append(procs, mainProc)
+	headCtx := loadedCtx
+	if mainEscalate {
+		headCtx = loadedCtx / 2 // --parallel 2 splits the window into per-slot contexts
+	}
 
 	serverBin := engine.LlamaServerPath()
 	par := cfg.Team.Parallel
@@ -87,39 +100,71 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		par = 4
 	}
 
-	// Workers on the CPU, each on its own port, routed by model name. A worker that's
-	// missing or fails to start simply falls back to the main model.
+	// Launch the worker(s) on the CPU, capturing each one's URL.
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
-	var routes []router.Route
+	var sonnetURL, haikuURL string
 	if runSonnet {
 		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, 2, 32768, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
 			procs = append(procs, p)
-			routes = append(routes, router.Route{Model: alias, Upstream: url, Think: ""}) // collator/review: adaptive
-			slots.Sonnet = alias
+			sonnetURL, slots.Sonnet = url, alias
 		}
 	}
 	if runHaiku {
 		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, par, par*8192, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
 			procs = append(procs, p)
-			routes = append(routes, router.Route{Model: alias, Upstream: url, Think: "low"}) // research fan-out: brief thinking = reliable tool use, still fast
-			slots.Haiku = alias
+			haikuURL, slots.Haiku = url, alias
 		}
 	}
 
-	// Force every subagent (Task + Workflow fan-out) onto the chosen worker, so a
-	// deep-research fan-out uses it instead of cloning the big model. "tiered" leaves it
-	// unset and relies on per-agent pins (research->haiku, collator/review->sonnet).
-	subagentModel := ""
+	// Build the dispatch: explicit per-agent routes (tiered), or a subagent tag + escalation
+	// ladder (dynamic/haiku/sonnet) that forces every subagent (Task + Workflow) onto the
+	// worker(s). The HEAD (pinned to the main model) always reaches the main backend.
+	const catchAll = 1 << 30
+	var routes []router.Route
+	var ladder []router.Tier
+	var ladderTag, subagentModel string
 	switch sub {
-	case "haiku":
-		subagentModel = slots.Haiku
-	case "sonnet":
-		subagentModel = slots.Sonnet
+	case "tiered": // per-agent pins; generic/Workflow agents inherit the main model
+		if sonnetURL != "" {
+			routes = append(routes, router.Route{Model: slots.Sonnet, Upstream: sonnetURL, Think: ""})
+		}
+		if haikuURL != "" {
+			routes = append(routes, router.Route{Model: slots.Haiku, Upstream: haikuURL, Think: "low"})
+		}
+	case "sonnet": // force all subagents to the 4B
+		subagentModel, ladderTag = sonnetAlias, sonnetAlias
+		if sonnetURL != "" {
+			ladder = []router.Tier{{Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll}}
+		}
+	case "haiku": // force all subagents to the 0.8B
+		subagentModel, ladderTag = haikuAlias, haikuAlias
+		if haikuURL != "" {
+			ladder = []router.Tier{{Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll}}
+		}
+	default: // dynamic: tag every subagent with the haiku alias, escalate by request load
+		subagentModel, ladderTag = haikuAlias, haikuAlias
+		if haikuURL != "" {
+			ceil := catchAll
+			if sonnetURL != "" || mainEscalate {
+				ceil = 4096 // small turns stay on the 0.8B; bigger hand off to the next rung
+			}
+			ladder = append(ladder, router.Tier{Upstream: haikuURL, Think: "low", MaxEstTokens: ceil})
+		}
+		if sonnetURL != "" {
+			ceil := catchAll
+			if mainEscalate {
+				ceil = 16384
+			}
+			ladder = append(ladder, router.Tier{Upstream: sonnetURL, Think: "low", MaxEstTokens: ceil})
+		}
+		if mainEscalate {
+			ladder = append(ladder, router.Tier{Upstream: mainURL, Think: "", MaxEstTokens: catchAll})
+		}
 	}
 
-	// The model-aware router is mandatory in team mode -- it is what dispatches each
-	// tier to its backend (and still does adaptive reasoning for the main/sonnet tiers).
-	rtr, err := router.StartTeam(cfg, routes, mainURL)
+	// The model-aware router is mandatory in team mode -- it dispatches every request to
+	// its backend (and applies adaptive reasoning where appropriate).
+	rtr, err := router.StartTeam(cfg, routes, ladder, ladderTag, mainURL)
 	if err != nil {
 		ui.Err("team router failed: %v", err)
 		return 1
@@ -131,24 +176,33 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	signal.Notify(sig, os.Interrupt)
 	go func() { <-sig; stopAll(); os.Exit(130) }()
 
-	maxOut := engine.ResolveMaxOutput(cfg, loadedCtx)
+	maxOut := engine.ResolveMaxOutput(cfg, headCtx)
 	switch {
 	case sub == "tiered":
 		ui.Good("team ready  main=%s  sonnet=%s  haiku=%s", slots.Opus, slots.Sonnet, slots.Haiku)
-		ui.Info("hierarchy: main orchestrates | sonnet=collator/review | haiku=research fan-out + Explore")
+		ui.Info("tiered: per-agent pins (research->haiku, collator/review->sonnet); generic/Workflow agents inherit main")
 		if slots.Sonnet == mainAlias && slots.Haiku == mainAlias {
 			ui.Warn("no workers running - every tier falls back to the main model")
 		}
-	case subagentModel != "" && subagentModel != mainAlias:
+	case len(ladder) == 0:
+		ui.Warn("team: no worker started - subagents fall back to the main model (see the worker logs)")
+	case sub == "dynamic":
+		top := haikuAlias
+		if sonnetURL != "" {
+			top = slots.Sonnet
+		}
+		if mainEscalate {
+			top = mainAlias
+		}
+		ui.Good("team ready  main=%s  subagents start on %s, escalate by load up to %s", mainAlias, haikuAlias, top)
+		ui.Info("every subagent + Workflow fan-out starts small and escalates by request load; main orchestrates")
+	default: // haiku / sonnet single-tier
 		ui.Good("team ready  main=%s  all subagents -> %s", mainAlias, subagentModel)
-		ui.Info("every subagent + research fan-out (Task & Workflow) runs on the small worker; main orchestrates")
-	default:
-		ui.Warn("team: the worker didn't start - subagents fall back to the main model (see the worker log)")
 	}
 	if !agent.Available(app) {
 		ui.Warn("%s not found on PATH - install it, then re-run.", app)
 	}
-	env := agent.Env(baseURL, slots, maxOut, loadedCtx, mainAlias, subagentModel) // pin main + force subagents onto the worker
+	env := agent.Env(baseURL, slots, maxOut, headCtx, mainAlias, subagentModel) // pin main + force subagents onto the worker(s)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {
 		ui.Warn("agent exited: %v", err)

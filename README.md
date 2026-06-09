@@ -110,10 +110,10 @@ haiku  = "qwen3.5-9b"
 
 [team]                      # agent hierarchy — DEFAULT for a big model (--noteam to disable)
 mode      = "auto"          # auto (team for big models) | on | off
-subagents = "haiku"         # which worker ALL subagents use: haiku | sonnet | tiered
-sonnet    = "qwen3.5-4b"    # the "sonnet" worker model
-haiku     = "qwen3.5-0.8b"  # the "haiku" worker model
-parallel  = 4               # concurrent slots on the worker
+subagents = "dynamic"       # dynamic (start small, escalate by load) | haiku | sonnet | tiered
+sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target)
+haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
+parallel  = 4               # concurrent slots on the haiku worker
 ```
 
 ### Adaptive reasoning
@@ -129,27 +129,32 @@ budget — those run with **zero proxy hop** (direct to llama-server).
 Normally every subagent Claude Code spawns — and every agent a multi-agent **Workflow**
 fans out — is a clone of the model you launched, so a deep-research fan-out runs N copies of
 your big model: slow and wasteful. On a big model **winc runs team mode by default**: the
-launched model stays the **main orchestrator** while a small worker runs alongside it on the
-**CPU** (never touching the main model's VRAM or context) and handles **all** subagents.
+launched model stays the **main orchestrator** while small workers run alongside it on the
+**CPU** (never touching the main model's VRAM or context) and handle the subagents.
 `--noteam` runs a single model; small main models stay single automatically.
 
-Every subagent — the Task tool **and** the Workflow orchestrator's fan-out — is forced onto
-the small worker via `CLAUDE_CODE_SUBAGENT_MODEL`, so your research swarm is quick even on
-CPU. Pick which worker with `subagents` in `[team]`:
+By default (`subagents = "dynamic"`) every subagent — Task tool **and** Workflow fan-out — is
+tagged onto the workers and **starts on the 0.8B, escalating by request load**: small turns
+stay tiny, heavier ones move to the 4B, and (only when the GPU has VRAM headroom to spare)
+the heaviest escalate to the main model itself. The swarm starts cheap and grows only as the
+work demands — infra-driven and deterministic, not left to the small model's judgment.
 
-| `subagents` | Workers run | All subagents use |
-|-------------|-------------|-------------------|
-| `haiku` *(default)* | main + 0.8B | the 0.8B (cheapest, quick fan-out) |
-| `sonnet` | main + 4B | the 4B (slower, more capable) |
-| `tiered` | main + both | per-agent pins (research→0.8B, collator/review→4B); generic/Workflow agents inherit main |
+| `subagents` | Behavior |
+|-------------|----------|
+| `dynamic` *(default)* | start on 0.8B, escalate 0.8B→4B→(main, VRAM permitting) by load |
+| `haiku` | force everything to the 0.8B (cheapest, no escalation) |
+| `sonnet` | force everything to the 4B |
+| `tiered` | per-agent pins (research→0.8B, collator/review→4B); generic/Workflow agents inherit main |
 
-A model-aware router dispatches by model name; research-tier calls run with a brief,
-**capped** thinking budget — small models call tools far more reliably with a little thinking
-than none, but unbounded thinking is slow and can trap the call in the reasoning block, so
-it's kept tight. Nano/small models also get loop-safe, family-appropriate sampling
-automatically (tiny models otherwise repeat and emit bad tool-call JSON). `winc` offers to
-download a missing worker and ships ready-made `research`, `collator`, and `code-reviewer`
-agents — your own project `.claude/agents` always win.
+Escalation to the **main** model only happens when there's genuine VRAM headroom (else it
+caps at the 4B), so the orchestrator stays responsive. Research-tier calls run with a brief,
+**capped** thinking budget (small models call tools far more reliably with a little thinking
+than none, but unbounded thinking is slow and can trap the call in the reasoning block).
+Nano/small models also get loop-safe, family-appropriate sampling automatically. **Web
+search/fetch and read-only tools are pre-approved** in winc's sandbox, so you're never
+prompted to grant them every launch. `winc` offers to download a missing worker and ships
+ready-made `research`, `collator`, and `code-reviewer` agents — your project `.claude/agents`
+always win.
 
 ---
 

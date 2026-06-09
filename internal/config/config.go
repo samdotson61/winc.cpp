@@ -172,14 +172,15 @@ haiku  = "qwen3.5-9b"
 # model. winc offers to download a missing worker and ships ready-made research/collator/
 # code-reviewer agents. On by default for mid+ models; pass --noteam for a single model.
 mode      = "auto"          # auto (team for big models) | on (always) | off (never)
-subagents = "haiku"         # which worker ALL subagents use:
-                            #   haiku  -> the 0.8B worker (cheapest, quick fan-out)  [default]
-                            #   sonnet -> the 4B worker   (slower, more capable)
-                            #   tiered -> run BOTH workers; no global override (per-agent pins:
-                            #             research->haiku, collator/review->sonnet)
-sonnet    = "qwen3.5-4b"    # the "sonnet" worker model
-haiku     = "qwen3.5-0.8b"  # the "haiku" worker model
-parallel  = 4               # concurrent slots on the worker (fan-out width)
+subagents = "dynamic"       # which worker subagents use (HEAD always stays on the big model):
+                            #   dynamic -> start on the 0.8B and ESCALATE to the 4B (and the main
+                            #              model, only if VRAM allows) by request load  [default]
+                            #   haiku   -> always the 0.8B worker (cheapest, no escalation)
+                            #   sonnet  -> always the 4B worker (more capable)
+                            #   tiered  -> both workers, per-agent pins, no auto-escalation
+sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target / sonnet tier)
+haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
+parallel  = 4               # concurrent slots on the haiku worker (fan-out width)
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var

@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,4 +88,67 @@ func TestTeamDefaults(t *testing.T) {
 	if cfg.Team.Mode != "auto" || cfg.Team.Subagents == "" || cfg.Team.Parallel == 0 {
 		t.Fatalf("team backfill failed: %+v", cfg.Team)
 	}
+}
+
+func TestEnsureClaudeLocalPreApprovesWebSearch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	if _, err := EnsureClaudeLocal(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".claude-local", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	has := func(s string) bool {
+		for _, a := range root.Permissions.Allow {
+			if a == s {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("WebSearch") || !has("WebFetch") {
+		t.Fatalf("web tools not pre-approved (the every-launch headache): %v", root.Permissions.Allow)
+	}
+}
+
+func TestEnsureClaudeLocalMergesExisting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	cl := filepath.Join(dir, ".claude-local")
+	if err := os.MkdirAll(cl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-existing custom allow + a deny rule must survive the merge.
+	if err := os.WriteFile(filepath.Join(cl, "settings.json"),
+		[]byte(`{"permissions":{"allow":["Bash(npm test:*)"],"deny":["WebFetch"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureClaudeLocal(); err != nil {
+		t.Fatal(err)
+	}
+	s := string(mustRead(t, filepath.Join(cl, "settings.json")))
+	for _, want := range []string{"Bash(npm test:*)", "WebSearch", "WebFetch", `"deny"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("merge dropped %q: %s", want, s)
+		}
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

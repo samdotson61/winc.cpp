@@ -64,6 +64,31 @@ func WillOffloadExperts(cfg *config.Config, hw platform.Hardware, modelPath stri
 	return resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), GpuLayers(cfg, hw)) == "all"
 }
 
+// mainEscalationHeadroomMB is the free VRAM (after the main model + compute buffer)
+// required before winc will let subagents escalate onto the main GPU model. Below this,
+// escalation tops out at the CPU worker so the orchestrator stays responsive and the KV
+// cache isn't starved by extra concurrent sequences.
+const mainEscalationHeadroomMB = 6000
+
+// MainEscalationOK reports whether the main GPU model has enough spare VRAM to also
+// serve escalated subagents concurrently. False when there's no GPU, when experts are
+// offloaded to RAM (the main model is already compute-compromised), or when free VRAM
+// after the model is below the headroom threshold -- in those cases escalation stops at
+// the CPU worker.
+func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string) bool {
+	if GpuLayers(cfg, hw) <= 0 || hw.VRAMMB <= 0 {
+		return false
+	}
+	if WillOffloadExperts(cfg, hw, modelPath) {
+		return false
+	}
+	mb := FileMB(modelPath)
+	if mb <= 0 {
+		return false
+	}
+	return hw.VRAMMB-mb-1536 >= mainEscalationHeadroomMB
+}
+
 // isMTPFile reports whether a GGUF is a Multi-Token-Prediction variant (winc saves
 // those with "-MTP-" in the local name; upstream MTP repos use "mtp" too).
 func isMTPFile(path string) bool {

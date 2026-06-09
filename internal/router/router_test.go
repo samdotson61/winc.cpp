@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"winc/internal/config"
@@ -110,7 +111,7 @@ func TestTeamRoutesByModel(t *testing.T) {
 		{Model: "small-4b", Upstream: sonnet.srv.URL, Think: ""},
 		{Model: "tiny-0.8b", Upstream: haiku.srv.URL, Think: "low"},
 	}
-	rt, err := StartTeam(&cfg, routes, main.srv.URL)
+	rt, err := StartTeam(&cfg, routes, nil, "", main.srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,5 +193,52 @@ func TestInjectThinkingPolicyNonAdaptivePassthrough(t *testing.T) {
 	body := []byte(`{"model":"x","messages":[{"role":"user","content":"write a big complex thing with code"}]}`)
 	if out := injectThinkingPolicy(&cfg, body, ""); string(out) != string(body) {
 		t.Fatalf("non-adaptive non-worker request must pass through unchanged; got %s", out)
+	}
+}
+
+// TestTeamLadderEscalation: a subagent (ladderTag) starts on the smallest rung and
+// escalates to bigger rungs as its estimated load grows.
+func TestTeamLadderEscalation(t *testing.T) {
+	cfg := config.Defaults()
+	small := newTeamBackend("small")
+	mid := newTeamBackend("mid")
+	big := newTeamBackend("big")
+	defer small.srv.Close()
+	defer mid.srv.Close()
+	defer big.srv.Close()
+
+	ladder := []Tier{
+		{Upstream: small.srv.URL, Think: "low", MaxEstTokens: 4096},
+		{Upstream: mid.srv.URL, Think: "low", MaxEstTokens: 16384},
+		{Upstream: big.srv.URL, Think: "", MaxEstTokens: 1 << 30},
+	}
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", small.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	post := func(filler int) string {
+		body := `{"model":"worker","messages":[{"role":"user","content":"` + strings.Repeat("x", filler) + `"}]}`
+		resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json", bytes.NewReader([]byte(body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(out, &m)
+		who, _ := m["who"].(string)
+		return who
+	}
+
+	if who := post(100); who != "small" { // ~tiny -> 0.8B rung
+		t.Errorf("tiny request should stay on small, got %q", who)
+	}
+	if who := post(40000); who != "mid" { // ~10k tokens -> 4B rung
+		t.Errorf("medium request should escalate to mid, got %q", who)
+	}
+	if who := post(120000); who != "big" { // ~30k tokens -> main rung
+		t.Errorf("large request should escalate to big, got %q", who)
 	}
 }
