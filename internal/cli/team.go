@@ -52,10 +52,14 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	}
 	runSonnet := sub == "sonnet" || sub == "tiered" || sub == "dynamic"
 	runHaiku := sub == "haiku" || sub == "tiered" || sub == "dynamic"
+	runMid := sub == "dynamic" && midEnabled(cfg.Team.Mid) // optional middle rung (e.g. the 2B)
 
-	var sonnetPath, sonnetAlias, haikuPath, haikuAlias string
+	var sonnetPath, sonnetAlias, haikuPath, haikuAlias, midPath, midAlias string
 	if runSonnet {
 		sonnetPath, sonnetAlias = ensureWorker(cfg, cat, firstNonEmpty(cfg.Team.Sonnet, "qwen3.5-4b"), "sonnet (collator / code-review)")
+	}
+	if runMid {
+		midPath, midAlias = ensureWorker(cfg, cat, cfg.Team.Mid, "mid (light research)")
 	}
 	if runHaiku {
 		haikuPath, haikuAlias = ensureWorker(cfg, cat, firstNonEmpty(cfg.Team.Haiku, "qwen3.5-0.8b"), "haiku (research fan-out)")
@@ -102,11 +106,17 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 
 	// Launch the worker(s) on the CPU, capturing each one's URL.
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
-	var sonnetURL, haikuURL string
+	var sonnetURL, midURL, haikuURL string
 	if runSonnet {
 		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, 2, 32768, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
 			procs = append(procs, p)
 			sonnetURL, slots.Sonnet = url, alias
+		}
+	}
+	if runMid {
+		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, par, par*8192, "mid", filepath.Join(logDir, "worker-mid.log")); p != nil {
+			procs = append(procs, p)
+			midURL = url // ladder-only rung; not mapped to a Claude Code tier
 		}
 	}
 	if runHaiku {
@@ -143,22 +153,30 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		}
 	default: // dynamic: tag every subagent with the haiku alias, escalate by request load
 		subagentModel, ladderTag = haikuAlias, haikuAlias
+		// Ascending rungs from whichever workers came up (0.8B -> 2B -> 4B -> main), with
+		// ascending load thresholds; the last rung is the catch-all. A subagent starts on
+		// the smallest rung and climbs as its estimated load grows.
+		type rung struct{ url, think string }
+		var rungs []rung
 		if haikuURL != "" {
-			ceil := catchAll
-			if sonnetURL != "" || mainEscalate {
-				ceil = 4096 // small turns stay on the 0.8B; bigger hand off to the next rung
-			}
-			ladder = append(ladder, router.Tier{Upstream: haikuURL, Think: "low", MaxEstTokens: ceil})
+			rungs = append(rungs, rung{haikuURL, "low"})
+		}
+		if midURL != "" {
+			rungs = append(rungs, rung{midURL, "low"})
 		}
 		if sonnetURL != "" {
-			ceil := catchAll
-			if mainEscalate {
-				ceil = 16384
-			}
-			ladder = append(ladder, router.Tier{Upstream: sonnetURL, Think: "low", MaxEstTokens: ceil})
+			rungs = append(rungs, rung{sonnetURL, "low"})
 		}
 		if mainEscalate {
-			ladder = append(ladder, router.Tier{Upstream: mainURL, Think: "", MaxEstTokens: catchAll})
+			rungs = append(rungs, rung{mainURL, ""})
+		}
+		thresholds := []int{2048, 6144, 16384, 49152}
+		for i, r := range rungs {
+			max := catchAll
+			if i < len(rungs)-1 && i < len(thresholds) {
+				max = thresholds[i]
+			}
+			ladder = append(ladder, router.Tier{Upstream: r.url, Think: r.think, MaxEstTokens: max})
 		}
 	}
 
@@ -300,6 +318,16 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// midEnabled reports whether the optional dynamic-mode middle rung is configured (a model
+// alias), as opposed to disabled via "off"/"none"/"false"/empty.
+func midEnabled(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "off", "none", "false":
+		return false
+	}
+	return true
 }
 
 func gpuOrCPU(cfg *config.Config, hw platform.Hardware) string {

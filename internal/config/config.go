@@ -80,9 +80,10 @@ type Multi struct {
 type Team struct {
 	Mode      string `toml:"mode"`      // auto (team for big main models) | on (always) | off (never)
 	Sonnet    string `toml:"sonnet"`    // the "sonnet" worker model (collator / code-review)
+	Mid       string `toml:"mid"`       // optional middle rung for dynamic mode (e.g. the 2B); "off" disables
 	Haiku     string `toml:"haiku"`     // the "haiku" worker model (research fan-out + Explore)
 	Parallel  int    `toml:"parallel"`  // concurrent slots on the worker (research fan-out width)
-	Subagents string `toml:"subagents"` // which worker ALL subagents use: haiku | sonnet | tiered
+	Subagents string `toml:"subagents"` // which worker ALL subagents use: dynamic | haiku | sonnet | tiered
 }
 
 type HuggingFace struct {
@@ -173,14 +174,15 @@ haiku  = "qwen3.5-9b"
 # code-reviewer agents. On by default for mid+ models; pass --noteam for a single model.
 mode      = "auto"          # auto (team for big models) | on (always) | off (never)
 subagents = "dynamic"       # which worker subagents use (HEAD always stays on the big model):
-                            #   dynamic -> start on the 0.8B and ESCALATE to the 4B (and the main
-                            #              model, only if VRAM allows) by request load  [default]
+                            #   dynamic -> start on the 0.8B and ESCALATE by request load through
+                            #              mid (2B) -> 4B -> main model (only if VRAM allows)  [default]
                             #   haiku   -> always the 0.8B worker (cheapest, no escalation)
                             #   sonnet  -> always the 4B worker (more capable)
-                            #   tiered  -> both workers, per-agent pins, no auto-escalation
+                            #   tiered  -> haiku + sonnet workers, per-agent pins, no auto-escalation
 sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target / sonnet tier)
+mid       = "qwen3.5-2b"    # dynamic-mode middle rung between the 0.8B and 4B; "off" to disable
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
-parallel  = 4               # concurrent slots on the haiku worker (fan-out width)
+parallel  = 4               # concurrent slots on the haiku/mid workers (fan-out width)
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var
@@ -322,6 +324,9 @@ func (c *Config) backfill() {
 	}
 	if c.Team.Sonnet == "" {
 		c.Team.Sonnet = d.Team.Sonnet
+	}
+	if c.Team.Mid == "" {
+		c.Team.Mid = d.Team.Mid
 	}
 	if c.Team.Haiku == "" {
 		c.Team.Haiku = d.Team.Haiku

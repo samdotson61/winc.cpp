@@ -45,3 +45,16 @@ func TestWantTeam(t *testing.T) {
 		t.Error("mode=on must always engage team for claude")
 	}
 }
+
+func TestMidEnabled(t *testing.T) {
+	for _, s := range []string{"qwen3.5-2b", "Qwen3.5-2B", "  qwen3.5-2b  "} {
+		if !midEnabled(s) {
+			t.Errorf("midEnabled(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "off", "none", "false", "  OFF "} {
+		if midEnabled(s) {
+			t.Errorf("midEnabled(%q) = true, want false", s)
+		}
+	}
+}

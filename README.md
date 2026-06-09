@@ -112,8 +112,9 @@ haiku  = "qwen3.5-9b"
 mode      = "auto"          # auto (team for big models) | on | off
 subagents = "dynamic"       # dynamic (start small, escalate by load) | haiku | sonnet | tiered
 sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target)
+mid       = "qwen3.5-2b"    # dynamic-mode middle rung between 0.8B and 4B ("off" to disable)
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
-parallel  = 4               # concurrent slots on the haiku worker
+parallel  = 4               # concurrent slots on the haiku/mid workers
 ```
 
 ### Adaptive reasoning
@@ -134,14 +135,15 @@ launched model stays the **main orchestrator** while small workers run alongside
 `--noteam` runs a single model; small main models stay single automatically.
 
 By default (`subagents = "dynamic"`) every subagent — Task tool **and** Workflow fan-out — is
-tagged onto the workers and **starts on the 0.8B, escalating by request load**: small turns
-stay tiny, heavier ones move to the 4B, and (only when the GPU has VRAM headroom to spare)
-the heaviest escalate to the main model itself. The swarm starts cheap and grows only as the
-work demands — infra-driven and deterministic, not left to the small model's judgment.
+tagged onto the workers and **starts on the 0.8B, escalating by request load** through the
+**2B** (light research), the **4B** (medium), and — only when the GPU has VRAM headroom to
+spare — the main model itself. The swarm starts cheap and grows only as the work demands —
+infra-driven and deterministic, not left to the small model's judgment. Set `mid = "off"` to
+drop the 2B rung (0.8B→4B→main), or point it at a different model.
 
 | `subagents` | Behavior |
 |-------------|----------|
-| `dynamic` *(default)* | start on 0.8B, escalate 0.8B→4B→(main, VRAM permitting) by load |
+| `dynamic` *(default)* | start on 0.8B, escalate 0.8B→2B→4B→(main, VRAM permitting) by load |
 | `haiku` | force everything to the 0.8B (cheapest, no escalation) |
 | `sonnet` | force everything to the 4B |
 | `tiered` | per-agent pins (research→0.8B, collator/review→4B); generic/Workflow agents inherit main |

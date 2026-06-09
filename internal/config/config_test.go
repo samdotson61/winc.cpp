@@ -68,7 +68,7 @@ func TestTeamDefaults(t *testing.T) {
 	if d.Team.Mode != "auto" {
 		t.Fatalf("team mode default = %q, want auto (team is the default)", d.Team.Mode)
 	}
-	if d.Team.Subagents == "" || d.Team.Sonnet == "" || d.Team.Haiku == "" {
+	if d.Team.Subagents == "" || d.Team.Sonnet == "" || d.Team.Haiku == "" || d.Team.Mid == "" {
 		t.Fatalf("team defaults missing: %+v", d.Team)
 	}
 	if d.Team.Parallel <= 0 {
@@ -85,7 +85,7 @@ func TestTeamDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Team.Mode != "auto" || cfg.Team.Subagents == "" || cfg.Team.Parallel == 0 {
+	if cfg.Team.Mode != "auto" || cfg.Team.Subagents == "" || cfg.Team.Parallel == 0 || cfg.Team.Mid == "" {
 		t.Fatalf("team backfill failed: %+v", cfg.Team)
 	}
 }
