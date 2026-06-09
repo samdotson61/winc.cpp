@@ -89,6 +89,15 @@ func cmdStart(args []string) int {
 	}
 	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 
+	// Small/nano models need loop-safe sampling to call tools reliably (tiny models
+	// repeat and emit bad tool-call JSON under default sampling). Prepend so the user's
+	// own extra_server_args still win.
+	if m := cat.Find(alias); m != nil && (m.Tier == "nano" || m.Tier == "small") {
+		if s := engine.SmallModelSamplingArgs(modelPath); len(s) > 0 {
+			cfg.Performance.ExtraServerArgs = append(s, cfg.Performance.ExtraServerArgs...)
+		}
+	}
+
 	if _, err := config.EnsureClaudeLocal(); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)
 	}

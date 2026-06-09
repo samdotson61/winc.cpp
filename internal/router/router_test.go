@@ -107,8 +107,8 @@ func TestTeamRoutesByModel(t *testing.T) {
 	defer haiku.srv.Close()
 
 	routes := []Route{
-		{Model: "small-4b", Upstream: sonnet.srv.URL, ThinkOff: false},
-		{Model: "tiny-0.8b", Upstream: haiku.srv.URL, ThinkOff: true},
+		{Model: "small-4b", Upstream: sonnet.srv.URL, Think: ""},
+		{Model: "tiny-0.8b", Upstream: haiku.srv.URL, Think: "low"},
 	}
 	rt, err := StartTeam(&cfg, routes, main.srv.URL)
 	if err != nil {
@@ -140,29 +140,46 @@ func TestTeamRoutesByModel(t *testing.T) {
 		t.Errorf("haiku tier mis-routed, got %q", who)
 	}
 
-	// The haiku route forces thinking off (fast research fan-out).
+	// The haiku (research) route injects a small thinking budget -- small models need a
+	// little thinking to call tools reliably, not none.
 	var hk map[string]any
 	_ = json.Unmarshal(haiku.got, &hk)
-	kw, ok := hk["chat_template_kwargs"].(map[string]any)
-	if !ok || kw["enable_thinking"] != false {
-		t.Errorf("haiku worker should get enable_thinking=false, got %v", hk)
+	think, ok := hk["thinking"].(map[string]any)
+	if !ok || think["budget_tokens"] == nil {
+		t.Errorf("haiku worker should get a low thinking budget, got %v", hk)
 	}
 }
 
-// TestInjectThinkingPolicyForceOff: forceOff disables thinking even for a prompt the
-// adaptive logic would otherwise give a budget, and never adds a thinking budget.
-func TestInjectThinkingPolicyForceOff(t *testing.T) {
+// TestInjectThinkingPolicyOff: "off" disables thinking even for a prompt the adaptive
+// logic would otherwise give a budget, and never adds a thinking budget.
+func TestInjectThinkingPolicyOff(t *testing.T) {
 	cfg := config.Defaults()
 	out := injectThinkingPolicy(&cfg,
-		[]byte(`{"model":"x","messages":[{"role":"user","content":"write a detailed analysis of rabbit warren logistics"}]}`), true)
+		[]byte(`{"model":"x","messages":[{"role":"user","content":"write a detailed analysis of rabbit warren logistics"}]}`), "off")
 	var m map[string]any
 	_ = json.Unmarshal(out, &m)
 	kw, ok := m["chat_template_kwargs"].(map[string]any)
 	if !ok || kw["enable_thinking"] != false {
-		t.Fatalf("forceOff must set enable_thinking=false, got %v", m)
+		t.Fatalf("off must set enable_thinking=false, got %v", m)
 	}
 	if _, hasThink := m["thinking"]; hasThink {
-		t.Fatalf("forceOff must not add a thinking budget, got %v", m)
+		t.Fatalf("off must not add a thinking budget, got %v", m)
+	}
+}
+
+// TestInjectThinkingPolicyLow: "low" injects a small thinking budget even for a trivial
+// prompt -- small models need a little thinking to orchestrate tools reliably.
+func TestInjectThinkingPolicyLow(t *testing.T) {
+	cfg := config.Defaults()
+	out := injectThinkingPolicy(&cfg, []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`), "low")
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	think, ok := m["thinking"].(map[string]any)
+	if !ok || think["type"] != "enabled" {
+		t.Fatalf("low must enable thinking, got %v", m)
+	}
+	if b, _ := think["budget_tokens"].(float64); b <= 0 || b > 2048 {
+		t.Fatalf("low budget should be small and positive, got %v", think["budget_tokens"])
 	}
 }
 
@@ -173,7 +190,7 @@ func TestInjectThinkingPolicyNonAdaptivePassthrough(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Reasoning.Mode = "off"
 	body := []byte(`{"model":"x","messages":[{"role":"user","content":"write a big complex thing with code"}]}`)
-	if out := injectThinkingPolicy(&cfg, body, false); string(out) != string(body) {
+	if out := injectThinkingPolicy(&cfg, body, ""); string(out) != string(body) {
 		t.Fatalf("non-adaptive non-worker request must pass through unchanged; got %s", out)
 	}
 }

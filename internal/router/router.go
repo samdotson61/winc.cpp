@@ -98,11 +98,12 @@ func swallowClientCancel(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // Route maps an exact on-the-wire model string to a backend, with a per-route
-// thinking policy. ThinkOff forces thinking off (fast workers).
+// thinking policy: "" = adaptive (default), "low" = a small fixed budget (small
+// models orchestrate tools best with a LITTLE thinking), "off" = disabled.
 type Route struct {
 	Model    string // the resolved model id Claude Code sends (winc's tier alias)
 	Upstream string // backend base URL
-	ThinkOff bool   // force enable_thinking=false for this tier
+	Think    string // "" | "low" | "off"
 }
 
 // StartTeam launches the team-mode router: it inspects each chat request's `model`
@@ -157,17 +158,17 @@ func StartTeam(cfg *config.Config, routes []Route, fallback string) (*Router, er
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
 				model := modelOf(body)
-				thinkOff := false
+				think := ""
 				if rt, ok := byModel[model]; ok {
-					target, thinkOff = rt.Upstream, rt.ThinkOff
+					target, think = rt.Upstream, rt.Think
 				}
-				nb := injectThinkingPolicy(cfg, body, thinkOff)
+				nb := injectThinkingPolicy(cfg, body, think)
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
 				req.Header.Del("Accept-Encoding")
 				if rlog != nil {
-					rlog.Printf("model=%q -> %s%s", model, target, thinkOffTag(thinkOff))
+					rlog.Printf("model=%q -> %s%s", model, target, thinkTag(think))
 				}
 			}
 		}
@@ -179,11 +180,11 @@ func StartTeam(cfg *config.Config, routes []Route, fallback string) (*Router, er
 	return r, nil
 }
 
-func thinkOffTag(off bool) string {
-	if off {
-		return " (think:off)"
+func thinkTag(think string) string {
+	if think == "" {
+		return ""
 	}
-	return ""
+	return " (think:" + think + ")"
 }
 
 // modelOf extracts the request's `model` field ("" if absent/unparseable).
@@ -195,12 +196,20 @@ func modelOf(body []byte) string {
 	return m.Model
 }
 
-// injectThinkingPolicy decides how a team-mode request's thinking is set. Worker tiers
-// flagged forceOff always run think-free (fast fan-out), regardless of reasoning mode.
-// Other tiers mirror single mode: only ADAPTIVE rewrites requests; on/off/fixed are set
-// by server flags on each backend, so the request passes through untouched.
-func injectThinkingPolicy(cfg *config.Config, body []byte, forceOff bool) []byte {
-	if forceOff {
+// lowThinkBudget is the small thinking allowance for worker tiers. Small models call
+// tools far more reliably with a LITTLE thinking than with none, but unbounded thinking
+// is slow and can trap the tool call inside the reasoning block -- so keep it tight.
+const lowThinkBudget = 512
+
+// injectThinkingPolicy applies a route's thinking policy to a request:
+//   - "off": force thinking off (enable_thinking=false).
+//   - "low": a small fixed thinking budget -- the sweet spot for small models doing
+//     tool use (brief planning, then act), without the latency/trap of full thinking.
+//   - "" (adaptive): mirror single mode -- only ADAPTIVE mode rewrites requests; on/off/
+//     fixed are set by server flags on each backend, so the request passes through.
+func injectThinkingPolicy(cfg *config.Config, body []byte, think string) []byte {
+	switch think {
+	case "off":
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(body, &m); err != nil {
 			return body
@@ -211,11 +220,24 @@ func injectThinkingPolicy(cfg *config.Config, body []byte, forceOff bool) []byte
 			return out
 		}
 		return body
-	}
-	if cfg.Reasoning.Mode != "adaptive" {
+	case "low":
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(body, &m); err != nil {
+			return body
+		}
+		tk, _ := json.Marshal(map[string]any{"type": "enabled", "budget_tokens": lowThinkBudget})
+		m["thinking"] = tk
+		ensureMaxTokens(m, lowThinkBudget)
+		if out, err := json.Marshal(m); err == nil {
+			return out
+		}
 		return body
+	default:
+		if cfg.Reasoning.Mode != "adaptive" {
+			return body
+		}
+		return injectThinking(cfg, body)
 	}
-	return injectThinking(cfg, body)
 }
 
 func isChatPath(p string) bool {

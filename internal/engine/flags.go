@@ -150,6 +150,27 @@ func atoiOr(s string, def int) int {
 	return def
 }
 
+// SmallModelSamplingArgs returns loop-safe, family-appropriate sampling flags for a
+// small/nano model used as a tool-calling agent. Tiny models repeat and emit noisy
+// tool-call JSON under default sampling (and never tolerate greedy decoding); these are
+// the model authors' recommended values plus a presence penalty as a loop guard. Returns
+// nil for families with no profile, leaving llama.cpp's defaults. Client-sent params
+// still override these, so they set only what Claude Code omits (top_k / min_p / etc.).
+func SmallModelSamplingArgs(modelPath string) []string {
+	name := strings.ToLower(filepath.Base(modelPath))
+	switch {
+	case strings.Contains(name, "qwen"):
+		// Qwen3 / Qwen3.5 official: temp 0.7 / top-p 0.8 / top-k 20 / min-p 0; presence
+		// penalty 1.0 guards the tiny variants against endless repetition.
+		return []string{"--temp", "0.7", "--top-p", "0.8", "--top-k", "20", "--min-p", "0.0", "--presence-penalty", "1.0"}
+	case strings.Contains(name, "gemma"):
+		// Gemma 3 / 4 recommended: temp 1.0 / top-k 64 / top-p 0.95.
+		return []string{"--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0"}
+	default:
+		return nil
+	}
+}
+
 // FileMB returns a file's size in MB (0 if unknown).
 func FileMB(path string) int {
 	if fi, err := os.Stat(path); err == nil {

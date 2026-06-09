@@ -82,12 +82,12 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 
 	if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, 2, 32768, "sonnet", filepath.Join(logDir, "worker-sonnet.log")); p != nil {
 		procs = append(procs, p)
-		routes = append(routes, router.Route{Model: alias, Upstream: url, ThinkOff: false})
+		routes = append(routes, router.Route{Model: alias, Upstream: url, Think: ""}) // collator/review: adaptive
 		slots.Sonnet = alias
 	}
 	if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, par, par*8192, "haiku", filepath.Join(logDir, "worker-haiku.log")); p != nil {
 		procs = append(procs, p)
-		routes = append(routes, router.Route{Model: alias, Upstream: url, ThinkOff: true}) // research fan-out: fast, no thinking
+		routes = append(routes, router.Route{Model: alias, Upstream: url, Think: "low"}) // research fan-out: brief thinking = reliable tool use, still fast
 		slots.Haiku = alias
 	}
 
@@ -166,16 +166,22 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 	}
 
 	// Worker config: force CPU (-ngl 0) so it never touches the main model's VRAM, and
-	// drop the main model's draft/MTP/extra flags (they don't apply to the worker).
+	// drop the main model's draft/MTP/extra flags (they don't apply to the worker). Run
+	// the worker server in adaptive reasoning so the router governs thinking per request
+	// (a low budget for the research tier -- small models need a little thinking for tools).
 	wc := *cfg
 	wc.Performance.GpuLayers = "0"
 	wc.Performance.DraftModel = ""
 	wc.Performance.Mtp = "off"
 	wc.Performance.ExtraServerArgs = nil
+	wc.Reasoning.Mode = "adaptive"
 	wc.General.Port = pnum
 
 	args := engine.ServerArgs(&wc, hw, modelPath, pnum, "", ctx)
 	args = append(args, "--parallel", strconv.Itoa(parallel))
+	// Loop-safe, family-appropriate sampling: tiny models repeat and emit bad tool-call
+	// JSON under default sampling. No-op for families we have no profile for.
+	args = append(args, engine.SmallModelSamplingArgs(modelPath)...)
 	proc, err := server.Start(serverBin, args, logPath)
 	if err != nil {
 		ui.Warn("team: %s worker failed to launch: %v - tier falls back to main", role, err)

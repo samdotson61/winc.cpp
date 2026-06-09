@@ -136,10 +136,13 @@ model's VRAM or shrink its context), mapped onto Claude Code's subagent tiers:
 | haiku | `qwen3.5-0.8b` | research fan-out + the built-in **Explore** agent + background |
 
 A model-aware router dispatches each request to the right backend by its model name, and
-research-tier calls run with thinking **off** so a swarm of tiny agents stays fast even on
-CPU. `winc` offers to download any missing worker and ships ready-made `research`,
-`collator`, and `code-reviewer` agents — your own project `.claude/agents` always win.
-Set the worker models and fan-out width under `[team]` in `winc.toml`.
+research-tier calls run with a brief, **capped** thinking budget — small models call tools
+far more reliably with a little thinking than with none, but unbounded thinking is slow and
+can trap the call in the reasoning block, so it's kept tight. Nano/small models also get
+loop-safe, family-appropriate sampling automatically (tiny models otherwise repeat and emit
+bad tool-call JSON). `winc` offers to download any missing worker and ships ready-made
+`research`, `collator`, and `code-reviewer` agents — your own project `.claude/agents` always
+win. Set the worker models and fan-out width under `[team]` in `winc.toml`.
 
 ---
 
