@@ -191,10 +191,11 @@ func rewriteContextOverflowError(resp *http.Response) error {
 // thinking policy: "" = adaptive (default), "low" = a small fixed budget (small
 // models orchestrate tools best with a LITTLE thinking), "off" = disabled.
 type Route struct {
-	Model    string   // the resolved model id Claude Code sends (winc's tier alias)
-	Upstream string   // backend base URL
-	Think    string   // "" | "low" | "off"
-	Tools    []string // tool allowlist for this backend ("" / nil = keep all; ["all"] = keep all)
+	Model     string   // the resolved model id Claude Code sends (winc's tier alias)
+	Upstream  string   // backend base URL
+	Think     string   // "" | "low" | "off"
+	Tools     []string // tool allowlist for this backend ("" / nil = keep all; ["all"] = keep all)
+	MaxTokens int      // generation cap for this backend (0 = uncapped); lowers an over-large max_tokens
 }
 
 // Tier is one rung of the subagent escalation ladder (ascending capability). A subagent
@@ -206,6 +207,7 @@ type Tier struct {
 	Think        string
 	MaxEstTokens int      // route here when estimated load <= this; last rung = catch-all
 	Tools        []string // tool allowlist for this rung (nil / ["all"] = keep all)
+	MaxTokens    int      // generation cap for this rung (0 = uncapped); lowers an over-large max_tokens
 }
 
 // StartTeam launches the team-mode router. It dispatches each chat request by its `model`
@@ -268,14 +270,15 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 				model := modelOf(body)
 				think := ""
 				var allow []string // tool allowlist for the chosen worker backend (nil = HEAD, keep all)
+				maxTok := 0        // generation cap for the chosen worker backend (0 = uncapped, e.g. the HEAD)
 				if ladderTag != "" && model == ladderTag && len(ladder) > 0 {
 					t := pickTier(ladder, body)
-					target, think, allow = t.Upstream, t.Think, t.Tools
+					target, think, allow, maxTok = t.Upstream, t.Think, t.Tools, t.MaxTokens
 				} else if rt, ok := byModel[model]; ok {
-					target, think, allow = rt.Upstream, rt.Think, rt.Tools
+					target, think, allow, maxTok = rt.Upstream, rt.Think, rt.Tools, rt.MaxTokens
 				}
 				cb, toolsBefore, toolsAfter := compactRequest(body, allow)
-				nb := injectThinkingPolicy(cfg, cb, think)
+				nb := clampMaxTokens(injectThinkingPolicy(cfg, cb, think), maxTok)
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
@@ -531,6 +534,34 @@ func ensureMaxTokens(m map[string]json.RawMessage, budget int) {
 	}
 	v, _ := json.Marshal(floor)
 	m["max_tokens"] = v
+}
+
+// clampMaxTokens LOWERS an over-large max_tokens to cap for small-worker tiers, so a model
+// stuck in a repetition loop can't generate until it slams into its context window (minutes
+// of CPU time producing truncated garbage). cap <= 0 is a no-op -- the HEAD model is never
+// capped. It only lowers: a request already at/below cap is left untouched; an absent
+// max_tokens is set to cap. Runs after injectThinkingPolicy, so the thinking floor still
+// holds as long as cap exceeds the thinking budget (the defaults do).
+func clampMaxTokens(body []byte, maxTok int) []byte {
+	if maxTok <= 0 {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return body
+	}
+	if raw, ok := m["max_tokens"]; ok {
+		var cur int
+		if json.Unmarshal(raw, &cur) == nil && cur <= maxTok {
+			return body // already within the cap -- don't touch
+		}
+	}
+	v, _ := json.Marshal(maxTok)
+	m["max_tokens"] = v
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return body
 }
 
 func mergeKwargs(existing json.RawMessage, key string, val any) json.RawMessage {

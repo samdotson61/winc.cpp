@@ -159,23 +159,28 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	// Write (collation/review); the HEAD model keeps every tool (nil = no stripping).
 	workerTools := cfg.Team.WorkerTools
 	sonnetTools := cfg.Team.SonnetTools
+	// Per-tier generation caps (loop guard): the tiny research workers can run away and burn
+	// minutes of CPU generating until they hit the context wall; the router lowers an
+	// over-large max_tokens to these. The HEAD model is never capped.
+	workerCap := cfg.Team.WorkerMaxTokens
+	sonnetCap := cfg.Team.SonnetMaxTokens
 	switch sub {
 	case "tiered": // per-agent pins; generic/Workflow agents inherit the main model
 		if sonnetURL != "" {
-			routes = append(routes, router.Route{Model: slots.Sonnet, Upstream: sonnetURL, Think: "", Tools: sonnetTools})
+			routes = append(routes, router.Route{Model: slots.Sonnet, Upstream: sonnetURL, Think: "", Tools: sonnetTools, MaxTokens: sonnetCap})
 		}
 		if haikuURL != "" {
-			routes = append(routes, router.Route{Model: slots.Haiku, Upstream: haikuURL, Think: "low", Tools: workerTools})
+			routes = append(routes, router.Route{Model: slots.Haiku, Upstream: haikuURL, Think: "low", Tools: workerTools, MaxTokens: workerCap})
 		}
 	case "sonnet": // force all subagents to the 4B
 		subagentModel, ladderTag = sonnetAlias, sonnetAlias
 		if sonnetURL != "" {
-			ladder = []router.Tier{{Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll, Tools: sonnetTools}}
+			ladder = []router.Tier{{Upstream: sonnetURL, Think: "", MaxEstTokens: catchAll, Tools: sonnetTools, MaxTokens: sonnetCap}}
 		}
 	case "haiku": // force all subagents to the 0.8B
 		subagentModel, ladderTag = haikuAlias, haikuAlias
 		if haikuURL != "" {
-			ladder = []router.Tier{{Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll, Tools: workerTools}}
+			ladder = []router.Tier{{Upstream: haikuURL, Think: "low", MaxEstTokens: catchAll, Tools: workerTools, MaxTokens: workerCap}}
 		}
 	default: // dynamic: tag every subagent with the haiku alias, escalate by request load
 		subagentModel, ladderTag = haikuAlias, haikuAlias
@@ -185,19 +190,20 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		type rung struct {
 			url, think string
 			tools      []string
+			cap        int
 		}
 		var rungs []rung
 		if haikuURL != "" {
-			rungs = append(rungs, rung{haikuURL, "low", workerTools})
+			rungs = append(rungs, rung{haikuURL, "low", workerTools, workerCap})
 		}
 		if midURL != "" {
-			rungs = append(rungs, rung{midURL, "low", workerTools})
+			rungs = append(rungs, rung{midURL, "low", workerTools, workerCap})
 		}
 		if sonnetURL != "" {
-			rungs = append(rungs, rung{sonnetURL, "low", sonnetTools})
+			rungs = append(rungs, rung{sonnetURL, "low", sonnetTools, sonnetCap})
 		}
 		if mainEscalate {
-			rungs = append(rungs, rung{mainURL, "", nil}) // HEAD model: keep all tools
+			rungs = append(rungs, rung{mainURL, "", nil, 0}) // HEAD model: keep all tools, no cap
 		}
 		thresholds := []int{2048, 6144, 16384, 49152}
 		for i, r := range rungs {
@@ -205,7 +211,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 			if i < len(rungs)-1 && i < len(thresholds) {
 				max = thresholds[i]
 			}
-			ladder = append(ladder, router.Tier{Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools})
+			ladder = append(ladder, router.Tier{Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools, MaxTokens: r.cap})
 		}
 	}
 

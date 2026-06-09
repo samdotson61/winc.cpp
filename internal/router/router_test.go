@@ -437,3 +437,61 @@ func TestRewritePassesThroughNonOverflow(t *testing.T) {
 		t.Fatalf("original error must be preserved, got %s", body)
 	}
 }
+
+func maxTokOf(b []byte) (float64, bool) {
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return 0, false
+	}
+	v, ok := m["max_tokens"].(float64)
+	return v, ok
+}
+
+func TestClampMaxTokens(t *testing.T) {
+	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"max_tokens":8000}`), 1536)); v != 1536 {
+		t.Errorf("over-large should clamp to 1536, got %v", v)
+	}
+	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"max_tokens":512}`), 1536)); v != 512 {
+		t.Errorf("already-small should be untouched (512), got %v", v)
+	}
+	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"messages":[]}`), 1536)); v != 1536 {
+		t.Errorf("absent should be set to cap (1536), got %v", v)
+	}
+	if v, _ := maxTokOf(clampMaxTokens([]byte(`{"max_tokens":8000}`), 0)); v != 8000 {
+		t.Errorf("cap<=0 must be a no-op (8000), got %v", v)
+	}
+}
+
+// The worker tier's generation must be capped (loop guard) while the HEAD model's is not.
+func TestTeamRouterCapsWorkerMaxTokens(t *testing.T) {
+	cfg := config.Defaults()
+	worker := newTeamBackend("worker")
+	main := newTeamBackend("main")
+	defer worker.srv.Close()
+	defer main.srv.Close()
+
+	ladder := []Tier{{Upstream: worker.srv.URL, Think: "low", MaxEstTokens: 1 << 30, Tools: []string{"all"}, MaxTokens: 1536}}
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	post := func(model string) {
+		body := `{"model":"` + model + `","max_tokens":8000,"messages":[{"role":"user","content":"hi"}]}`
+		resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json", bytes.NewReader([]byte(body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post("worker") // -> worker, capped
+	post("big")    // -> main (fallback), uncapped
+
+	if v, _ := maxTokOf(worker.got); v != 1536 {
+		t.Errorf("worker max_tokens must be capped to 1536, got %v", v)
+	}
+	if v, _ := maxTokOf(main.got); v != 8000 {
+		t.Errorf("HEAD max_tokens must be untouched (8000), got %v", v)
+	}
+}

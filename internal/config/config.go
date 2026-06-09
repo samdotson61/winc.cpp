@@ -78,14 +78,16 @@ type Multi struct {
 // clones of the big model. Mode gates auto-engagement; Subagents picks which worker all
 // subagents (Task tool AND the Workflow orchestrator's fan-out) are forced onto.
 type Team struct {
-	Mode        string   `toml:"mode"`         // auto (team for big main models) | on (always) | off (never)
-	Sonnet      string   `toml:"sonnet"`       // the "sonnet" worker model (collator / code-review)
-	Mid         string   `toml:"mid"`          // optional middle rung for dynamic mode (e.g. the 2B); "off" disables
-	Haiku       string   `toml:"haiku"`        // the "haiku" worker model (research fan-out + Explore)
-	Parallel    int      `toml:"parallel"`     // concurrent slots on the worker (research fan-out width)
-	Subagents   string   `toml:"subagents"`    // which worker ALL subagents use: dynamic | haiku | sonnet | tiered
-	WorkerTools []string `toml:"worker_tools"` // tools the tiny workers (0.8B/2B) may use; ["all"] = no stripping
-	SonnetTools []string `toml:"sonnet_tools"` // tools the 4B worker may use (research + Write); ["all"] = no stripping
+	Mode            string   `toml:"mode"`              // auto (team for big main models) | on (always) | off (never)
+	Sonnet          string   `toml:"sonnet"`            // the "sonnet" worker model (collator / code-review)
+	Mid             string   `toml:"mid"`               // optional middle rung for dynamic mode (e.g. the 2B); "off" disables
+	Haiku           string   `toml:"haiku"`             // the "haiku" worker model (research fan-out + Explore)
+	Parallel        int      `toml:"parallel"`          // concurrent slots on the worker (research fan-out width)
+	Subagents       string   `toml:"subagents"`         // which worker ALL subagents use: dynamic | haiku | sonnet | tiered
+	WorkerTools     []string `toml:"worker_tools"`      // tools the tiny workers (0.8B/2B) may use; ["all"] = no stripping
+	SonnetTools     []string `toml:"sonnet_tools"`      // tools the 4B worker may use (research + Write); ["all"] = no stripping
+	WorkerMaxTokens int      `toml:"worker_max_tokens"` // generation cap for the 0.8B/2B research tier (loop guard); 0 = uncapped
+	SonnetMaxTokens int      `toml:"sonnet_max_tokens"` // generation cap for the 4B collation tier; 0 = uncapped
 }
 
 type HuggingFace struct {
@@ -192,6 +194,12 @@ parallel  = 4               # concurrent slots on the haiku/mid workers (fan-out
 # Write for collation/review. Use ["all"] to disable stripping for a tier.
 worker_tools = ["WebSearch", "WebFetch", "Read", "Grep", "Glob"]           # 0.8B / 2B
 sonnet_tools = ["WebSearch", "WebFetch", "Read", "Grep", "Glob", "Write"]  # 4B (collator/review)
+# Worker generation caps (loop guard): a small model can otherwise run away and generate
+# until it slams into its context window (minutes of CPU time for truncated garbage). winc
+# lowers an over-large max_tokens to these ceilings for worker requests only (never the main
+# model). Research outputs are short; collation gets more room. 0 = uncapped.
+worker_max_tokens = 1536    # 0.8B / 2B research tier
+sonnet_max_tokens = 4096    # 4B collation / review tier
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var
