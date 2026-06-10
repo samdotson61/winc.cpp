@@ -121,8 +121,14 @@ func TestDraftFor(t *testing.T) {
 
 func TestMTPVariants(t *testing.T) {
 	c := Load(nil)
-	// Standard Qwen3.6 MoE models point at their MTP variant.
-	for std, want := range map[string]string{"qwen3.6-35b": "qwen3.6-35b-mtp", "qwen3.6-35b-q4": "qwen3.6-35b-q4-mtp"} {
+	// Standard Qwen models (MoE and dense) point at their MTP variant.
+	for std, want := range map[string]string{
+		"qwen3.6-35b":    "qwen3.6-35b-mtp",
+		"qwen3.6-35b-q4": "qwen3.6-35b-q4-mtp",
+		"qwen3.6-27b":    "qwen3.6-27b-mtp",
+		"qwen3.6-27b-q5": "qwen3.6-27b-q5-mtp",
+		"qwen3.5-9b":     "qwen3.5-9b-mtp",
+	} {
 		m := c.Find(std)
 		if m == nil || m.Mtp != want {
 			t.Errorf("%s.Mtp = %q, want %q", std, mtpOf(m), want)
@@ -141,7 +147,7 @@ func TestMTPVariants(t *testing.T) {
 		}
 	}
 	// Models without a save name fall back to File.
-	if m := c.Find("qwen3.6-27b"); m == nil || m.LocalFile() != m.File {
+	if m := c.Find("gemma4-12b"); m == nil || m.LocalFile() != m.File {
 		t.Errorf("standard model LocalFile should equal File")
 	}
 }

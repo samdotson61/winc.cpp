@@ -3,6 +3,20 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.5.1 — 2026-06-10
+
+Catalog refresh.
+
+### Added
+- MTP variants for the dense coders: `qwen3.6-27b-mtp` / `qwen3.6-27b-q5-mtp`
+  (built-in multi-token-prediction heads, ~1.4-2.2x decode) and `qwen3.5-9b-mtp`
+  for the small tier. The standard entries now point at their MTP builds, so
+  `winc -d` surfaces them automatically.
+- `gemma4-12b` (Jun 2026) — strongest small-tier generalist: LiveCodeBench 72,
+  MMLU-Pro 77.2, multimodal, native tool use, 256K context.
+
+Existing installs pick these up with `winc update` (no reinstall needed).
+
 ## v1.5.0 — 2026-06-09
 
 Observability, integrity, and release hygiene.

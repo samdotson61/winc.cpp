@@ -186,7 +186,7 @@ adds `--cache-reuse` (probed) and losslessly drops optional `input_examples`. Se
 | Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b |
-| `small` | 6-8 GB / 8-16 GB unified | **qwen3.5-9b**, omnicoder-9b, gemma4-e4b |
+| `small` | 6-8 GB / 8-16 GB unified | **qwen3.5-9b**, omnicoder-9b, gemma4-12b, gemma4-e4b |
 | `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.6-27b |
 | `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.6-27b-q5 |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
@@ -245,6 +245,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 |---|---|---|---|---|---|---|
 | ★ qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | agentic **coding** specialist |
+| gemma4-12b | 12B | 5.7 GB (Q3) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist |
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
 
 Anchors: an RTX 3050 8 GB runs a 9B Q4 at ~25 tok/s; a 4B is ~2x that, a sub-1B ~5x+;
@@ -273,7 +274,7 @@ end of this section only exist if you want to override a decision.
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
 | **Auto-paired draft (dense)** | Downloading a **dense** catalogue model offers its tiny same-tokenizer draft; once present, `winc` enables `--spec-draft-model` automatically at launch. MoE models are skipped (drafts backfire there) | The draft proposes tokens the big model verifies in a batch — up to ~2× on predictable code |
-| **MTP (Qwen3.6 variants)** | The `*-mtp` model variants carry built-in multi-token-prediction heads; `winc` auto-adds `--spec-type draft-mtp` when one is loaded (and the engine supports it — probed, never breaks an old engine) | ~1.4–2.2× on the dense 27B, ~1.15–1.25× on the 35B MoE — the **only** speculative win for that MoE |
+| **MTP (`*-mtp` variants)** | The `*-mtp` model variants carry built-in multi-token-prediction heads; `winc` auto-adds `--spec-type draft-mtp` when one is loaded (and the engine supports it — probed, never breaks an old engine) | ~1.4–2.2× on the dense 9B/27B, ~1.15–1.25× on the 35B MoE — the **only** speculative win for that MoE |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
 ### MoE expert offload, in one line
@@ -331,14 +332,20 @@ automatically at launch — up to ~2× on predictable code. **MoE models are nev
 (only ~3B is active, so a draft just adds overhead). `draft_model` forces a specific
 draft or overrides the auto-pick.
 
-**MTP for the Qwen3.6 MoE (`*-mtp` variants).** Qwen3.6 changed tokenizers, so a separate
-draft model is the *wrong* tool — and classic drafts actually regress it. The right lever
-is **Multi-Token Prediction**: prediction heads baked into the model, no second model.
-Grab the MTP build — `winc -d qwen3.6-35b-mtp` (the IQ3_S 35B MoE) or `winc -d
-qwen3.6-35b-q4-mtp` (the Q4 build for 24 GB+ GPUs / 32 GB+ Macs) — and `winc` adds
-`--spec-type draft-mtp` automatically when it loads (~1.5–2× — the only speculative
-speedup that helps a MoE), **after probing that your engine supports the flag** (older
-engines just run without it). `mtp = "off"` disables it.
+**MTP (`*-mtp` variants).** Multi-Token Prediction is prediction heads baked into the
+model itself — no second model to download or keep in VRAM. For Qwen3.6 it's also the
+*only* option: Qwen3.6 changed tokenizers, so a separate draft model is the wrong tool
+(classic drafts actually regress it). Grab an MTP build and `winc` adds
+`--spec-type draft-mtp` automatically when it loads, **after probing that your engine
+supports the flag** (older engines just run without it):
+
+- `winc -d qwen3.6-27b-mtp` / `winc -d qwen3.6-27b-q5-mtp` — the dense 27B coder
+  (~1.4–2.2×; the Q5 build for 24 GB+ GPUs / 32 GB+ Macs)
+- `winc -d qwen3.6-35b-mtp` / `winc -d qwen3.6-35b-q4-mtp` — the 35B MoE
+  (~1.15–1.25× — the only speculative speedup that helps a MoE)
+- `winc -d qwen3.5-9b-mtp` — the small-tier 9B, faster than its external 0.8B draft
+
+`mtp = "off"` disables it.
 
 **More context at ~the same speed:** set `cache_type = "q4_0"` to halve KV-cache bytes per
 token — `winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM
