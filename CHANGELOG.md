@@ -3,6 +3,22 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.8.0 — 2026-06-10
+
+Information-only subagents never escalate to the head model.
+
+### Changed
+- Team mode: a subagent request whose every tool is read/search/fetch (an
+  explorer, researcher, or fetcher -- or one carrying no tools at all) now tops
+  out at the largest CPU worker instead of escalating to the main GPU model,
+  regardless of how large its context grows. Opening a second full session on
+  the head model just to read and report is strictly slower than a worker and
+  competes with the orchestrator for its slots; requests that can act (edit,
+  run commands, unknown/MCP tools) keep their right to escalate. This became
+  visible after v1.6.0: the combined multi-GPU budget unlocked head escalation
+  on machines where it had been capped.
+- The end-of-session router stats report these holds as `info-pinned=N`.
+
 ## v1.7.0 — 2026-06-10
 
 Gemma 4 MTP.

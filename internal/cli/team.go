@@ -278,19 +278,23 @@ func buildDispatch(cfg *config.Config, sub string, slots agent.Slots, sonnetURL,
 			name, url, think string
 			tools            []string
 			cap              int
+			head             bool
 		}
 		var rungs []rung
 		if haikuURL != "" {
-			rungs = append(rungs, rung{"haiku", haikuURL, "low", workerTools, workerCap})
+			rungs = append(rungs, rung{"haiku", haikuURL, "low", workerTools, workerCap, false})
 		}
 		if midURL != "" {
-			rungs = append(rungs, rung{"mid", midURL, "low", workerTools, workerCap})
+			rungs = append(rungs, rung{"mid", midURL, "low", workerTools, workerCap, false})
 		}
 		if sonnetURL != "" {
-			rungs = append(rungs, rung{"sonnet", sonnetURL, "low", sonnetTools, sonnetCap})
+			rungs = append(rungs, rung{"sonnet", sonnetURL, "low", sonnetTools, sonnetCap, false})
 		}
 		if mainEscalate {
-			rungs = append(rungs, rung{"escalated", mainURL, "", nil, 0}) // HEAD model: keep all tools, no cap
+			// HEAD model: keep all tools, no cap. Marked Head so information-only
+			// subagents (read/search/fetch) top out at the largest worker instead of
+			// opening a second full session on the big GPU model.
+			rungs = append(rungs, rung{"escalated", mainURL, "", nil, 0, true})
 		}
 		thresholds := []int{2048, 6144, 16384, 49152}
 		for i, r := range rungs {
@@ -298,7 +302,7 @@ func buildDispatch(cfg *config.Config, sub string, slots agent.Slots, sonnetURL,
 			if i < len(rungs)-1 && i < len(thresholds) {
 				max = thresholds[i]
 			}
-			d.ladder = append(d.ladder, router.Tier{Name: r.name, Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools, MaxTokens: r.cap})
+			d.ladder = append(d.ladder, router.Tier{Name: r.name, Upstream: r.url, Think: r.think, MaxEstTokens: max, Tools: r.tools, MaxTokens: r.cap, Head: r.head})
 		}
 	}
 	return d

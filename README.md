@@ -153,13 +153,19 @@ drop the 2B rung (0.8B→4B→main), or point it at a different model.
 
 | `subagents` | Behavior |
 |-------------|----------|
-| `dynamic` *(default)* | start on 0.8B, escalate 0.8B→2B→4B→(main, VRAM permitting) by load |
+| `dynamic` *(default)* | start on 0.8B, escalate 0.8B→2B→4B→(main, VRAM permitting) by load; read/search/fetch-only agents cap at the 4B |
 | `haiku` | force everything to the 0.8B (cheapest, no escalation) |
 | `sonnet` | force everything to the 4B |
 | `tiered` | per-agent pins (research→0.8B, collator/review→4B); generic/Workflow agents inherit main |
 
 Escalation to the **main** model only happens when there's genuine VRAM headroom (else it
-caps at the 4B), so the orchestrator stays responsive. Research-tier calls run with a brief,
+caps at the 4B), so the orchestrator stays responsive — and it is reserved for subagents
+that can actually **act**. An **information-only request** (every tool it carries is
+read/search/fetch — an explorer, a researcher, a fetcher — or it carries no tools at all)
+**never reaches the main model**, no matter how large its context grows: it tops out at the
+largest worker instead. A second full session on the big GPU model is strictly slower than
+a worker for read-and-report work, and such a request has no tool that could use the head's
+extra capability. The end-of-session stats count these as `info-pinned`. Research-tier calls run with a brief,
 **capped** thinking budget (small models call tools far more reliably with a little thinking
 than none, but unbounded thinking is slow and can trap the call in the reasoning block).
 Nano/small models also get loop-safe, family-appropriate sampling automatically. **Web

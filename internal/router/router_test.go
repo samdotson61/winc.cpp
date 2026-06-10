@@ -614,4 +614,50 @@ func TestStatsString(t *testing.T) {
 	if empty := (Stats{}).String(); empty != "requests: none" {
 		t.Errorf("empty stats = %q, want \"requests: none\"", empty)
 	}
+	if s := (Stats{Requests: map[string]int{}, InfoPinned: 3}).String(); !strings.Contains(s, "info-pinned=3") {
+		t.Errorf("stats should report info pins: %q", s)
+	}
+}
+
+// An information-only subagent (read/search/fetch tools -- or none at all) must never
+// land on the Head rung, no matter how large its context grows: a second full session
+// on the big GPU model is strictly slower than a worker for read-and-report work.
+func TestInfoRequestsNeverReachHead(t *testing.T) {
+	ladder := []Tier{
+		{Name: "haiku", Upstream: "http://h", MaxEstTokens: 2048},
+		{Name: "sonnet", Upstream: "http://s", MaxEstTokens: 16384},
+		{Name: "escalated", Upstream: "http://main", MaxEstTokens: 1 << 30, Head: true},
+	}
+	big := strings.Repeat("lots of source file content to read and summarize ", 4000)
+	body := func(tools string) []byte {
+		return []byte(`{"model":"haiku","messages":[{"role":"user","content":"` + big + `"}],"tools":[` + tools + `]}`)
+	}
+	rd := `{"name":"Read"},{"name":"Grep"},{"name":"Glob"},{"name":"WebFetch"},{"name":"WebSearch"}`
+	if tier, pinned := pickTier(ladder, body(rd)); tier.Name != "sonnet" || !pinned {
+		t.Errorf("huge info request should pin to the top worker, got %s (pinned=%v)", tier.Name, pinned)
+	}
+	// A request that can act (Edit) keeps its right to escalate to the head.
+	if tier, pinned := pickTier(ladder, body(rd+`,{"name":"Edit"}`)); tier.Name != "escalated" || pinned {
+		t.Errorf("acting request should escalate to head, got %s (pinned=%v)", tier.Name, pinned)
+	}
+	// Unknown tools (MCP, Bash, ...) also keep the right to escalate.
+	if tier, _ := pickTier(ladder, body(`{"name":"Bash"}`)); tier.Name != "escalated" {
+		t.Errorf("unknown-tool request should escalate, got %s", tier.Name)
+	}
+	// No tools at all = pure read-context-and-report -> stays on a worker.
+	noTools := []byte(`{"model":"haiku","messages":[{"role":"user","content":"` + big + `"}]}`)
+	if tier, pinned := pickTier(ladder, noTools); tier.Name != "sonnet" || !pinned {
+		t.Errorf("no-tool request should stay on a worker, got %s (pinned=%v)", tier.Name, pinned)
+	}
+	// A small info request still starts on the smallest rung -- and doesn't count as
+	// pinned, since the cap didn't change the pick.
+	small := []byte(`{"model":"haiku","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read"}]}`)
+	if tier, pinned := pickTier(ladder, small); tier.Name != "haiku" || pinned {
+		t.Errorf("small info request should start small un-pinned, got %s (pinned=%v)", tier.Name, pinned)
+	}
+	// A ladder without a Head rung (escalation locked) behaves exactly as before.
+	workersOnly := ladder[:2]
+	if tier, pinned := pickTier(workersOnly, body(rd)); tier.Name != "sonnet" || pinned {
+		t.Errorf("head-less ladder should be unchanged, got %s (pinned=%v)", tier.Name, pinned)
+	}
 }

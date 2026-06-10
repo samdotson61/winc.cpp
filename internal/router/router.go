@@ -36,14 +36,15 @@ type Router struct {
 	logf    *os.File // team-mode routing log (nil otherwise)
 	logPath string   // "" when the routing log could not be created
 
-	mu        sync.Mutex
-	rlog      *log.Logger
-	requests  map[string]int  // chat requests routed, by backend name
-	dead      map[string]bool // upstreams the watchdog marked dead
-	deadNames []string        // human names of dead backends (for stats)
-	overflows int             // context-overflow errors rewritten for the agent
-	capsLow   int             // requests whose max_tokens was lowered to a tier cap
-	deadSkips int             // requests re-routed past a dead backend
+	mu         sync.Mutex
+	rlog       *log.Logger
+	requests   map[string]int  // chat requests routed, by backend name
+	dead       map[string]bool // upstreams the watchdog marked dead
+	deadNames  []string        // human names of dead backends (for stats)
+	overflows  int             // context-overflow errors rewritten for the agent
+	capsLow    int             // requests whose max_tokens was lowered to a tier cap
+	deadSkips  int             // requests re-routed past a dead backend
+	infoPinned int             // information-only requests held on a worker instead of the head model
 }
 
 // fallbackName is the stats/log name for the fallback backend (the main model).
@@ -133,6 +134,7 @@ type Stats struct {
 	Overflows   int            // context-overflow errors rewritten for the agent
 	CapsLowered int            // requests whose max_tokens was lowered to a tier cap
 	DeadSkips   int            // requests re-routed past a dead backend
+	InfoPinned  int            // information-only requests held on a worker instead of the head model
 }
 
 // String renders a compact one-line summary, backends sorted by name.
@@ -156,6 +158,9 @@ func (s Stats) String() string {
 	if s.CapsLowered > 0 {
 		fmt.Fprintf(&b, "  caps-lowered=%d", s.CapsLowered)
 	}
+	if s.InfoPinned > 0 {
+		fmt.Fprintf(&b, "  info-pinned=%d", s.InfoPinned)
+	}
 	if s.DeadSkips > 0 {
 		fmt.Fprintf(&b, "  dead-skips=%d", s.DeadSkips)
 	}
@@ -178,7 +183,7 @@ func (r *Router) Stats() Stats {
 	}
 	s.Dead = append(s.Dead, r.deadNames...)
 	sort.Strings(s.Dead)
-	s.Overflows, s.CapsLowered, s.DeadSkips = r.overflows, r.capsLow, r.deadSkips
+	s.Overflows, s.CapsLowered, s.DeadSkips, s.InfoPinned = r.overflows, r.capsLow, r.deadSkips, r.infoPinned
 	return s
 }
 
@@ -364,6 +369,7 @@ type Tier struct {
 	MaxEstTokens int      // route here when estimated load <= this; last rung = catch-all
 	Tools        []string // tool allowlist for this rung (nil / ["all"] = keep all)
 	MaxTokens    int      // generation cap for this rung (0 = uncapped); lowers an over-large max_tokens
+	Head         bool     // this rung IS the main GPU model; information-only requests never land here
 }
 
 // StartTeam launches the team-mode router. It dispatches each chat request by its `model`
@@ -483,27 +489,57 @@ func thinkTag(think string) string {
 // escalate past a dead rung (or settle on the highest alive one when the top died).
 // ok=false when every rung is dead -- the caller then uses the fallback backend.
 func (r *Router) pickAliveTier(ladder []Tier, body []byte) (Tier, bool) {
-	t := pickTier(ladder, body)
-	if !r.isDead(t.Upstream) {
-		return t, true
-	}
-	r.countDeadSkip()
-	alive := make([]Tier, 0, len(ladder))
-	for _, x := range ladder {
-		if !r.isDead(x.Upstream) {
-			alive = append(alive, x)
+	t, pinned := pickTier(ladder, body)
+	if r.isDead(t.Upstream) {
+		r.countDeadSkip()
+		alive := make([]Tier, 0, len(ladder))
+		for _, x := range ladder {
+			if !r.isDead(x.Upstream) {
+				alive = append(alive, x)
+			}
 		}
+		if len(alive) == 0 {
+			return Tier{}, false
+		}
+		t, pinned = pickTier(alive, body)
 	}
-	if len(alive) == 0 {
-		return Tier{}, false
+	if pinned {
+		r.mu.Lock()
+		r.infoPinned++
+		r.mu.Unlock()
 	}
-	return pickTier(alive, body), true
+	return t, true
 }
 
 // pickTier selects an escalation rung by the request's estimated load (start small), then
-// bumps one rung for code-heavy requests. The last rung is the catch-all.
-func pickTier(ladder []Tier, body []byte) Tier {
+// bumps one rung for code-heavy requests. The last rung is the catch-all -- EXCEPT for
+// information-only requests (read/search/fetch tools, or none), which top out at the
+// highest worker rung instead of a Head rung: spinning a second full session on the big
+// GPU model just to read and report is strictly slower than a worker, and the request
+// carries no tool that could use the head's extra capability. pinned=true when that cap
+// changed the pick.
+func pickTier(ladder []Tier, body []byte) (Tier, bool) {
 	est := reasoning.EstimateInputTokens(body)
+	heavy := reasoning.Heavy(body)
+	t := pickAt(ladder, est, heavy)
+	if !t.Head || !infoOnlyRequest(body) {
+		return t, false
+	}
+	workers := make([]Tier, 0, len(ladder))
+	for _, x := range ladder {
+		if !x.Head {
+			workers = append(workers, x)
+		}
+	}
+	if len(workers) == 0 {
+		return t, false // degenerate head-only ladder -- nothing to pin to
+	}
+	return pickAt(workers, est, heavy), true
+}
+
+// pickAt is the rung selection: the first rung whose MaxEstTokens covers the estimate
+// (last rung = catch-all), bumped one rung for code-heavy requests.
+func pickAt(ladder []Tier, est int, heavy bool) Tier {
 	idx := len(ladder) - 1
 	for i, t := range ladder {
 		if est <= t.MaxEstTokens {
@@ -511,10 +547,45 @@ func pickTier(ladder []Tier, body []byte) Tier {
 			break
 		}
 	}
-	if reasoning.Heavy(body) && idx < len(ladder)-1 {
+	if heavy && idx < len(ladder)-1 {
 		idx++
 	}
 	return ladder[idx]
+}
+
+// infoTools is the read/search/fetch toolkit an information-gathering subagent carries
+// (Claude Code's read-only tools). A request restricted to these can only look things
+// up and report back -- it cannot edit, run commands, or spawn agents.
+var infoTools = map[string]bool{
+	"Read": true, "Glob": true, "Grep": true, "LS": true, "NotebookRead": true,
+	"WebFetch": true, "WebSearch": true, "ToolSearch": true,
+	"TaskGet": true, "TaskList": true, "TodoRead": true,
+	"ListMcpResourcesTool": true, "ReadMcpResourceTool": true,
+	"StructuredOutput": true,
+}
+
+// infoOnlyRequest reports whether a chat request is information-only: it carries no
+// tools at all (pure read-context-and-report generation), or every tool it carries is
+// in the read/search/fetch set. Anything unrecognized (Bash, Edit, Write, MCP tools,
+// ...) disqualifies, so a request that can act keeps its right to escalate.
+func infoOnlyRequest(body []byte) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return false
+	}
+	arr, ok := toolsArray(m)
+	if !ok || len(arr) == 0 {
+		return true
+	}
+	for _, raw := range arr {
+		var t struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &t); err != nil || !infoTools[t.Name] {
+			return false
+		}
+	}
+	return true
 }
 
 // modelOf extracts the request's `model` field ("" if absent/unparseable).
