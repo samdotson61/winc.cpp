@@ -51,9 +51,10 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 			return proc, ctx
 		}
 		// A buggy MTP/draft path can stop the server from starting (or make it crash on
-		// use). If MTP was actually active, retry this same backend once without it
-		// before blaming the backend -- the model still runs, just without the speedup.
-		if engine.IsMTPFile(modelPath) && len(engine.MTPArgs(cfg, modelPath, bin)) > 0 {
+		// use). If MTP was actually active (baked-in heads or an external Gemma head),
+		// retry this same backend once without it before blaming the backend -- the
+		// model still runs, just without the speedup.
+		if len(engine.MTPArgs(cfg, modelPath, bin)) > 0 {
 			ui.Warn("server didn't start with MTP - retrying without speculative decoding...")
 			if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, true); proc != nil {
 				return proc, ctx

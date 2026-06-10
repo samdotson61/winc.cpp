@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -245,6 +247,45 @@ func TestMTPArgs(t *testing.T) {
 	got = strings.Join(MTPArgs(&cfg, "x-MTP.gguf", ""), " ")
 	if got != "--spec-type draft-mtp --spec-draft-n-max 3" {
 		t.Errorf("custom mtp_draft_max not honored, got %q", got)
+	}
+}
+
+// Gemma 4 ships MTP heads as a separate small GGUF; winc pairs a downloaded head
+// with every quant of its model family by filename prefix and passes it as the
+// draft model. Qwen-style baked-in MTP keeps the spec type only.
+func TestMTPHeadPairing(t *testing.T) {
+	dir := t.TempDir()
+	touch := func(name string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	gemma := touch("gemma-4-26B-A4B-it-UD-IQ4_NL.gguf")
+	head := touch("gemma-4-26B-A4B-it-Q8_0-MTP.gguf")
+	touch("gemma-4-E2B-it-Q8_0-MTP.gguf") // another family's head must not pair
+
+	cfg := config.Defaults()
+	got := strings.Join(MTPArgs(&cfg, gemma, ""), " ")
+	want := "--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-model " + head
+	if got != want {
+		t.Errorf("external head pairing wrong:\n got %q\nwant %q", got, want)
+	}
+	// A model whose family has no downloaded head stays plain.
+	plain := touch("gemma-4-31B-it-Q3_K_M.gguf")
+	if a := MTPArgs(&cfg, plain, ""); a != nil {
+		t.Errorf("no matching head should mean no MTP flags, got %v", a)
+	}
+	// Baked-in MTP (Qwen) keeps the spec type only -- no draft model flag.
+	qwen := touch("Qwen3.6-27B-MTP-Q3_K_M.gguf")
+	if got := strings.Join(MTPArgs(&cfg, qwen, ""), " "); strings.Contains(got, "spec-draft-model") || !strings.Contains(got, "draft-mtp") {
+		t.Errorf("baked-in MTP should not get a draft model: %q", got)
+	}
+	// mtp=off disables head pairing too.
+	cfg.Performance.Mtp = "off"
+	if a := MTPArgs(&cfg, gemma, ""); a != nil {
+		t.Errorf("mtp=off should disable head pairing, got %v", a)
 	}
 }
 

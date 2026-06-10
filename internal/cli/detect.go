@@ -87,6 +87,9 @@ func cmdDetect() int {
 				ui.Say("  Faster variant: %s (MTP; winc -d %s)", v.Alias, v.Alias)
 			}
 		}
+		if def.MtpHead != "" {
+			ui.Say("  MTP drafter   : separate head file, auto-paired at launch ('winc -d %s' fetches it)", def.Alias)
+		}
 	}
 	ui.Say("")
 	return 0

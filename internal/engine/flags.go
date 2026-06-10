@@ -182,16 +182,50 @@ func CacheReuseArgs(serverBin string) []string {
 	return nil
 }
 
-// MTPArgs returns the Multi-Token-Prediction flags for an MTP model, or nil when the
-// model isn't MTP, config disables it, or the engine is too old to support it (pass
-// serverBin to probe; "" skips the probe). Never breaks a launch -- a model that fits
-// MTP but lacks engine support simply runs without it.
+// mtpHeadFor finds an external MTP drafter head next to a model: a small
+// "<family>-<quant>-MTP.gguf" file (Gemma 4 ships its prediction heads as a
+// separate GGUF; Qwen bakes them into the model). A head pairs when the model's
+// filename starts with the head's family prefix, so one Q8_0 head serves every
+// quant of its model. Returns "" when no head matches.
+func mtpHeadFor(modelPath string) string {
+	base := filepath.Base(modelPath)
+	dir := filepath.Dir(modelPath)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || n == base || !strings.HasSuffix(strings.ToLower(n), "-mtp.gguf") {
+			continue
+		}
+		fam := n[:len(n)-len("-mtp.gguf")] // gemma-4-26B-A4B-it-Q8_0
+		if i := strings.LastIndex(fam, "-"); i > 0 {
+			fam = fam[:i] // strip the head's own quant tag -> gemma-4-26B-A4B-it
+		}
+		if fam != "" && strings.HasPrefix(base, fam+"-") {
+			return filepath.Join(dir, n)
+		}
+	}
+	return ""
+}
+
+// MTPArgs returns the Multi-Token-Prediction flags, or nil when the model has no
+// MTP (neither baked-in heads nor a downloaded external head), config disables it,
+// or the engine is too old to support it (pass serverBin to probe; "" skips the
+// probe). A baked-in MTP model (filename contains "MTP") needs only the spec type;
+// an external head (Gemma 4) is additionally passed as the draft model. Never
+// breaks a launch -- a model that fits MTP but lacks engine support simply runs
+// without it.
 func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
 	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Mtp), "off") {
 		return nil
 	}
+	head := ""
 	if !isMTPFile(modelPath) {
-		return nil
+		if head = mtpHeadFor(modelPath); head == "" {
+			return nil
+		}
 	}
 	// draft-mtp is unstable on the Metal backend (crashes during inference -> the agent
 	// retries forever). Run the model as a normal (still fast) model on macOS GPUs until
@@ -206,7 +240,11 @@ func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
 	if n <= 0 {
 		n = 2
 	}
-	return []string{"--spec-type", "draft-mtp", "--spec-draft-n-max", strconv.Itoa(n)}
+	args := []string{"--spec-type", "draft-mtp", "--spec-draft-n-max", strconv.Itoa(n)}
+	if head != "" {
+		args = append(args, "--spec-draft-model", head)
+	}
+	return args
 }
 
 // PlanForModel reports the context window and MoE-offload decision winc would use

@@ -61,3 +61,32 @@ func offerDraft(cfg *config.Config, cat *catalog.Catalog, m *catalog.Model, auto
 	}
 	ui.Good("draft ready - speculative decoding turns on automatically for %s", m.Alias)
 }
+
+// offerMTPHead prompts to also fetch the small external MTP drafter head for a
+// freshly-downloaded model that ships one (Gemma 4 keeps its prediction heads in
+// a separate GGUF). Once the head sits next to the model, winc pairs it at launch
+// automatically (--spec-type draft-mtp + --spec-draft-model). autoYes fetches it
+// without asking. No-op for models without a head / heads already present.
+func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
+	if m == nil || m.MtpHead == "" {
+		return
+	}
+	md := modelsDir(cfg)
+	local := filepath.Base(m.MtpHead)
+	if fileExists(filepath.Join(md, local)) {
+		ui.Info("MTP ready: %s pairs with its drafter head automatically at launch", m.Alias)
+		return
+	}
+	q := fmt.Sprintf("%s ships a small MTP drafter head - also download it to speed up decoding (~1.5x)?", m.Alias)
+	if !autoYes && !ui.Confirm(q, true) {
+		ui.Dim("skipped - run 'winc -d %s' anytime to fetch it", m.Alias)
+		return
+	}
+	ui.Good("Downloading MTP head %s", local)
+	ui.Say("  from %s", m.Repo)
+	if _, err := download.HFDownloadAs(m.Repo, m.MtpHead, md, local, cfg.HuggingFace.Token); err != nil {
+		ui.Warn("MTP head download failed: %v (the model runs fine without it)", err)
+		return
+	}
+	ui.Good("MTP head ready - multi-token prediction turns on automatically for %s", m.Alias)
+}

@@ -52,7 +52,7 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 |---------|--------------|
 | `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
-| `winc -d <alias> [-y]` | Download a catalogue model (offers its speculative-decoding draft for dense models; `-y` auto-accepts) |
+| `winc -d <alias> [-y]` | Download a catalogue model (offers its speculative-decoding draft for dense models and the MTP head for Gemma 4; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
 | `winc -s claude <model>` | Start Claude Code on a local model (sandboxed instance) |
@@ -275,7 +275,7 @@ end of this section only exist if you want to override a decision.
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
 | **Auto-paired draft (dense)** | Downloading a **dense** catalogue model offers its tiny same-tokenizer draft; once present, `winc` enables `--spec-draft-model` automatically at launch. MoE models are skipped (drafts backfire there) | The draft proposes tokens the big model verifies in a batch — up to ~2× on predictable code |
-| **MTP (`*-mtp` variants)** | The `*-mtp` model variants carry built-in multi-token-prediction heads; `winc` auto-adds `--spec-type draft-mtp` when one is loaded (and the engine supports it — probed, never breaks an old engine) | ~1.4–2.2× on the dense 9B/27B, ~1.15–1.25× on the 35B MoE — the **only** speculative win for that MoE |
+| **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine) | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
 ### MoE expert offload, in one line
@@ -345,6 +345,14 @@ supports the flag** (older engines just run without it):
 - `winc -d qwen3.6-35b-mtp` / `winc -d qwen3.6-35b-q4-mtp` — the 35B MoE
   (~1.15–1.25× — the only speculative speedup that helps a MoE)
 - `winc -d qwen3.5-9b-mtp` — the small-tier 9B, faster than its external 0.8B draft
+
+**Gemma 4 ships its MTP heads as a separate small file** (0.1–0.5 GB) instead of
+baking them in. `winc -d <gemma model>` offers the head alongside the model; once
+it sits in `models/`, winc pairs it at launch automatically (`--spec-draft-model`
++ `--spec-type draft-mtp`). Measured ~+11% decode on the 26B-A4B with the default
+`mtp_draft_max = 2` — higher values lowered acceptance and throughput on consumer
+GPUs, so the default stands. Needs an engine from 2026-06-07 or later (probed;
+older engines just run without it).
 
 `mtp = "off"` disables it.
 

@@ -24,16 +24,17 @@ var catalogJSON []byte
 const sourceURL = "https://raw.githubusercontent.com/samdotson61/winc.cpp/master/internal/catalog/catalog.json"
 
 type Model struct {
-	Tier  string `json:"tier"`
-	Alias string `json:"alias"`
-	Name  string `json:"name"`
-	Size  string `json:"size"`
-	Repo  string `json:"repo"`
-	File  string `json:"file"`            // filename in the HF repo to download
-	Save  string `json:"save,omitempty"`  // local filename to save as (default: File); used to disambiguate MTP variants
-	Draft string `json:"draft,omitempty"` // alias of a same-tokenizer draft model (speculative decoding); "" = none
-	Mtp   string `json:"mtp,omitempty"`   // alias of this model's Multi-Token-Prediction variant; "" = none
-	Note  string `json:"note"`
+	Tier    string `json:"tier"`
+	Alias   string `json:"alias"`
+	Name    string `json:"name"`
+	Size    string `json:"size"`
+	Repo    string `json:"repo"`
+	File    string `json:"file"`               // filename in the HF repo to download
+	Save    string `json:"save,omitempty"`     // local filename to save as (default: File); used to disambiguate MTP variants
+	Draft   string `json:"draft,omitempty"`    // alias of a same-tokenizer draft model (speculative decoding); "" = none
+	Mtp     string `json:"mtp,omitempty"`      // alias of this model's Multi-Token-Prediction variant (heads baked in); "" = none
+	MtpHead string `json:"mtp_head,omitempty"` // repo path of a separate MTP drafter head fetched alongside (Gemma 4); "" = none
+	Note    string `json:"note"`
 }
 
 // LocalFile is the on-disk filename winc saves/looks for (Save if set, else File).

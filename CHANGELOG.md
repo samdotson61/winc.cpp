@@ -3,6 +3,21 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.7.0 — 2026-06-10
+
+Gemma 4 MTP.
+
+### Added
+- Multi-token prediction for Gemma 4: Gemma ships its MTP heads as a separate
+  small GGUF (0.1-0.5 GB) rather than baked into the model. `winc -d` now offers
+  the head with every Gemma 4 model, and launch auto-pairs a downloaded head
+  (`--spec-type draft-mtp` + `--spec-draft-model`). Measured +11% decode on the
+  26B-A4B (draft acceptance 0.80). Needs an engine from 2026-06-07 or later --
+  probed, older engines simply run without it.
+- The default `mtp_draft_max = 2` was validated against the vendor-suggested 4
+  on consumer hardware: 4 drops acceptance to 0.68 and is net slower, so the
+  default stands for both Qwen and Gemma.
+
 ## v1.6.0 — 2026-06-10
 
 Multi-GPU support.

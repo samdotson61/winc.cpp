@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"winc/internal/config"
@@ -157,6 +158,27 @@ func mtpOf(m *Model) string {
 		return "(nil)"
 	}
 	return m.Mtp
+}
+
+// Gemma 4 ships MTP heads as a separate file in the same repo; every Gemma 4
+// entry must reference one so the download flow can offer it.
+func TestGemmaMTPHeads(t *testing.T) {
+	c := Load(nil)
+	n := 0
+	for _, m := range c.Models {
+		if !strings.Contains(m.Repo, "gemma-4") {
+			continue
+		}
+		n++
+		if m.MtpHead == "" {
+			t.Errorf("%s: gemma-4 entry without mtp_head", m.Alias)
+		} else if !strings.HasSuffix(m.MtpHead, "-MTP.gguf") {
+			t.Errorf("%s: mtp_head %q should end in -MTP.gguf", m.Alias, m.MtpHead)
+		}
+	}
+	if n < 6 {
+		t.Errorf("expected at least 6 gemma-4 entries, found %d", n)
+	}
 }
 
 func TestCustomModelMerge(t *testing.T) {
