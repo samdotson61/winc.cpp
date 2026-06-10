@@ -3,6 +3,25 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.14.1 — 2026-06-10
+
+Fast, accurate VRAM feasibility -- no more multi-minute failed loads.
+
+### Fixed
+- A context rung that couldn't fit cost a full weight upload (3+ minutes cold)
+  before the allocation failure surfaced -- and the total-VRAM formula couldn't
+  see ONE card running out (the smaller GPU's share + its compute buffers + the
+  MTP draft context, which allocates last). The ladder and the upgrade probe now
+  consult the engine's own placement calculator (llama-fit-params: metadata
+  only, seconds, no weight upload) before every attempt, skipping rungs it says
+  can't stay fully on GPU. For MTP models -- whose draft context (~2 GB at
+  large windows) the calculator can't see -- the verdict must hold 2 rungs
+  higher for cold loads (1 for staircase probe rungs); these margins reproduce
+  every measured outcome on real 16+12 GB hardware. The floor rung is always
+  attempted, so the estimator can never block a launch.
+- The model's transformer block count is read from GGUF metadata to define
+  "every layer on the GPU" exactly.
+
 ## v1.14.0 — 2026-06-10
 
 Quality floor + smarter recommendations.

@@ -452,6 +452,24 @@ func TestMTPHeadPairing(t *testing.T) {
 	}
 }
 
+// The fit calculator's output line parses into the fitted -ngl.
+func TestParseFitNGL(t *testing.T) {
+	cases := map[string]int{
+		"-c 131072 -ngl 65 -ts 39,26":                         65,
+		"-c 16384 -ngl -1":                                    -1,
+		`-c 131072 -ngl 41 -ts 26,15 -ot "blk\.25\..*=CUDA1"`: 41,
+	}
+	for in, want := range cases {
+		got, ok := parseFitNGL(in)
+		if !ok || got != want {
+			t.Errorf("parseFitNGL(%q) = %d,%v want %d", in, got, ok, want)
+		}
+	}
+	if _, ok := parseFitNGL("no flags here"); ok {
+		t.Error("garbage should not parse")
+	}
+}
+
 // NextLadderRung climbs the standard rungs and stops at the ceiling.
 func TestNextLadderRung(t *testing.T) {
 	cases := map[int]int{10000: 49152, 98304: 131072, 131072: 196608, 196608: 262144, 262144: 262144}

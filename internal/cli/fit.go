@@ -78,11 +78,50 @@ func tryContextOnce(cfg *config.Config, hw platform.Hardware, modelPath, serverB
 	return nil
 }
 
+// rungWorthTrying consults the engine's fit calculator (seconds, metadata only)
+// before paying a weight upload for a rung. Rungs the calculator says need CPU
+// spill are skipped outright. For MTP models -- whose draft context the
+// calculator cannot see (~2 GB at large windows: its own cache plus compute
+// buffers) -- the full-fit verdict must hold `margin` rungs higher: 2 for cold
+// standalone ladder loads, 1 for probe rungs (which load right after a smaller
+// server stopped, a measurably friendlier VRAM state). These margins reproduce
+// every measured outcome on real hardware. The floor rung, partial-fit models,
+// unified memory, and a missing tool always return true: the attempt itself
+// remains the ground truth.
+func rungWorthTrying(cfg *config.Config, hw platform.Hardware, modelPath string, ctx, margin int, isFloor bool) bool {
+	if isFloor || hw.Unified || len(hw.GPUs) == 0 {
+		return true
+	}
+	mb := engine.FileMB(modelPath)
+	if mb <= 0 || engine.WillOffloadExperts(cfg, hw, modelPath) {
+		return true
+	}
+	ct := engine.EffectiveCacheType(cfg, hw, modelPath, mb, false)
+	probeCtx := ctx
+	if engine.MTPActive(cfg, modelPath) {
+		for i := 0; i < margin; i++ {
+			probeCtx = engine.NextLadderRung(probeCtx)
+		}
+	}
+	full, ok := engine.FitVerdictFull(cfg, modelPath, probeCtx, ct)
+	if !ok {
+		return true
+	}
+	if !full {
+		ui.Dim("skipping the %d-token window (the engine fit says it can't stay fully on GPU)", ctx)
+	}
+	return full
+}
+
 // tryContextLadder launches llama-server at the most liberal context that fits,
 // silently stepping down if a size fails to load. Returns (proc, ctx) or (nil, 0).
 func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, noMTP bool) (*server.Proc, int) {
 	target := engine.ResolveContext(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-	for _, ctx := range engine.ContextLadder(target) {
+	rungs := engine.ContextLadder(target)
+	for i, ctx := range rungs {
+		if !rungWorthTrying(cfg, hw, modelPath, ctx, 2, i == len(rungs)-1) {
+			continue
+		}
 		if proc := tryContextOnce(cfg, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP); proc != nil {
 			return proc, ctx
 		}
@@ -370,6 +409,9 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 	for {
 		next := engine.NextLadderRung(best)
 		if next <= best {
+			break
+		}
+		if !rungWorthTrying(&q4, hw, modelPath, next, 1, false) {
 			break
 		}
 		p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, next, false)

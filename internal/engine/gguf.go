@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -46,6 +47,84 @@ func computeChatTemplateArgs(modelPath string) []string {
 }
 
 const ggufMagic = 0x46554747 // "GGUF" little-endian
+
+var blockCountCache sync.Map // modelPath -> int
+
+// BlockCount returns the model's transformer block count from GGUF metadata
+// ("<arch>.block_count"), or 0 if unavailable. llama.cpp's -ngl counts these
+// blocks plus one output layer, so "every layer on the GPU" means block_count+1.
+func BlockCount(path string) int {
+	if v, ok := blockCountCache.Load(path); ok {
+		return v.(int)
+	}
+	n, err := readBlockCount(path)
+	if err != nil {
+		n = 0
+	}
+	blockCountCache.Store(path, n)
+	return n
+}
+
+func readBlockCount(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<16)
+
+	var magic, version uint32
+	var nTensors, nKV uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return 0, err
+	}
+	if magic != ggufMagic {
+		return 0, fmt.Errorf("not a GGUF file")
+	}
+	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
+		return 0, err
+	}
+	for i := uint64(0); i < nKV; i++ {
+		key, err := ggufString(r)
+		if err != nil {
+			return 0, err
+		}
+		var vtype uint32
+		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
+			return 0, err
+		}
+		if strings.HasSuffix(key, ".block_count") {
+			return ggufUint(r, vtype)
+		}
+		if err := ggufSkipValue(r, vtype); err != nil {
+			return 0, err
+		}
+	}
+	return 0, nil
+}
+
+// ggufUint reads an integer-typed GGUF scalar as an int.
+func ggufUint(r *bufio.Reader, vtype uint32) (int, error) {
+	switch vtype {
+	case 4: // uint32
+		var v uint32
+		err := binary.Read(r, binary.LittleEndian, &v)
+		return int(v), err
+	case 5: // int32
+		var v int32
+		err := binary.Read(r, binary.LittleEndian, &v)
+		return int(v), err
+	case 10: // uint64
+		var v uint64
+		err := binary.Read(r, binary.LittleEndian, &v)
+		return int(v), err
+	case 11: // int64
+		var v int64
+		err := binary.Read(r, binary.LittleEndian, &v)
+		return int(v), err
+	}
+	return 0, fmt.Errorf("block_count has non-integer type %d", vtype)
+}
 
 // ChatTemplate extracts the embedded "tokenizer.chat_template" string from a GGUF
 // file, or "" (no error) if the model has none. It reads only the metadata header.
