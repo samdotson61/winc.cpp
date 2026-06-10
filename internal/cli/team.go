@@ -36,6 +36,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		reportMissingModel(mainAlias, mainQuery)
 		return 1
 	}
+	rememberLastUsed(cfg, app, mainAlias)
 	autoPairDraft(cfg, cat, mainQuery) // the main model still gets its draft / MTP speedup
 
 	if _, err := config.EnsureClaudeLocal(); err != nil {

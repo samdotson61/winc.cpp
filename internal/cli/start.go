@@ -90,6 +90,7 @@ func cmdStart(args []string) int {
 		reportMissingModel(alias, model)
 		return 1
 	}
+	rememberLastUsed(cfg, app, alias)
 	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 	// (family-correct sampling is applied for all tiers inside engine.ServerArgs)
 
@@ -155,6 +156,28 @@ func cmdStart(args []string) int {
 		ui.Info("session: hit the context limit %d time(s) - each was rewritten so the agent compacts instead of stalling", n)
 	}
 	return 0
+}
+
+// rememberLastUsed persists a successful start's agent + model as the new
+// defaults, so a bare `winc -s` brings back the last used model with the last
+// used agent. Best-effort and quiet: a write failure never blocks the launch,
+// nothing is written when nothing changed, and it only runs AFTER the model
+// resolved to a downloaded file -- a typo can never become the default. The
+// `cli` chat utility is excluded so a quick test chat doesn't flip the defaults.
+func rememberLastUsed(cfg *config.Config, app, alias string) {
+	if app == "" || app == "cli" || alias == "" {
+		return
+	}
+	if !strings.EqualFold(alias, cfg.General.DefaultModel) {
+		if err := config.UpdateDefaultModel(alias); err == nil {
+			ui.Dim("default model -> %s (a bare 'winc -s' now starts it)", alias)
+		}
+	}
+	if !strings.EqualFold(app, cfg.General.DefaultApp) {
+		if err := config.UpdateDefaultApp(app); err == nil {
+			ui.Dim("default app -> %s", app)
+		}
+	}
 }
 
 func reportMissingModel(alias, query string) {

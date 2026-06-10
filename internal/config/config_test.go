@@ -47,6 +47,28 @@ func TestUpdateDefaultModel(t *testing.T) {
 	}
 }
 
+func TestUpdateDefaultApp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	if _, err := Load(); err != nil { // writes the default winc.toml
+		t.Fatal(err)
+	}
+	if err := UpdateDefaultApp("opencode"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.General.DefaultApp != "opencode" {
+		t.Fatalf("default_app = %q, want opencode", cfg.General.DefaultApp)
+	}
+	// The model line must be untouched by an app update.
+	if cfg.General.DefaultModel != Defaults().General.DefaultModel {
+		t.Fatalf("default_model changed by an app update: %q", cfg.General.DefaultModel)
+	}
+}
+
 func TestBackfill(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WINC_HOME", dir)

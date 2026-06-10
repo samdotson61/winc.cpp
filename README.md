@@ -55,10 +55,11 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 | `winc -d <alias> [-y]` | Download a catalogue model (offers its speculative-decoding draft for dense models and the MTP head for Gemma 4; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
+| `winc -s` | Start the **last used** agent on the **last used** model (every successful agent start updates the defaults) |
 | `winc -s claude <model>` | Start Claude Code on a local model (sandboxed instance) |
 | `winc -s opencode <model>` | Start OpenCode |
 | `winc -s openclaw <model>` | Start OpenClaw |
-| `winc -s cli <model>` | Raw llama.cpp chat |
+| `winc -s cli <model>` | Raw llama.cpp chat (doesn't change the defaults) |
 | `winc -s ... --multi` | Route through llama-swap (multiple models, hot-swapped) |
 | `winc -s claude <model>` | **Team is the default on a big model**: it orchestrates while a small CPU worker runs all subagents (research fan-out + Explore) |
 | `winc -s ... --noteam` | Disable team mode — run a single model |

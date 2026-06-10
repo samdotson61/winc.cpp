@@ -248,21 +248,34 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-var defaultModelLine = regexp.MustCompile(`(?m)^(\s*default_model\s*=\s*)"[^"]*"`)
+var (
+	defaultModelLine = regexp.MustCompile(`(?m)^(\s*default_model\s*=\s*)"[^"]*"`)
+	defaultAppLine   = regexp.MustCompile(`(?m)^(\s*default_app\s*=\s*)"[^"]*"`)
+)
 
 // UpdateDefaultModel rewrites the default_model value in winc.toml in place,
 // preserving the rest of the file (and the user's other edits). No-op if the
 // line isn't present.
 func UpdateDefaultModel(alias string) error {
+	return updateLine(defaultModelLine, alias)
+}
+
+// UpdateDefaultApp rewrites the default_app value in winc.toml in place,
+// preserving the rest of the file. No-op if the line isn't present.
+func UpdateDefaultApp(app string) error {
+	return updateLine(defaultAppLine, app)
+}
+
+func updateLine(re *regexp.Regexp, val string) error {
 	p := paths.ConfigPath()
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return err
 	}
-	if !defaultModelLine.Match(data) {
+	if !re.Match(data) {
 		return nil
 	}
-	out := defaultModelLine.ReplaceAll(data, []byte(`${1}"`+alias+`"`))
+	out := re.ReplaceAll(data, []byte(`${1}"`+val+`"`))
 	return os.WriteFile(p, out, 0o600)
 }
 

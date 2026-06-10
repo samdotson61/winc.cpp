@@ -3,6 +3,19 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.11.0 — 2026-06-10
+
+`winc -s` resumes the last used setup.
+
+### Changed
+- Every successful agent start (single and team mode) persists its agent and
+  model as the new `default_app` / `default_model`, so a bare `winc -s` brings
+  back the last used model with the last used agent. Only an explicitly named,
+  successfully resolved model updates the defaults -- a typo never becomes the
+  default -- and the `cli` chat utility is excluded so a quick test chat
+  doesn't flip them. winc.toml is edited in place (just those two values);
+  everything else in it is untouched.
+
 ## v1.10.0 — 2026-06-10
 
 Workers use the head's leftover VRAM.
