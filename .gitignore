@@ -34,6 +34,10 @@
 # Support bundles written by 'winc logs --bundle'
 winc-support-*.zip
 
+# Measured launch memos (per-machine; delete to re-measure)
+/.winc-kvprobe
+/.winc-launch
+
 # Legacy stack (no longer used; kept out of the tree)
 /venv/
 /llama.cpp/

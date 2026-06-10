@@ -3,6 +3,38 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.13.0 — 2026-06-10
+
+Up to 2x the context window, measured not guessed.
+
+### Added
+- Context ceiling raised 131K -> 262K (every 2026 catalog model is natively
+  256K+), with matching ladder rungs.
+- `cache_type = "auto"` (new default): q8_0 normally, q4_0 when the sized
+  window would be starved -- roughly doubling it on low-VRAM machines.
+- Launch-time KV upgrade probe: when the ladder settles below the sizing
+  target (context-scaled overheads the formula can't see), winc probes the
+  next rungs with q4_0 KV caches and keeps the widest window that loads.
+  Outcomes are memoized per model (.winc-kvprobe) so the probe's failed-load
+  cost is paid once, ever. Measured on a 16+12 GB pair: the 35B MoE goes
+  131072 -> 262144 fully on GPU at full decode speed (93.6 tok/s).
+- The MTP draft context's own KV cache (f16, scales with the full window --
+  it OOM'd the smaller card at 131K+) is now quantized to match the main
+  cache (--spec-draft-type-k/v). Drafts are verified by the main model, so
+  this never affects output quality.
+- Launch memo (.winc-launch): the first start of a model measures its best
+  window + cache; every later start loads ONCE straight to it instead of
+  re-walking the ladder (which is minutes of failed jumbo loads at the new
+  ceiling). Validated each start -- a stale entry just re-measures. Only
+  applies when sizing is on auto; explicit settings run as written.
+
+### Changed
+- Forced full-GPU placement is kept for every fully-fitting model, including
+  during the probe: the engine's spill-happy auto-fit measured 2-4x slower
+  decode than full-GPU at every context size.
+- The starved-window check accounts for --parallel slot splitting (team mode
+  halves the per-agent window).
+
 ## v1.12.0 — 2026-06-10
 
 Long sessions auto-compact and keep going.

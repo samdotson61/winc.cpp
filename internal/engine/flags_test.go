@@ -214,6 +214,47 @@ func TestResolveCPUMoEAuto(t *testing.T) {
 	}
 }
 
+// cache_type = "auto" downshifts to q4_0 when the q8-sized window would be starved
+// (roughly doubling it); ample setups keep q8_0, and explicit values are honored.
+func TestAutoKVCacheDownshift(t *testing.T) {
+	cfg := config.Defaults() // cache_type = "auto"
+	tight := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 8192}
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 5700, false); got != "q4_0" {
+		t.Errorf("starved window should downshift to q4_0, got %q", got)
+	}
+	if got := ResolveContext(&cfg, tight, "m.gguf", 5700, false); got != 114688 {
+		t.Errorf("downshifted window = %d, want 114688", got)
+	}
+	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
+	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "q8_0" {
+		t.Errorf("ample window should stay q8_0, got %q", got)
+	}
+	// Explicit q8_0 never downshifts.
+	cfg.Performance.CacheType = "q8_0"
+	if got := ResolveContext(&cfg, tight, "m.gguf", 5700, false); got != 57344 {
+		t.Errorf("explicit q8_0 must not downshift: got %d", got)
+	}
+	// Without flash attention the cache is f16 regardless -- auto stays q8_0.
+	cfg.Performance.CacheType = "auto"
+	cfg.Performance.FlashAttn = false
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 5700, false); got != "q8_0" {
+		t.Errorf("no flash-attn: auto must stay q8_0, got %q", got)
+	}
+	// Unknown model size never downshifts.
+	cfg.Performance.FlashAttn = true
+	if got := EffectiveCacheType(&cfg, tight, "missing.gguf", 0, false); got != "q8_0" {
+		t.Errorf("unknown size must stay q8_0, got %q", got)
+	}
+}
+
+// The ceiling follows the 2026 catalog (every model is natively >=256K).
+func TestContextLadderCeiling(t *testing.T) {
+	l := ContextLadder(262144)
+	if l[0] != 262144 || l[1] != 196608 || l[2] != 131072 {
+		t.Errorf("ceiling ladder rungs wrong: %v", l)
+	}
+}
+
 func TestContextLadderDescends(t *testing.T) {
 	l := ContextLadder(70000)
 	if len(l) == 0 || l[0] != 70000 {
@@ -282,26 +323,34 @@ func TestIsMTPFile(t *testing.T) {
 
 func TestMTPArgs(t *testing.T) {
 	// serverBin "" skips the support probe so this stays a pure config/filename test.
-	cfg := config.Defaults() // mtp=auto, mtp_draft_max=2
-	got := strings.Join(MTPArgs(&cfg, "Qwen3.6-27B-MTP-Q3_K_M.gguf", ""), " ")
-	if got != "--spec-type draft-mtp --spec-draft-n-max 2" {
-		t.Errorf("MTP file should yield draft-mtp flags, got %q", got)
+	cfg := config.Defaults() // mtp=auto, mtp_draft_max=2, cache auto (unknown size -> q8_0)
+	hw := platform.Hardware{}
+	got := strings.Join(MTPArgs(&cfg, hw, "Qwen3.6-27B-MTP-Q3_K_M.gguf", ""), " ")
+	want := "--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-type-k q8_0 --spec-draft-type-v q8_0"
+	if got != want {
+		t.Errorf("MTP file should yield draft-mtp flags + a quantized draft cache:\n got %q\nwant %q", got, want)
 	}
 	// Non-MTP model -> no flags.
-	if a := MTPArgs(&cfg, "Qwen3.6-27B-Q3_K_M.gguf", ""); a != nil {
+	if a := MTPArgs(&cfg, hw, "Qwen3.6-27B-Q3_K_M.gguf", ""); a != nil {
 		t.Errorf("non-MTP model should yield no MTP flags, got %v", a)
 	}
 	// Disabled via config.
 	cfg.Performance.Mtp = "off"
-	if a := MTPArgs(&cfg, "Qwen3.6-27B-MTP-Q3_K_M.gguf", ""); a != nil {
+	if a := MTPArgs(&cfg, hw, "Qwen3.6-27B-MTP-Q3_K_M.gguf", ""); a != nil {
 		t.Errorf("mtp=off should yield no flags, got %v", a)
 	}
 	// Custom draft-max.
 	cfg = config.Defaults()
 	cfg.Performance.MtpDraftMax = 3
-	got = strings.Join(MTPArgs(&cfg, "x-MTP.gguf", ""), " ")
-	if got != "--spec-type draft-mtp --spec-draft-n-max 3" {
+	got = strings.Join(MTPArgs(&cfg, hw, "x-MTP.gguf", ""), " ")
+	if !strings.Contains(got, "--spec-draft-n-max 3") {
 		t.Errorf("custom mtp_draft_max not honored, got %q", got)
+	}
+	// Without flash attention the draft cache stays at the engine default.
+	cfg = config.Defaults()
+	cfg.Performance.FlashAttn = false
+	if got := strings.Join(MTPArgs(&cfg, hw, "x-MTP.gguf", ""), " "); strings.Contains(got, "spec-draft-type") {
+		t.Errorf("no flash-attn: draft cache must not be quantized, got %q", got)
 	}
 }
 
@@ -322,25 +371,37 @@ func TestMTPHeadPairing(t *testing.T) {
 	touch("gemma-4-E2B-it-Q8_0-MTP.gguf") // another family's head must not pair
 
 	cfg := config.Defaults()
-	got := strings.Join(MTPArgs(&cfg, gemma, ""), " ")
-	want := "--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-model " + head
+	hw := platform.Hardware{}
+	got := strings.Join(MTPArgs(&cfg, hw, gemma, ""), " ")
+	want := "--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-model " + head +
+		" --spec-draft-type-k q8_0 --spec-draft-type-v q8_0"
 	if got != want {
 		t.Errorf("external head pairing wrong:\n got %q\nwant %q", got, want)
 	}
 	// A model whose family has no downloaded head stays plain.
 	plain := touch("gemma-4-31B-it-Q3_K_M.gguf")
-	if a := MTPArgs(&cfg, plain, ""); a != nil {
+	if a := MTPArgs(&cfg, hw, plain, ""); a != nil {
 		t.Errorf("no matching head should mean no MTP flags, got %v", a)
 	}
 	// Baked-in MTP (Qwen) keeps the spec type only -- no draft model flag.
 	qwen := touch("Qwen3.6-27B-MTP-Q3_K_M.gguf")
-	if got := strings.Join(MTPArgs(&cfg, qwen, ""), " "); strings.Contains(got, "spec-draft-model") || !strings.Contains(got, "draft-mtp") {
+	if got := strings.Join(MTPArgs(&cfg, hw, qwen, ""), " "); strings.Contains(got, "spec-draft-model") || !strings.Contains(got, "draft-mtp") {
 		t.Errorf("baked-in MTP should not get a draft model: %q", got)
 	}
 	// mtp=off disables head pairing too.
 	cfg.Performance.Mtp = "off"
-	if a := MTPArgs(&cfg, gemma, ""); a != nil {
+	if a := MTPArgs(&cfg, hw, gemma, ""); a != nil {
 		t.Errorf("mtp=off should disable head pairing, got %v", a)
+	}
+}
+
+// NextLadderRung climbs the standard rungs and stops at the ceiling.
+func TestNextLadderRung(t *testing.T) {
+	cases := map[int]int{10000: 49152, 98304: 131072, 131072: 196608, 196608: 262144, 262144: 262144}
+	for in, want := range cases {
+		if got := NextLadderRung(in); got != want {
+			t.Errorf("NextLadderRung(%d) = %d, want %d", in, got, want)
+		}
 	}
 }
 

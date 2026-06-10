@@ -217,20 +217,8 @@ func mtpHeadFor(modelPath string) string {
 // an external head (Gemma 4) is additionally passed as the draft model. Never
 // breaks a launch -- a model that fits MTP but lacks engine support simply runs
 // without it.
-func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
-	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Mtp), "off") {
-		return nil
-	}
-	head := ""
-	if !isMTPFile(modelPath) {
-		if head = mtpHeadFor(modelPath); head == "" {
-			return nil
-		}
-	}
-	// draft-mtp is unstable on the Metal backend (crashes during inference -> the agent
-	// retries forever). Run the model as a normal (still fast) model on macOS GPUs until
-	// it's reliable there; CUDA/Vulkan/CPU keep MTP.
-	if CurrentBackend() == "metal" {
+func MTPArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string) []string {
+	if !mtpActive(cfg, modelPath) {
 		return nil
 	}
 	if serverBin != "" && !serverSupportsMTP(serverBin) {
@@ -241,10 +229,33 @@ func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
 		n = 2
 	}
 	args := []string{"--spec-type", "draft-mtp", "--spec-draft-n-max", strconv.Itoa(n)}
-	if head != "" {
-		args = append(args, "--spec-draft-model", head)
+	if !isMTPFile(modelPath) {
+		if head := mtpHeadFor(modelPath); head != "" {
+			args = append(args, "--spec-draft-model", head)
+		}
+	}
+	// The MTP draft context keeps its OWN KV cache (f16 by default) that scales with
+	// the full window -- at large windows it allocates last and OOMs the fullest card
+	// (measured: a 768 MiB f16 draft cache at 131K killed the load on a 16+12 GB
+	// pair). Quantize it like the main cache: drafts are verified by the main model,
+	// so a lighter draft cache only nudges acceptance, never output quality.
+	if cfg.Performance.FlashAttn {
+		if ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath)); ct != "" && ct != "f16" {
+			args = append(args, "--spec-draft-type-k", ct, "--spec-draft-type-v", ct)
+		}
 	}
 	return args
+}
+
+// NextLadderRung is the smallest standard context rung strictly above ctx, capped
+// at the ceiling.
+func NextLadderRung(ctx int) int {
+	for _, s := range []int{49152, 65536, 98304, 131072, 196608, 262144} {
+		if s > ctx {
+			return s
+		}
+	}
+	return ctxCeil
 }
 
 // PlanForModel reports the context window and MoE-offload decision winc would use
@@ -311,9 +322,14 @@ func GpuLayers(cfg *config.Config, hw platform.Hardware) int {
 }
 
 const (
-	ctxFloor = 32768 // enough for Claude Code's system prompt + tools + headroom
-	ctxCeil  = 131072
+	ctxFloor = 32768  // enough for Claude Code's system prompt + tools + headroom
+	ctxCeil  = 262144 // every 2026 catalog model is natively >=256K; the load ladder protects the rest
 )
+
+// StarvedCtxTokens is the auto window below which the KV cache downshifts to q4_0
+// (cache_type = "auto"): halving the KV bytes roughly doubles a starved window,
+// exactly where it matters most (low-end cards, tight fits).
+const StarvedCtxTokens = 65536
 
 // kvCtxFactor is the auto-context multiplier (tokens per free MB of VRAM) for a KV
 // cache type. q8_0 (~16 KB/token) is the baseline 64; f16 doubles the bytes (so
@@ -343,11 +359,25 @@ func kvCtxFactor(cacheType string, flashAttn bool) int {
 // off the GPU.
 const mtpCtxReserveMB = 1024
 
+// mtpActive reports whether MTP will engage for this model: baked-in heads or a
+// downloaded external head, config permits, and the backend isn't Metal. The
+// engine-support probe is separate (MTPArgs) -- this is the sizing-level check.
+func mtpActive(cfg *config.Config, modelPath string) bool {
+	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Mtp), "off") {
+		return false
+	}
+	if !isMTPFile(modelPath) && mtpHeadFor(modelPath) == "" {
+		return false
+	}
+	// draft-mtp is unstable on the Metal backend (crashes during inference -> the
+	// agent retries forever). CUDA/Vulkan/CPU keep MTP.
+	return CurrentBackend() != "metal"
+}
+
 // mtpReserveMB is the MTP draft-context allowance for a launch: nonzero only when
-// MTP will actually engage for this model (variant or paired head, config permits,
-// backend isn't Metal). The engine probe is skipped -- this is a sizing estimate.
+// MTP will actually engage for this model.
 func mtpReserveMB(cfg *config.Config, modelPath string) int {
-	if len(MTPArgs(cfg, modelPath, "")) > 0 {
+	if mtpActive(cfg, modelPath) {
 		return mtpCtxReserveMB
 	}
 	return 0
@@ -368,12 +398,36 @@ func fullyFitsGPU(cfg *config.Config, hw platform.Hardware, modelPath string, mo
 	return hw.VRAMMB-modelMB-gpuReserveMB(hw)-mtpReserveMB(cfg, modelPath) >= minKVHeadroomMB
 }
 
+// EffectiveCacheType resolves cache_type = "auto": q8_0 normally, downshifted to
+// q4_0 when the q8-sized window would be starved (< StarvedCtxTokens). Explicit
+// values pass through untouched. Quantized KV needs flash attention; without it
+// the cache is f16 regardless, so auto stays on q8_0 there (the flags are skipped).
+func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath string, modelFileMB int, expertsOffloaded bool) string {
+	ct := strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType))
+	if ct != "" && ct != "auto" {
+		return ct
+	}
+	if !cfg.Performance.FlashAttn || modelFileMB <= 0 {
+		return "q8_0" // no flash-attn (cache is f16 anyway) or unknown size -> never downshift
+	}
+	if resolveContextFor(cfg, hw, "q8_0", modelPath, modelFileMB, expertsOffloaded) < StarvedCtxTokens {
+		return "q4_0"
+	}
+	return "q8_0"
+}
+
 // ResolveContext picks a liberal context window: the configured value, or (auto)
 // the largest that should fit free VRAM after the model, clamped to a safe range.
 // The launcher verifies the choice actually loads and falls back if not. When the
 // model's experts are offloaded to RAM (expertsOffloaded), most of its VRAM is free
 // for KV, so we aim at the ceiling and let the launcher's ladder settle the max.
 func ResolveContext(cfg *config.Config, hw platform.Hardware, modelPath string, modelFileMB int, expertsOffloaded bool) int {
+	return resolveContextFor(cfg, hw, EffectiveCacheType(cfg, hw, modelPath, modelFileMB, expertsOffloaded), modelPath, modelFileMB, expertsOffloaded)
+}
+
+// resolveContextFor is ResolveContext with the KV cache type pinned (the "auto"
+// resolution needs to size the q8 window without recursing).
+func resolveContextFor(cfg *config.Config, hw platform.Hardware, cacheType, modelPath string, modelFileMB int, expertsOffloaded bool) int {
 	if cfg.Performance.Context != "auto" && cfg.Performance.Context != "" {
 		return atoiOr(cfg.Performance.Context, ctxFloor)
 	}
@@ -393,7 +447,7 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelPath string, 
 	}
 	// Bytes/token depends on the KV cache type, so a smaller cache (q4) fits a
 	// proportionally larger window. Default q8_0 keeps the original factor (64).
-	toks := free * kvCtxFactor(cfg.Performance.CacheType, cfg.Performance.FlashAttn)
+	toks := free * kvCtxFactor(cacheType, cfg.Performance.FlashAttn)
 	toks = (toks / 8192) * 8192
 	if toks < ctxFloor {
 		return ctxFloor
@@ -407,7 +461,7 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelPath string, 
 // ContextLadder returns descending context sizes to try (largest fitting first),
 // always bottoming out at a workable floor.
 func ContextLadder(target int) []int {
-	steps := []int{target, 98304, 65536, 49152, 32768, 24576, 16384}
+	steps := []int{target, 196608, 131072, 98304, 65536, 49152, 32768, 24576, 16384}
 	var out []int
 	seen := map[int]bool{}
 	for _, s := range steps {
@@ -489,7 +543,7 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	// Flash attention + quantized KV cache only when offloading to GPU.
 	if cfg.Performance.FlashAttn && ngl > 0 {
 		args = append(args, "--flash-attn", "on")
-		if ct := cfg.Performance.CacheType; ct != "" && ct != "f16" {
+		if ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath)); ct != "" && ct != "f16" {
 			args = append(args, "--cache-type-k", ct, "--cache-type-v", ct)
 		}
 	}

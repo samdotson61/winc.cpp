@@ -280,7 +280,7 @@ end of this section only exist if you want to override a decision.
 | **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU but parks the **expert weights in RAM** (`--cpu-moe`), freeing VRAM for a much larger context | A 35B-A3B runs near GPU speed on 12 GB; on a tight 16 GB fit it trades a little speed for a ~32k→~100k+ context |
 | **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and sets the compaction trigger to leave **max(8k, window/8) tokens of headroom** — room for the in-flight turn *plus* the compaction summary itself. If a session still overflows, the router **trims the oldest transcript messages out of the compaction request** so the summary completes instead of truncating mid-write | Long sessions auto-compact and keep going; no more overflow → broken-summary → overflow death loop |
 | **Flash attention + Q8 KV cache** | Enables `--flash-attn` and stores the KV cache at `q8_0` when on GPU | Halves KV-cache memory → bigger context in the same VRAM, and faster attention |
-| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (128k → 96k → 64k → … → 16k) if the first choice doesn't load | You get the largest context that fits — and never see an out-of-memory error on launch |
+| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with q4_0 KV caches** (main *and* MTP draft) and keeps the widest that loads — memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
@@ -315,7 +315,7 @@ gpu_layers = "auto"   # "auto" (fit to VRAM) or an integer -ngl
 context    = "auto"   # "auto" (size to VRAM, with fallback) or a fixed token count
 batch      = "auto"   # "auto" (2048) or an integer
 flash_attn = true     # flash attention when on GPU
-cache_type = "q8_0"   # KV cache: q8_0 (default) | f16 (max quality) | q4_0 (smallest → ~2× the auto context). Needs flash_attn
+cache_type = "auto"   # KV cache: "auto" (q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 (max quality) | q4_0 (smallest → ~2× the auto context). Needs flash_attn
 threads    = "auto"   # CPU threads (auto = all cores)
 max_output_tokens = "auto"   # cap on response length ("auto" = ~half the context)
 
@@ -366,8 +366,10 @@ older engines just run without it).
 
 `mtp = "off"` disables it.
 
-**More context at ~the same speed:** set `cache_type = "q4_0"` to halve KV-cache bytes per
-token — `winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM
+**More context at ~the same speed:** this is automatic now — `cache_type = "auto"` halves
+the KV-cache bytes (q4_0) whenever the q8_0 window would come up short, and the launch
+probe verifies the wider window actually loads. Set `cache_type = "q4_0"` to force it —
+`winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM
 (up to the model's trained limit). `q8_0` stays the default for the best speed/accuracy
 balance.
 
