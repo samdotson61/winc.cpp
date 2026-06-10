@@ -18,11 +18,23 @@ type Hardware struct {
 	RAMMB     int
 	GPUVendor string // nvidia | amd | intel | apple | none
 	GPUName   string
-	VRAMMB    int
-	Unified   bool // Apple Silicon: GPU shares system RAM
-	CudaMajor int  // max CUDA version the NVIDIA driver supports (0 if unknown)
+	VRAMMB    int         // total across all detected GPUs (dedicated only)
+	GPUs      []GPUDevice // per-GPU detail (nvidia-smi); empty when only a single total is known
+	Unified   bool        // Apple Silicon: GPU shares system RAM
+	CudaMajor int         // max CUDA version the NVIDIA driver supports (0 if unknown)
 	CudaMinor int
 }
+
+// GPUDevice is one detected GPU. FreeMB is a launch-time snapshot used to weight
+// the multi-GPU tensor split toward the emptier card; 0 means unknown.
+type GPUDevice struct {
+	Name    string
+	TotalMB int
+	FreeMB  int
+}
+
+// MultiGPU reports whether more than one usable GPU was detected.
+func (h Hardware) MultiGPU() bool { return len(h.GPUs) > 1 }
 
 // MemoryBudgetMB is the memory to size model recommendations against.
 //
@@ -67,25 +79,49 @@ func DetectHardware() Hardware {
 }
 
 // detectNvidia is shared (nvidia-smi exists on Windows + Linux). Returns true on success.
+// All GPUs are detected, not just the first -- a second card extends both the memory
+// budget (VRAMMB is the sum) and the launch flags (layers split across the cards).
 func detectNvidia(hw *Hardware) bool {
-	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.total,name", "--format=csv,noheader,nounits").Output()
+	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.total,memory.free,name", "--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return false
 	}
-	line := strings.TrimSpace(out2first(string(out)))
-	parts := strings.SplitN(line, ",", 2)
-	if len(parts) < 2 {
-		return false
-	}
-	mb, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
+	gpus := parseNvidiaSmi(string(out))
+	if len(gpus) == 0 {
 		return false
 	}
 	hw.GPUVendor = "nvidia"
-	hw.VRAMMB = mb
-	hw.GPUName = strings.TrimSpace(parts[1])
+	hw.GPUs = gpus
+	names := make([]string, len(gpus))
+	for i, g := range gpus {
+		hw.VRAMMB += g.TotalMB
+		names[i] = g.Name
+	}
+	hw.GPUName = strings.Join(names, " + ")
 	detectCuda(hw)
 	return true
+}
+
+// parseNvidiaSmi parses `--query-gpu=memory.total,memory.free,name` CSV output:
+// one line per GPU, values in MiB without units, name last (names contain no commas).
+func parseNvidiaSmi(out string) []GPUDevice {
+	var gpus []GPUDevice
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), ",", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		total, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || total <= 0 {
+			continue
+		}
+		free, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || free < 0 {
+			free = 0
+		}
+		gpus = append(gpus, GPUDevice{Name: strings.TrimSpace(parts[2]), TotalMB: total, FreeMB: free})
+	}
+	return gpus
 }
 
 // detectCuda reads the max CUDA version the driver supports from nvidia-smi's
@@ -101,13 +137,6 @@ func detectCuda(hw *Hardware) {
 		hw.CudaMajor, _ = strconv.Atoi(m[1])
 		hw.CudaMinor, _ = strconv.Atoi(m[2])
 	}
-}
-
-func out2first(s string) string {
-	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
-		return s[:i]
-	}
-	return s
 }
 
 // DefaultBackend chooses a llama.cpp backend from detected hardware + OS.

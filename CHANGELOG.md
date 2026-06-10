@@ -3,6 +3,28 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.6.0 — 2026-06-10
+
+Multi-GPU support.
+
+### Added
+- Every GPU is detected (previously only the first nvidia-smi line was read), and
+  the memory budget is the combined VRAM of all cards. A 16 GB + 12 GB pair is
+  sized as 28 GB: it reaches the large tier, gets larger model recommendations
+  and auto-context, and skips MoE expert-offload when the pair fits the model
+  that a single card couldn't (verified on real hardware: a 21 GB MoE that
+  previously ran with experts in RAM now loads fully across both GPUs at 131K
+  context).
+- `winc detect` and `winc doctor` list each GPU with its total and free VRAM.
+
+### Changed
+- Sizing math reserves a compute buffer per GPU (not one shared) so multi-GPU
+  context sizing stays honest.
+- Per-card layer placement is deliberately left to the engine's device-memory
+  fit, which weighs each card's free VRAM at load time. An explicit
+  `--tensor-split` disables that fit and can overpack a card, so winc never
+  passes one.
+
 ## v1.5.1 — 2026-06-10
 
 Catalog refresh.

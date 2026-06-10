@@ -53,3 +53,38 @@ func TestLowEndLaptopNotMidTier(t *testing.T) {
 		t.Fatalf("2 GB laptop budget=%d would select a 16 GB-tier model", b)
 	}
 }
+
+// Two-GPU machines: every nvidia-smi line is parsed (not just the first) and the
+// budget is the SUM -- a 16 GB + 12 GB pair must reach the large (24 GB+) tier.
+func TestParseNvidiaSmiMultiGPU(t *testing.T) {
+	out := "16303, 15054, NVIDIA GeForce RTX 5070 Ti\r\n12288, 12113, NVIDIA GeForce RTX 3060\r\n"
+	gpus := parseNvidiaSmi(out)
+	if len(gpus) != 2 {
+		t.Fatalf("want 2 GPUs, got %d (%+v)", len(gpus), gpus)
+	}
+	if gpus[0].Name != "NVIDIA GeForce RTX 5070 Ti" || gpus[0].TotalMB != 16303 || gpus[0].FreeMB != 15054 {
+		t.Errorf("gpu0 parsed wrong: %+v", gpus[0])
+	}
+	if gpus[1].Name != "NVIDIA GeForce RTX 3060" || gpus[1].TotalMB != 12288 || gpus[1].FreeMB != 12113 {
+		t.Errorf("gpu1 parsed wrong: %+v", gpus[1])
+	}
+	hw := Hardware{GPUVendor: "nvidia", GPUs: gpus, VRAMMB: gpus[0].TotalMB + gpus[1].TotalMB}
+	if !hw.MultiGPU() {
+		t.Error("two GPUs should report MultiGPU")
+	}
+	if got := catalog.VramTier(hw.MemoryBudgetMB()); got != "large" {
+		t.Errorf("16+12 GB pair -> tier %q, want large", got)
+	}
+}
+
+func TestParseNvidiaSmiSingleAndGarbage(t *testing.T) {
+	if g := parseNvidiaSmi("8192, 7000, NVIDIA GeForce RTX 3070\n"); len(g) != 1 || g[0].TotalMB != 8192 || g[0].FreeMB != 7000 {
+		t.Errorf("single GPU parse failed: %+v", g)
+	}
+	if g := parseNvidiaSmi("not, csv, at all\n\n"); len(g) != 0 {
+		t.Errorf("garbage should parse to no GPUs, got %+v", g)
+	}
+	if g := parseNvidiaSmi(""); len(g) != 0 {
+		t.Errorf("empty should parse to no GPUs, got %+v", g)
+	}
+}

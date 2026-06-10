@@ -74,6 +74,11 @@ func doctorReport(cfg *config.Config) []string {
 		add("  GPU:     none detected (CPU-only)")
 	case hw.CudaMajor > 0:
 		add("  GPU:     %s (%s, %d MB VRAM, CUDA %d.%d)", hw.GPUName, hw.GPUVendor, hw.VRAMMB, hw.CudaMajor, hw.CudaMinor)
+		if hw.MultiGPU() {
+			for i, g := range hw.GPUs {
+				add("           gpu %d: %s (%d MB, %d MB free)", i, g.Name, g.TotalMB, g.FreeMB)
+			}
+		}
 	default:
 		add("  GPU:     %s (%s, %d MB VRAM)", hw.GPUName, hw.GPUVendor, hw.VRAMMB)
 	}

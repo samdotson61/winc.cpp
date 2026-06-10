@@ -258,6 +258,41 @@ func TestServerArgsExtra(t *testing.T) {
 	}
 }
 
+// Explicit --tensor-split disables the engine's own device-memory fit and can
+// overpack a card (verified on real 16+12 GB hardware: cublasCreate OOM on the
+// second GPU). winc must never pass it -- placement belongs to the engine.
+func TestServerArgsNeverTensorSplit(t *testing.T) {
+	cfg := config.Defaults()
+	pair := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 28591, GPUs: []platform.GPUDevice{
+		{TotalMB: 16303, FreeMB: 15054}, {TotalMB: 12288, FreeMB: 12113},
+	}}
+	s := strings.Join(ServerArgs(&cfg, pair, "Qwen3.6-27B-Q3_K_M.gguf", 8080, "", 16384), " ")
+	if strings.Contains(s, "tensor-split") || strings.Contains(s, "split-mode") {
+		t.Errorf("winc must not override the engine's multi-GPU fit: %s", s)
+	}
+}
+
+// The headline win: a ~22 GB MoE on a 16+12 GB pair runs fully on GPU with a big
+// context, where the 16 GB card alone is forced to offload its experts to RAM.
+func TestMultiGPUMoEFitsWithoutOffload(t *testing.T) {
+	cfg := config.Defaults()
+	moe := "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf"
+	single := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16303, GPUs: []platform.GPUDevice{{TotalMB: 16303}}}
+	pair := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591, GPUs: []platform.GPUDevice{
+		{TotalMB: 16303, FreeMB: 15054}, {TotalMB: 12288, FreeMB: 12113},
+	}}
+	if _, got := PlanForModel(&cfg, single, moe, 21600); got != "all" {
+		t.Errorf("21.6 GB MoE on one 16 GB card should offload experts, got %q", got)
+	}
+	ctx, got := PlanForModel(&cfg, pair, moe, 21600)
+	if got != "" {
+		t.Errorf("21.6 GB MoE on a 28 GB pair should stay fully on GPU, got %q", got)
+	}
+	if ctx < 65536 {
+		t.Errorf("pair should afford a large context, got %d", ctx)
+	}
+}
+
 func TestResolveMaxOutput(t *testing.T) {
 	cfg := config.Defaults()
 	if got := ResolveMaxOutput(&cfg, 32768); got != 16384 {

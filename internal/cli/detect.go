@@ -48,6 +48,12 @@ func cmdDetect() int {
 		ui.Say("  Memory        : %d MB unified (Apple Silicon)", hw.RAMMB)
 	} else {
 		ui.Say("  Dedicated VRAM: %d MB", hw.VRAMMB)
+		if hw.MultiGPU() {
+			for i, g := range hw.GPUs {
+				ui.Say("      gpu %d     : %s  (%d MB, %d MB free)", i, g.Name, g.TotalMB, g.FreeMB)
+			}
+			ui.Say("      the engine fits layers across all %d GPUs by free VRAM at load", len(hw.GPUs))
+		}
 	}
 	if hw.CudaMajor > 0 {
 		ui.Say("  CUDA (driver) : %d.%d", hw.CudaMajor, hw.CudaMinor)

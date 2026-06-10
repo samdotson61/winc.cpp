@@ -29,6 +29,17 @@ func IsMoEFile(path string) bool { return isMoEFile(path) }
 // the experts move to RAM and free VRAM for a usable context.
 const minKVHeadroomMB = 1024
 
+// gpuReserveMB is the VRAM held back from sizing math for compute buffers, driver
+// overhead, and desktop use -- per device, since each GPU in a multi-GPU split
+// allocates its own compute buffer.
+func gpuReserveMB(hw platform.Hardware) int {
+	n := len(hw.GPUs)
+	if n < 1 {
+		n = 1
+	}
+	return 1536 + 768*(n-1)
+}
+
 // resolveCPUMoE decides MoE expert offload: "" (none), "all" (--cpu-moe), or an
 // integer layer count (--n-cpu-moe N). Auto offloads a MoE model when it won't fit
 // VRAM OR when it fits so tightly that almost no VRAM is left for KV (context would
@@ -52,7 +63,7 @@ func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, m
 	if ngl == 0 || hw.VRAMMB <= 0 || modelMB <= 0 || !isMoEFile(modelPath) {
 		return ""
 	}
-	if hw.VRAMMB-modelMB-1536 < minKVHeadroomMB {
+	if hw.VRAMMB-modelMB-gpuReserveMB(hw) < minKVHeadroomMB {
 		return "all"
 	}
 	return ""
@@ -86,7 +97,7 @@ func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string
 	if mb <= 0 {
 		return false
 	}
-	return hw.VRAMMB-mb-1536 >= mainEscalationHeadroomMB
+	return hw.VRAMMB-mb-gpuReserveMB(hw) >= mainEscalationHeadroomMB
 }
 
 // isMTPFile reports whether a GGUF is a Multi-Token-Prediction variant (winc saves
@@ -207,6 +218,13 @@ func PlanForModel(cfg *config.Config, hw platform.Hardware, modelFile string, mo
 	return ctx, cpuMoe
 }
 
+// Multi-GPU layer placement is deliberately left to the engine: llama-server's
+// device-memory fit spreads layers across every CUDA device by its free VRAM at
+// load time. Passing an explicit --tensor-split DISABLES that fit ("already set
+// by user, abort") and a hand-computed split can overpack a card once the KV
+// cache, compute buffers, and MTP context land on it (verified: cublasCreate
+// OOM on device 1). winc's job is only to budget for the combined VRAM.
+
 func atoiOr(s string, def int) int {
 	if n, err := strconv.Atoi(s); err == nil {
 		return n
@@ -299,7 +317,7 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelFileMB int, e
 	if modelFileMB <= 0 {
 		return ctxFloor
 	}
-	free := hw.VRAMMB - modelFileMB - 1536 // reserve compute buffer + safety
+	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw) // reserve compute buffer(s) + safety
 	if free <= 0 {
 		return ctxFloor
 	}
