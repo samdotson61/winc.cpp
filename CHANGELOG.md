@@ -3,6 +3,25 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.9.0 — 2026-06-10
+
+Head-first GPU placement.
+
+### Changed
+- A head model that fully fits combined VRAM (model + per-GPU buffers + MTP
+  draft context + a KV floor) is now forced fully onto the GPU (`-ngl 99`).
+  The engine's own device fit is conservative and could spill a layer to the
+  CPU on a tight-but-sufficient fit -- on a MoE even one CPU-resident layer
+  drags every token through a slow CPU expert pass, competing with the team's
+  CPU workers for the cores. The context ladder still steps down and retries
+  if a forced load doesn't actually fit. Partial-fit models keep the engine's
+  auto placement; explicit `gpu_layers` and Apple unified memory are unchanged.
+- Auto-context sizing now budgets the MTP draft context (~1 GB when MTP will
+  engage), so a maximum-context ask can't overcommit VRAM and push model
+  layers off the GPU.
+- `winc detect` plans against the downloaded model file (and its MTP head),
+  not just the catalogue estimate.
+
 ## v1.8.0 — 2026-06-10
 
 Information-only subagents never escalate to the head model.

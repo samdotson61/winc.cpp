@@ -64,15 +64,17 @@ func cmdDetect() int {
 		ui.Say("  Recommended   : %s (%s)", def.Alias, def.Size)
 
 		// Show what winc would resolve for that model (real on-disk size if it's
-		// already downloaded, else the catalogue estimate).
+		// already downloaded, else the catalogue estimate). Plan against the models-dir
+		// path so a downloaded MTP head next to the model is budgeted too.
 		modelMB := sizeStrToMB(def.Size)
 		approx := "~"
-		if p := filepath.Join(modelsDir(cfg), def.File); fileExists(p) {
+		p := filepath.Join(modelsDir(cfg), def.LocalFile())
+		if fileExists(p) {
 			if m := engine.FileMB(p); m > 0 {
 				modelMB, approx = m, ""
 			}
 		}
-		ctx, moe := engine.PlanForModel(cfg, hw, def.File, modelMB)
+		ctx, moe := engine.PlanForModel(cfg, hw, p, modelMB)
 		ui.Say("  Auto context  : %d tokens (for %s%d MB model)", ctx, approx, modelMB)
 		switch {
 		case moe == "all":

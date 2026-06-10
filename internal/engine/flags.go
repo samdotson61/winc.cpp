@@ -252,7 +252,7 @@ func MTPArgs(cfg *config.Config, modelPath, serverBin string) []string {
 // (winc detect). cpuMoe is "" (none / full GPU), "all" (--cpu-moe), or a layer count.
 func PlanForModel(cfg *config.Config, hw platform.Hardware, modelFile string, modelMB int) (ctx int, cpuMoe string) {
 	cpuMoe = resolveCPUMoE(cfg, hw, modelFile, modelMB, GpuLayers(cfg, hw))
-	ctx = ResolveContext(cfg, hw, modelMB, cpuMoe == "all")
+	ctx = ResolveContext(cfg, hw, modelFile, modelMB, cpuMoe == "all")
 	return ctx, cpuMoe
 }
 
@@ -337,12 +337,43 @@ func kvCtxFactor(cacheType string, flashAttn bool) int {
 	}
 }
 
+// mtpCtxReserveMB is the extra VRAM an active MTP draft context occupies (the
+// engine reports ~865 MiB for the 26B/35B heads; rounded up). Budgeted into the
+// sizing math so the auto-context never overcommits VRAM and pushes model layers
+// off the GPU.
+const mtpCtxReserveMB = 1024
+
+// mtpReserveMB is the MTP draft-context allowance for a launch: nonzero only when
+// MTP will actually engage for this model (variant or paired head, config permits,
+// backend isn't Metal). The engine probe is skipped -- this is a sizing estimate.
+func mtpReserveMB(cfg *config.Config, modelPath string) int {
+	if len(MTPArgs(cfg, modelPath, "")) > 0 {
+		return mtpCtxReserveMB
+	}
+	return 0
+}
+
+// fullyFitsGPU reports whether the model, the per-GPU reserves, the MTP draft
+// context (when active), and at least a minimal KV cache all fit the combined
+// VRAM. When true winc forces -ngl 99: the engine's own device fit is
+// conservative and can spill a layer to the CPU on a tight-but-sufficient fit --
+// and on a MoE even one CPU-resident layer drags every token through a slow CPU
+// expert pass, competing with the team's CPU workers. The context ladder still
+// protects an overcommit: if the forced load fails, the launcher steps the
+// context down and retries. Unified (Apple) memory keeps its existing behavior.
+func fullyFitsGPU(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB int) bool {
+	if hw.Unified || hw.VRAMMB <= 0 || modelMB <= 0 {
+		return false
+	}
+	return hw.VRAMMB-modelMB-gpuReserveMB(hw)-mtpReserveMB(cfg, modelPath) >= minKVHeadroomMB
+}
+
 // ResolveContext picks a liberal context window: the configured value, or (auto)
 // the largest that should fit free VRAM after the model, clamped to a safe range.
 // The launcher verifies the choice actually loads and falls back if not. When the
 // model's experts are offloaded to RAM (expertsOffloaded), most of its VRAM is free
 // for KV, so we aim at the ceiling and let the launcher's ladder settle the max.
-func ResolveContext(cfg *config.Config, hw platform.Hardware, modelFileMB int, expertsOffloaded bool) int {
+func ResolveContext(cfg *config.Config, hw platform.Hardware, modelPath string, modelFileMB int, expertsOffloaded bool) int {
 	if cfg.Performance.Context != "auto" && cfg.Performance.Context != "" {
 		return atoiOr(cfg.Performance.Context, ctxFloor)
 	}
@@ -355,7 +386,8 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelFileMB int, e
 	if modelFileMB <= 0 {
 		return ctxFloor
 	}
-	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw) // reserve compute buffer(s) + safety
+	// Reserve compute buffer(s), the MTP draft context when one will load, + safety.
+	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw) - mtpReserveMB(cfg, modelPath)
 	if free <= 0 {
 		return ctxFloor
 	}
@@ -422,10 +454,13 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	args = append(args, ChatTemplateArgs(modelPath)...)
 
 	ngl := GpuLayers(cfg, hw)
-	// MoE expert offload: keep all layers on the GPU (-ngl 99) but move MoE expert
-	// weights to RAM, so a MoE bigger than VRAM still runs fast (only a small
-	// activation vector crosses PCIe). Otherwise: force -ngl only when explicitly
-	// set; for "auto" omit it so llama.cpp fits layers to memory (partial offload).
+	// GPU placement policy, head-first:
+	//  - MoE expert offload: all layers on the GPU (-ngl 99), expert weights in RAM,
+	//    so a MoE bigger than VRAM still runs fast (only activations cross PCIe).
+	//  - Explicit gpu_layers: the user's number wins.
+	//  - Model fully fits VRAM: force -ngl 99 so the engine's conservative device
+	//    fit can't spill a layer to the CPU (the CPU belongs to the team workers).
+	//  - Otherwise (partial fit, dense): omit -ngl and let the engine fit layers.
 	switch cpuMoe := resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), ngl); {
 	case cpuMoe == "all":
 		args = append(args, "-ngl", "99", "--cpu-moe")
@@ -433,10 +468,12 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		args = append(args, "-ngl", "99", "--n-cpu-moe", cpuMoe)
 	case cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "":
 		args = append(args, "-ngl", strconv.Itoa(ngl))
+	case fullyFitsGPU(cfg, hw, modelPath, FileMB(modelPath)):
+		args = append(args, "-ngl", "99")
 	}
 
 	if ctx <= 0 {
-		ctx = ResolveContext(cfg, hw, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath))
+		ctx = ResolveContext(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath))
 	}
 	args = append(args, "-c", strconv.Itoa(ctx))
 

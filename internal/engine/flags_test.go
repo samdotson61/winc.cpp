@@ -84,26 +84,38 @@ func TestResolveContext(t *testing.T) {
 	cfg := config.Defaults()
 	// explicit wins
 	cfg.Performance.Context = "8192"
-	if got := ResolveContext(&cfg, platform.Hardware{}, 0, false); got != 8192 {
+	if got := ResolveContext(&cfg, platform.Hardware{}, "m.gguf", 0, false); got != 8192 {
 		t.Errorf("explicit ctx: got %d", got)
 	}
 	// auto with no info -> floor
 	cfg.Performance.Context = "auto"
-	if got := ResolveContext(&cfg, platform.Hardware{}, 0, false); got != ctxFloor {
+	if got := ResolveContext(&cfg, platform.Hardware{}, "m.gguf", 0, false); got != ctxFloor {
 		t.Errorf("auto floor: got %d", got)
 	}
 	// ample headroom -> large, clamped to ceiling
-	got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 4000, false)
+	got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 4000, false)
 	if got < ctxFloor || got > ctxCeil {
 		t.Errorf("auto range: got %d", got)
 	}
 	// near-full VRAM -> floor
-	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 15500, false); got != ctxFloor {
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, false); got != ctxFloor {
 		t.Errorf("tight VRAM should floor: got %d", got)
 	}
 	// experts offloaded -> aim at the ceiling regardless of the (now-irrelevant) file size
-	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, 15500, true); got != ctxCeil {
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, true); got != ctxCeil {
 		t.Errorf("offloaded experts should target the ceiling: got %d", got)
+	}
+	// An MTP model's draft context eats VRAM the KV cache can't use: same sizes,
+	// smaller window.
+	plain := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 12000, false)
+	mtp := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m-MTP.gguf", 12000, false)
+	if mtp >= plain {
+		t.Errorf("MTP draft context should shrink the window: mtp=%d plain=%d", mtp, plain)
+	}
+	// mtp = "off" -> no draft context -> no allowance.
+	cfg.Performance.Mtp = "off"
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m-MTP.gguf", 12000, false); got != plain {
+		t.Errorf("mtp=off should size like a plain model: got %d want %d", got, plain)
 	}
 }
 
@@ -112,13 +124,13 @@ func TestResolveContextCacheType(t *testing.T) {
 	const modelMB = 3000 // leaves a small VRAM window so factors stay below the ceiling
 
 	cfg := config.Defaults() // q8_0 + flash_attn (defaults)
-	q8 := ResolveContext(&cfg, hw, modelMB, false)
+	q8 := ResolveContext(&cfg, hw, "m.gguf", modelMB, false)
 
 	cfg.Performance.CacheType = "f16"
-	f16 := ResolveContext(&cfg, hw, modelMB, false)
+	f16 := ResolveContext(&cfg, hw, "m.gguf", modelMB, false)
 
 	cfg.Performance.CacheType = "q4_0"
-	q4 := ResolveContext(&cfg, hw, modelMB, false)
+	q4 := ResolveContext(&cfg, hw, "m.gguf", modelMB, false)
 
 	// A smaller KV cache fits a proportionally larger window.
 	if !(q4 > q8 && q8 > f16) {
@@ -130,8 +142,51 @@ func TestResolveContextCacheType(t *testing.T) {
 	}
 	// Without flash attention the cache is f16 regardless of cache_type.
 	cfg.Performance.FlashAttn = false // cache_type is still q4_0 here
-	if got := ResolveContext(&cfg, hw, modelMB, false); got != f16 {
+	if got := ResolveContext(&cfg, hw, "m.gguf", modelMB, false); got != f16 {
 		t.Errorf("no flash-attn should size as f16: got %d want %d", got, f16)
+	}
+}
+
+// A head model that fully fits combined VRAM gets every layer forced onto the GPU
+// (-ngl 99), so the engine's conservative device fit can't spill one to the CPU --
+// the CPU belongs to the team's workers. A model that doesn't fit keeps -ngl on
+// auto for the engine's partial offload.
+func TestServerArgsForcesFullGPUWhenFits(t *testing.T) {
+	dir := t.TempDir()
+	model := filepath.Join(dir, "Dense-27B-Q4_K_M.gguf")
+	f, err := os.Create(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(100 << 20); err != nil { // 100 MB stand-in
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg := config.Defaults()
+	fits := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
+	s := strings.Join(ServerArgs(&cfg, fits, model, 8080, "", 16384), " ")
+	if !strings.Contains(s, "-ngl 99") {
+		t.Errorf("fully-fitting model should force -ngl 99: %s", s)
+	}
+	// Too little VRAM for model+reserve+KV -> leave -ngl to the engine's fit.
+	tight := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 1600}
+	s = strings.Join(ServerArgs(&cfg, tight, model, 8080, "", 16384), " ")
+	if strings.Contains(s, "-ngl") {
+		t.Errorf("partial-fit model should leave -ngl on auto: %s", s)
+	}
+	// Explicit gpu_layers still wins over the full-fit rule.
+	cfg.Performance.GpuLayers = "20"
+	s = strings.Join(ServerArgs(&cfg, fits, model, 8080, "", 16384), " ")
+	if !strings.Contains(s, "-ngl 20") {
+		t.Errorf("explicit gpu_layers should win: %s", s)
+	}
+	// Apple unified memory keeps its existing behavior (no forced -ngl).
+	cfg.Performance.GpuLayers = "auto"
+	mac := platform.Hardware{OS: "darwin", GPUVendor: "apple", Unified: true, RAMMB: 32768, VRAMMB: 32768}
+	s = strings.Join(ServerArgs(&cfg, mac, model, 8080, "", 16384), " ")
+	if strings.Contains(s, "-ngl") {
+		t.Errorf("unified memory should not force -ngl: %s", s)
 	}
 }
 
