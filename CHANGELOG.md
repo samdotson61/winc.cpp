@@ -3,6 +3,21 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.10.0 — 2026-06-10
+
+Workers use the head's leftover VRAM.
+
+### Changed
+- Team workers are no longer hard-pinned to the CPU: once the head model is
+  resident (it loads first and takes everything it wants), winc re-probes the
+  cards and hands the measured leftover VRAM to the workers, largest first --
+  the 4B collator is the ladder's information-agent catch-all, so GPU decode
+  there speeds up exactly the read/search/fetch subagents that v1.8.0 pinned
+  to it. Each claim budgets weights + KV + a compute buffer, keeps a per-GPU
+  safety margin, and falls back to a CPU relaunch if the GPU load fails.
+  Workers that don't fit the leftover run on the CPU exactly as before; the
+  head's VRAM precedence is absolute.
+
 ## v1.9.0 — 2026-06-10
 
 Head-first GPU placement.

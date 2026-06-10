@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"winc/internal/agent"
@@ -8,6 +10,27 @@ import (
 	"winc/internal/config"
 	"winc/internal/platform"
 )
+
+// Workers claim GPU space only when their full footprint (weights + KV + compute
+// buffer) is known and fits; an unknown model size must never claim the GPU.
+func TestWorkerGPUNeedMB(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "worker.gguf")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(100 << 20); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if got, want := workerGPUNeedMB(p, 65536), 100+65536/64+512; got != want {
+		t.Errorf("need = %d, want %d", got, want)
+	}
+	if got := workerGPUNeedMB(filepath.Join(dir, "missing.gguf"), 65536); got < 1<<29 {
+		t.Errorf("unknown model size must never claim GPU, got %d", got)
+	}
+}
 
 func TestWantTeam(t *testing.T) {
 	cfg := config.Defaults() // mode = "auto"

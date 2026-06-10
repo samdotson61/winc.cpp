@@ -135,8 +135,11 @@ Normally every subagent Claude Code spawns — and every agent a multi-agent **W
 fans out — is a clone of the model you launched, so a deep-research fan-out runs N copies of
 your big model: slow and wasteful. **winc runs team mode by default for any main model above
 the nano tier when there's enough system RAM for the workers**: the launched model stays the
-**main orchestrator** while small workers run alongside it on the **CPU** (never touching the
-main model's VRAM or context) and handle the subagents. The worker set is **fit to available
+**main orchestrator** while small workers run alongside it and handle the subagents. **The
+head takes VRAM precedence absolutely** — it loads first and takes everything it wants; the
+workers then claim only the **measured leftover VRAM** (largest worker first, with a CPU
+fallback if the load doesn't fit after all) and otherwise run on the **CPU**, so they can
+never shrink the head's context. The worker set is **fit to available
 RAM** — smallest-first, dropping the largest first, down to just the 0.8B on a tight box —
 and only falls back to a single model when not even the smallest worker fits. On a
 small-RAM box (≤16GB) winc also **halves each worker's parallel slots while keeping its

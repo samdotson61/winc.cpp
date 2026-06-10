@@ -24,10 +24,12 @@ import (
 )
 
 // startTeam runs the heterogeneous agent hierarchy: the launched model orchestrates
-// as the main agent on the GPU, and small worker models run on the CPU mapped onto
-// Claude Code's sonnet (collator/review) and haiku (research fan-out + Explore) tiers.
-// A model-aware router fans each tier's requests to the right backend. Workers stay on
-// the CPU so they never eat the main model's VRAM or shrink its context.
+// as the main agent on the GPU, and small worker models run mapped onto Claude
+// Code's sonnet (collator/review) and haiku (research fan-out + Explore) tiers.
+// A model-aware router fans each tier's requests to the right backend. The head
+// takes VRAM precedence absolutely: it loads first and takes everything it wants;
+// workers then claim only the measured leftover VRAM (largest worker first) and
+// otherwise run on the CPU, so they can never shrink the head's context.
 func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, app, mainQuery string) int {
 	mainPath, mainAlias := downloadedPath(cfg, cat, mainQuery)
 	if mainPath == "" {
@@ -128,13 +130,31 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 			hw.RAMMB, workerPar, workerCtx/workerPar, sonnetPar, sonnetCtx/sonnetPar)
 	}
 
-	// Launch the worker(s) on the CPU, capturing each one's URL.
+	// Workers default to the CPU so they never shrink the head's VRAM -- but VRAM
+	// the head left on the table is free speedup. The head is already resident (it
+	// loaded first, with everything it wanted), so the leftover is MEASURED from the
+	// cards, not estimated. Hand it out largest worker first: the 4B is the ladder's
+	// information-agent catch-all, so it benefits most from GPU decode.
+	gpuLeft := leftoverVRAMMB()
+	if gpuLeft > 0 {
+		ui.Dim("team: ~%d MB VRAM left over after the head - workers that fit will use it (largest first)", gpuLeft)
+	}
+	claimGPU := func(path string, ctx int) int {
+		need := workerGPUNeedMB(path, ctx)
+		if need <= gpuLeft {
+			gpuLeft -= need
+			return need
+		}
+		return 0
+	}
+
+	// Launch the worker(s), capturing each one's URL.
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
 	var sonnetURL, midURL, haikuURL string
 	var workers []teamWorker
 	if runSonnet {
 		lp := filepath.Join(logDir, "worker-sonnet.log")
-		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, sonnetPar, sonnetCtx, "sonnet", lp); p != nil {
+		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, sonnetPar, sonnetCtx, "sonnet", lp, claimGPU(sonnetPath, sonnetCtx)); p != nil {
 			procs = append(procs, p)
 			sonnetURL, slots.Sonnet = url, alias
 			workers = append(workers, teamWorker{proc: p, name: "sonnet", url: url, logPath: lp})
@@ -142,7 +162,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	}
 	if runMid {
 		lp := filepath.Join(logDir, "worker-mid.log")
-		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, workerPar, workerCtx, "mid", lp); p != nil {
+		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, workerPar, workerCtx, "mid", lp, claimGPU(midPath, workerCtx)); p != nil {
 			procs = append(procs, p)
 			midURL = url // ladder-only rung; not mapped to a Claude Code tier
 			workers = append(workers, teamWorker{proc: p, name: "mid", url: url, logPath: lp})
@@ -150,7 +170,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	}
 	if runHaiku {
 		lp := filepath.Join(logDir, "worker-haiku.log")
-		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, workerPar, workerCtx, "haiku", lp); p != nil {
+		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, workerPar, workerCtx, "haiku", lp, claimGPU(haikuPath, workerCtx)); p != nil {
 			procs = append(procs, p)
 			haikuURL, slots.Haiku = url, alias
 			workers = append(workers, teamWorker{proc: p, name: "haiku", url: url, logPath: lp})
@@ -387,10 +407,39 @@ func ensureWorker(cfg *config.Config, cat *catalog.Catalog, query, role string) 
 	return filepath.Join(md, m.LocalFile()), m.Alias
 }
 
-// startWorker launches one CPU worker (dense small model) and returns its proc, URL,
+// leftoverVRAMMB re-probes the GPUs once the head model is resident and returns the
+// VRAM still free across all cards, minus a per-GPU safety margin (the head's CUDA
+// workspaces grow a little under load, and we must NEVER make the head compete).
+// 0 when the cards can't be probed (non-NVIDIA paths) -- workers then stay on CPU.
+func leftoverVRAMMB() int {
+	fresh := platform.DetectHardware()
+	total := 0
+	for _, g := range fresh.GPUs {
+		if free := g.FreeMB - 768; free > 0 {
+			total += free
+		}
+	}
+	return total
+}
+
+// workerGPUNeedMB estimates the VRAM a worker would occupy: weights + KV cache for
+// its context window (q8, ~64 tokens/MB) + a compute buffer. Unknown sizes never
+// claim GPU.
+func workerGPUNeedMB(modelPath string, ctx int) int {
+	mb := engine.FileMB(modelPath)
+	if mb <= 0 {
+		return 1 << 30
+	}
+	return mb + ctx/64 + 512
+}
+
+// startWorker launches one worker (dense small model) and returns its proc, URL,
 // and alias, or (nil,"","") when it has no model, no engine, an alias colliding with
 // the main model, or it fails to come up. parallel slots serve concurrent subagents.
-func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath, alias, mainAlias string, parallel, ctx int, role, logPath string) (*server.Proc, string, string) {
+// gpuMB > 0 grants the worker that much of the VRAM the head left over: all its
+// layers are forced onto the GPU, with a CPU relaunch as the fallback if the load
+// fails. gpuMB == 0 is the classic CPU worker.
+func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath, alias, mainAlias string, parallel, ctx int, role, logPath string, gpuMB int) (*server.Proc, string, string) {
 	if modelPath == "" || serverBin == "" {
 		return nil, "", ""
 	}
@@ -398,42 +447,63 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 		ui.Dim("team: %s worker is the same model as main - skipping (no separate tier needed)", role)
 		return nil, "", ""
 	}
-	pnum := freePort()
-	if pnum == 0 {
-		ui.Warn("team: no free port for the %s worker - that tier falls back to main", role)
-		return nil, "", ""
+
+	// One launch attempt. Worker config: GPU only within the granted leftover slice
+	// (else -ngl 0 so it never touches the head's VRAM), and drop the main model's
+	// draft/MTP/extra flags (they don't apply to the worker). Run the worker server
+	// in adaptive reasoning so the router governs thinking per request (a low budget
+	// for the research tier -- small models need a little thinking for tools).
+	try := func(gpu bool) (*server.Proc, string) {
+		pnum := freePort()
+		if pnum == 0 {
+			ui.Warn("team: no free port for the %s worker - that tier falls back to main", role)
+			return nil, ""
+		}
+		wc := *cfg
+		wc.Performance.GpuLayers = "0"
+		if gpu {
+			wc.Performance.GpuLayers = "99"
+		}
+		wc.Performance.DraftModel = ""
+		wc.Performance.Mtp = "off"
+		wc.Performance.ExtraServerArgs = nil
+		wc.Reasoning.Mode = "adaptive"
+		wc.General.Port = pnum
+
+		args := engine.ServerArgs(&wc, hw, modelPath, pnum, "", ctx) // ServerArgs adds family-correct sampling
+		args = append(args, "--parallel", strconv.Itoa(parallel))
+		// Extend prompt-prefix cache reuse (recovers the cache after small mid-prompt edits);
+		// probed, so an older engine that lacks the flag just runs without it.
+		args = append(args, engine.CacheReuseArgs(serverBin)...)
+		proc, err := server.Start(serverBin, args, logPath)
+		if err != nil {
+			ui.Warn("team: %s worker failed to launch: %v", role, err)
+			return nil, ""
+		}
+		where := "CPU"
+		if gpu {
+			where = fmt.Sprintf("GPU (~%d MB of leftover VRAM)", gpuMB)
+		}
+		url := fmt.Sprintf("http://%s:%d", cfg.General.Host, pnum)
+		ui.Info("team: %s %s on %s (port %d, %d slots)", role, alias, where, pnum, parallel)
+		if !server.WaitReady(url, "/health", 180*time.Second, proc.Dead) {
+			proc.Stop()
+			return nil, ""
+		}
+		return proc, url
 	}
 
-	// Worker config: force CPU (-ngl 0) so it never touches the main model's VRAM, and
-	// drop the main model's draft/MTP/extra flags (they don't apply to the worker). Run
-	// the worker server in adaptive reasoning so the router governs thinking per request
-	// (a low budget for the research tier -- small models need a little thinking for tools).
-	wc := *cfg
-	wc.Performance.GpuLayers = "0"
-	wc.Performance.DraftModel = ""
-	wc.Performance.Mtp = "off"
-	wc.Performance.ExtraServerArgs = nil
-	wc.Reasoning.Mode = "adaptive"
-	wc.General.Port = pnum
-
-	args := engine.ServerArgs(&wc, hw, modelPath, pnum, "", ctx) // ServerArgs adds family-correct sampling
-	args = append(args, "--parallel", strconv.Itoa(parallel))
-	// Extend prompt-prefix cache reuse (recovers the cache after small mid-prompt edits);
-	// probed, so an older engine that lacks the flag just runs without it.
-	args = append(args, engine.CacheReuseArgs(serverBin)...)
-	proc, err := server.Start(serverBin, args, logPath)
-	if err != nil {
-		ui.Warn("team: %s worker failed to launch: %v - tier falls back to main", role, err)
-		return nil, "", ""
+	if gpuMB > 0 {
+		if proc, url := try(true); proc != nil {
+			return proc, url, alias
+		}
+		ui.Dim("team: %s worker didn't come up on the GPU - retrying on the CPU", role)
 	}
-	url := fmt.Sprintf("http://%s:%d", cfg.General.Host, pnum)
-	ui.Info("team: %s %s on CPU (port %d, %d slots)", role, alias, pnum, parallel)
-	if !server.WaitReady(url, "/health", 180*time.Second, proc.Dead) {
-		ui.Warn("team: %s worker didn't become ready - tier falls back to main; see %s", role, logPath)
-		proc.Stop()
-		return nil, "", ""
+	if proc, url := try(false); proc != nil {
+		return proc, url, alias
 	}
-	return proc, url, alias
+	ui.Warn("team: %s worker didn't become ready - tier falls back to main; see %s", role, logPath)
+	return nil, "", ""
 }
 
 // freePort grabs an ephemeral localhost port for a worker server (0 on failure).
