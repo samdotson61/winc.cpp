@@ -59,11 +59,26 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainMo
 		add("CLAUDE_CODE_MAX_OUTPUT_TOKENS", strconv.Itoa(maxOutputTokens))
 	}
 	if contextWindow > 0 {
-		// Size auto-compaction to the real local window, and trigger at 93% -- a ~7%
-		// buffer for the in-flight response, so more of the window is usable while a
-		// turn still rarely overruns the server's context.
+		// Size auto-compaction to the real local window -- and trigger it EARLY enough
+		// that the compaction request itself (the whole transcript plus the generated
+		// summary) still fits. A fixed high trigger leaves only a sliver at local
+		// window sizes: one big tool result jumps from just under the trigger straight
+		// past the end of the window, and the recovery compaction then truncates
+		// mid-summary -- a death loop the session never escapes (observed live at a
+		// 49k window: overflow -> truncated summary -> overflow, every ~90s). Reserve
+		// max(8k, window/8) tokens for the in-flight turn plus the summary.
+		reserve := contextWindow / 8
+		if reserve < 8192 {
+			reserve = 8192
+		}
+		pct := (contextWindow - reserve) * 100 / contextWindow
+		if pct < 50 {
+			pct = 50
+		} else if pct > 90 {
+			pct = 90
+		}
 		add("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.Itoa(contextWindow))
-		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "93")
+		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", strconv.Itoa(pct))
 	}
 	// Local models are far slower than the cloud -- a long prefill / time-to-first-token
 	// on a low-end or CPU box trips Claude Code's stream-idle watchdog (~90s default) and

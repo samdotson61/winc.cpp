@@ -24,6 +24,10 @@ var buildVerbs = []string{
 // EstimateInputTokens approximates tokens from the raw request body (~4 chars/token).
 func EstimateInputTokens(body []byte) int { return len(body) / 4 }
 
+// IsCompaction reports whether a chat request looks like Claude Code's
+// context-compaction (summarize-the-conversation) request.
+func IsCompaction(body []byte) bool { return isCompaction(body) }
+
 // Heavy reports whether a request looks compute-heavy for model-tier escalation: it
 // carries several fenced code blocks (>=3), i.e. real code/analysis work a tiny model
 // handles poorly. A high threshold avoids false-positives from a stray example in the

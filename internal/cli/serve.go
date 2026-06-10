@@ -77,7 +77,7 @@ func cmdServe(args []string) int {
 
 	baseURL := serverURL
 	if cfg.Reasoning.Mode == "adaptive" {
-		if r, rerr := router.Start(cfg, serverURL); rerr == nil {
+		if r, rerr := router.Start(cfg, serverURL, loadedCtx); rerr == nil {
 			defer r.Stop()
 			baseURL = r.BaseURL()
 		} else {

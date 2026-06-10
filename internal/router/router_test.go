@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"winc/internal/config"
+	"winc/internal/reasoning"
 )
 
 // roundtrip sends body through a router fronting a capturing upstream and returns
@@ -23,7 +24,7 @@ func roundtrip(t *testing.T, cfg *config.Config, path, body string) map[string]a
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer up.Close()
-	rt, err := Start(cfg, up.URL)
+	rt, err := Start(cfg, up.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestRouterInjectsBudget(t *testing.T) {
 
 func TestRouterBadUpstreamReturns502(t *testing.T) {
 	cfg := config.Defaults()
-	rt, err := Start(&cfg, "http://127.0.0.1:1") // nothing listening -> dial fails
+	rt, err := Start(&cfg, "http://127.0.0.1:1", 0) // nothing listening -> dial fails
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestTeamRoutesByModel(t *testing.T) {
 		{Model: "small-4b", Upstream: sonnet.srv.URL, Think: ""},
 		{Model: "tiny-0.8b", Upstream: haiku.srv.URL, Think: "low"},
 	}
-	rt, err := StartTeam(&cfg, routes, nil, "", main.srv.URL)
+	rt, err := StartTeam(&cfg, routes, nil, "", main.srv.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +214,7 @@ func TestTeamLadderEscalation(t *testing.T) {
 		{Upstream: mid.srv.URL, Think: "low", MaxEstTokens: 16384},
 		{Upstream: big.srv.URL, Think: "", MaxEstTokens: 1 << 30},
 	}
-	rt, err := StartTeam(&cfg, nil, ladder, "worker", small.srv.URL)
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", small.srv.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +306,7 @@ func TestTeamRouterStripsWorkerToolsOnly(t *testing.T) {
 	defer main.srv.Close()
 
 	ladder := []Tier{{Upstream: worker.srv.URL, Think: "low", MaxEstTokens: 1 << 30, Tools: []string{"WebSearch", "Read"}}}
-	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL)
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func errUpstream(t *testing.T, status int, body string) (*Router, func()) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
-	rt, err := Start(&cfg, up.URL)
+	rt, err := Start(&cfg, up.URL, 0)
 	if err != nil {
 		up.Close()
 		t.Fatal(err)
@@ -479,7 +480,7 @@ func TestTeamRouterCapsWorkerMaxTokens(t *testing.T) {
 	defer main.srv.Close()
 
 	ladder := []Tier{{Upstream: worker.srv.URL, Think: "low", MaxEstTokens: 1 << 30, Tools: []string{"all"}, MaxTokens: 1536}}
-	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL)
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +543,7 @@ func TestMarkDeadReroutes(t *testing.T) {
 		{Name: "haiku", Upstream: haiku.srv.URL, Think: "low", MaxEstTokens: 4096},
 		{Name: "sonnet", Upstream: sonnet.srv.URL, Think: "", MaxEstTokens: 1 << 30},
 	}
-	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL)
+	rt, err := StartTeam(&cfg, nil, ladder, "worker", main.srv.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,6 +617,65 @@ func TestStatsString(t *testing.T) {
 	}
 	if s := (Stats{Requests: map[string]int{}, InfoPinned: 3}).String(); !strings.Contains(s, "info-pinned=3") {
 		t.Errorf("stats should report info pins: %q", s)
+	}
+}
+
+// A compaction request that no longer fits the window must be trimmed (oldest
+// messages dropped) so the summary itself has room to complete -- otherwise the
+// session enters the overflow -> truncated-summary -> overflow death loop.
+func TestTrimCompaction(t *testing.T) {
+	const window = 8192 // tokens; budget = window - summaryRoomTokens = 2048 tokens
+	chunk := strings.Repeat("old conversation content. ", 200)
+	instruction := `{"role":"user","content":"Your task is to create a detailed summary of the conversation so far. Wrap your summary in <summary></summary>."}`
+	var sb strings.Builder
+	sb.WriteString(`{"model":"main","messages":[`)
+	for i := 0; i < 10; i++ {
+		sb.WriteString(`{"role":"user","content":"` + chunk + `"},`)
+		sb.WriteString(`{"role":"assistant","content":"` + chunk + `"},`)
+		sb.WriteString(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t` + string(rune('0'+i)) + `","content":"` + chunk + `"}]},`)
+	}
+	sb.WriteString(`{"role":"user","content":"recent question"},`)
+	sb.WriteString(instruction)
+	sb.WriteString(`]}`)
+	body := []byte(sb.String())
+
+	out := trimCompaction(body, window)
+	if len(out) >= len(body) {
+		t.Fatalf("oversized compaction should be trimmed: %d -> %d bytes", len(body), len(out))
+	}
+	if got := reasoning.EstimateInputTokens(out); got > window-summaryRoomTokens+64 {
+		t.Errorf("trimmed compaction still too big: %d tokens (budget %d)", got, window-summaryRoomTokens)
+	}
+	var m struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil || len(m.Messages) < 2 {
+		t.Fatalf("trimmed body unparseable: %v", err)
+	}
+	last := m.Messages[len(m.Messages)-1]
+	if !strings.Contains(string(last.Content), "detailed summary") {
+		t.Errorf("the summarize instruction must survive the trim, got %s", last.Content)
+	}
+	first := m.Messages[0]
+	if first.Role != "user" || strings.Contains(string(first.Content), "tool_result") {
+		t.Errorf("trimmed transcript must open on a plain user message, got role=%s %s", first.Role, first.Content)
+	}
+
+	// A non-compaction request is never trimmed, no matter how big.
+	huge := []byte(`{"model":"main","messages":[{"role":"user","content":"` + strings.Repeat("x", 60000) + `"}]}`)
+	if got := trimCompaction(huge, window); len(got) != len(huge) {
+		t.Error("non-compaction request must pass through untouched")
+	}
+	// A compaction that fits is untouched, and window 0 disables trimming.
+	small := []byte(`{"model":"main","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},` + instruction + `]}`)
+	if got := trimCompaction(small, window); len(got) != len(small) {
+		t.Error("fitting compaction must pass through untouched")
+	}
+	if got := trimCompaction(body, 0); len(got) != len(body) {
+		t.Error("window 0 must disable trimming")
 	}
 }
 

@@ -185,7 +185,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 
 	// The model-aware router is mandatory in team mode -- it dispatches every request to
 	// its backend (and applies adaptive reasoning where appropriate).
-	rtr, err := router.StartTeam(cfg, disp.routes, disp.ladder, disp.ladderTag, mainURL)
+	rtr, err := router.StartTeam(cfg, disp.routes, disp.ladder, disp.ladderTag, mainURL, headCtx)
 	if err != nil {
 		ui.Err("team router failed: %v", err)
 		return 1

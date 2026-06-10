@@ -3,6 +3,25 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.12.0 — 2026-06-10
+
+Long sessions auto-compact and keep going.
+
+### Fixed
+- The compaction death loop: at local window sizes the auto-compaction trigger
+  (93%) left only a sliver of headroom -- one big tool result jumped straight
+  past the end of the window, and the recovery compaction (whole transcript +
+  summary) then hit the context wall mid-summary, shrinking nothing. The
+  session looped on the overflow forever (observed live at a 49k window:
+  overflow -> truncated summary -> overflow, every ~90s for half an hour).
+  Two layers now prevent it:
+  - The compaction trigger reserves max(8k, window/8) tokens of real headroom
+    for the in-flight turn plus the summary generation.
+  - The router trims the OLDEST transcript messages out of a compaction
+    request that no longer fits (keeping the summarize instruction and opening
+    on a clean user message), so the summary always has room to complete --
+    the session compacts and keeps going, like the cloud endpoints do.
+
 ## v1.11.0 — 2026-06-10
 
 `winc -s` resumes the last used setup.

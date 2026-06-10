@@ -51,8 +51,9 @@ type Router struct {
 const fallbackName = "main"
 
 // Start launches the router in front of upstream (the llama-server/-swap URL) on
-// an ephemeral localhost port.
-func Start(cfg *config.Config, upstream string) (*Router, error) {
+// an ephemeral localhost port. ctxWindow, when > 0, is the server's loaded context
+// size -- used to trim an oversized compaction request so its summary can complete.
+func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) {
 	u, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err
@@ -70,6 +71,7 @@ func Start(cfg *config.Config, upstream string) (*Router, error) {
 		if req.Method == http.MethodPost && isChatPath(req.URL.Path) {
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
+				body = trimCompaction(body, ctxWindow)
 				cb, _, _ := compactRequest(body, nil) // lossless minify only (no tool stripping in single mode)
 				// Thinking is rewritten only in adaptive mode; on/off/fixed are set by the
 				// server's own flags, so pass those through untouched. The router still runs
@@ -376,7 +378,9 @@ type Tier struct {
 // field: the subagent ladderTag escalates across the ladder by load (start small, escalate
 // by degree); explicit routes map a model to a fixed backend; anything else (the HEAD) goes
 // to fallback. One ANTHROPIC_BASE_URL fronts the main model and its small CPU workers.
-func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fallback string) (*Router, error) {
+// headCtx, when > 0, is the head's per-slot context size -- used to trim an oversized
+// compaction request so its summary can complete.
+func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fallback string, headCtx int) (*Router, error) {
 	r := &Router{requests: map[string]int{}, dead: map[string]bool{}}
 	proxies := map[string]*httputil.ReverseProxy{}
 	mkProxy := func(target string) error {
@@ -437,6 +441,12 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
 				model := modelOf(body)
+				if ladderTag == "" || model != ladderTag {
+					// Head-bound request: a compaction that no longer fits the head's
+					// window gets its oldest transcript messages dropped so the summary
+					// can complete (subagent/ladder requests have their own windows).
+					body = trimCompaction(body, headCtx)
+				}
 				name := fallbackName
 				think := ""
 				var allow []string // tool allowlist for the chosen worker backend (nil = HEAD, keep all)
@@ -586,6 +596,73 @@ func infoOnlyRequest(body []byte) bool {
 		}
 	}
 	return true
+}
+
+// summaryRoomTokens is the share of the context window kept free for a compaction
+// request's generated summary. A compaction prompt that fills the whole window
+// starts the summary and hits the context wall mid-write (truncated output) -- the
+// broken summary shrinks nothing and the session loops on the overflow forever.
+const summaryRoomTokens = 6144
+
+// trimCompaction makes an oversized compaction request fit its window. Claude Code
+// compacts by sending the WHOLE transcript plus a final summarize instruction; when
+// the session has already overflowed, that prompt IS the overflow -- it can never
+// succeed as sent. Drop the OLDEST messages (the summary cares most about the recent
+// state) until the prompt leaves summaryRoomTokens for the summary itself, keeping
+// the final instruction and opening the kept transcript on a plain user message (no
+// orphaned tool results). Non-compaction requests and compactions that already fit
+// pass through untouched.
+func trimCompaction(body []byte, window int) []byte {
+	if window <= 0 || reasoning.EstimateInputTokens(body) <= window-summaryRoomTokens {
+		return body
+	}
+	if !reasoning.IsCompaction(body) {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	var msgs []json.RawMessage
+	if err := json.Unmarshal(m["messages"], &msgs); err != nil || len(msgs) < 3 {
+		return body
+	}
+	overBytes := len(body) - (window-summaryRoomTokens)*4
+	drop := 0
+	for drop < len(msgs)-2 && overBytes > 0 {
+		overBytes -= len(msgs[drop])
+		drop++
+	}
+	// Never orphan a tool_result: open the kept transcript on a plain user message.
+	for drop < len(msgs)-2 && !plainUserMessage(msgs[drop]) {
+		drop++
+	}
+	if drop == 0 {
+		return body
+	}
+	nb, err := json.Marshal(msgs[drop:])
+	if err != nil {
+		return body
+	}
+	m["messages"] = nb
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// plainUserMessage reports whether a message is role=user carrying no tool_result
+// blocks -- a clean opening message for a trimmed transcript.
+func plainUserMessage(raw json.RawMessage) bool {
+	var msg struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.Role != "user" {
+		return false
+	}
+	return !bytes.Contains(msg.Content, []byte(`"tool_result"`))
 }
 
 // modelOf extracts the request's `model` field ("" if absent/unparseable).

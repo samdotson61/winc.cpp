@@ -18,6 +18,23 @@ func envVal(env []string, key string) (string, bool) {
 	return val, ok
 }
 
+// The auto-compaction trigger must leave real headroom -- max(8k, window/8)
+// tokens -- so the compaction request (transcript + summary) always fits.
+func TestEnvCompactionTrigger(t *testing.T) {
+	cases := map[int]string{
+		49152:  "83", // 8k reserve at a 48k window
+		131072: "87", // window/8 dominates large windows
+		16384:  "50", // 8k reserve halves a 16k window
+		8192:   "50", // clamped floor
+	}
+	for win, want := range cases {
+		env := Env("http://local", Slots{Sonnet: "m", Opus: "m", Haiku: "m"}, 0, win, "", "")
+		if v, _ := envVal(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"); v != want {
+			t.Errorf("window %d: trigger pct = %q, want %q", win, v, want)
+		}
+	}
+}
+
 func TestEnvMapsTiersAndPinsMain(t *testing.T) {
 	slots := Slots{Sonnet: "small-4b", Opus: "big-35b", Haiku: "tiny-0.8b"}
 	env := Env("http://local", slots, 0, 0, "big-35b", "tiny-0.8b")
