@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -112,6 +114,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				lc.Performance.CacheType = mct
 				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false); proc != nil {
 					cfg.Performance.CacheType = mct
+					reportDecode(benchDecodeTPS(serverURL), mctx)
 					return proc, mctx
 				}
 				// Some boundary windows only load via the probe's staircase (the forced
@@ -127,6 +130,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 					proc, ctx = upgradeLadderQ4(&lc2, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
 					if proc != nil {
 						cfg.Performance.CacheType = lc2.Performance.CacheType
+						reportDecode(benchDecodeTPS(serverURL), ctx)
 						ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 						saveLaunchMemo(modelPath, ctx, ct)
 					}
@@ -137,9 +141,12 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		}
 		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false); proc != nil {
 			proc, ctx = upgradeLadderQ4(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
-			if proc != nil && wasAuto {
-				ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-				saveLaunchMemo(modelPath, ctx, ct)
+			if proc != nil {
+				reportDecode(benchDecodeTPS(serverURL), ctx)
+				if wasAuto {
+					ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
+					saveLaunchMemo(modelPath, ctx, ct)
+				}
 			}
 			return proc, ctx
 		}
@@ -180,26 +187,55 @@ func ladderBelow(ctx int) int {
 }
 
 // autoSized reports whether the context and KV cache are both winc-chosen. The
-// launch memo only applies to auto sizing; explicit user settings run as written.
+// launch memo only applies to winc-sized launches; explicit settings run as written.
 func autoSized(cfg *config.Config) bool {
-	ctxAuto := cfg.Performance.Context == "auto" || cfg.Performance.Context == ""
+	ctxAuto := false
+	switch strings.ToLower(strings.TrimSpace(cfg.Performance.Context)) {
+	case "", "auto", "optimal":
+		ctxAuto = true
+	}
 	ct := strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType))
 	return ctxAuto && (ct == "" || ct == "auto")
 }
 
-// parallelSlots reads --parallel N from the extra server args (team mode adds it
-// when subagents may escalate to the head): the agent-visible window is the total
-// divided across the slots.
-func parallelSlots(cfg *config.Config) int {
-	ex := cfg.Performance.ExtraServerArgs
-	for i, a := range ex {
-		if a == "--parallel" && i+1 < len(ex) {
-			if n, err := strconv.Atoi(ex[i+1]); err == nil && n > 1 {
-				return n
-			}
-		}
+// starvedKV is the KV cache the upgrade probe downshifts to: keys stay q8_0
+// (4-bit keys measure ~+10% perplexity -- past the usefulness line for coding),
+// values drop to q4_0 (near-lossless) -- ~1.3x the window at minimal quality cost.
+const starvedKV = "q8_0/q4_0"
+
+// benchDecodeTPS measures real decode speed with a tiny fixed completion against
+// the freshly-loaded (and warmed-up) server. Returns 0 when the request fails --
+// the launch proceeds either way; this is measurement, never a gate.
+func benchDecodeTPS(serverURL string) float64 {
+	body := `{"messages":[{"role":"user","content":"Count from 1 to 30 as plain digits separated by spaces."}],"max_tokens":48,"temperature":0}`
+	cl := &http.Client{Timeout: 120 * time.Second}
+	resp, err := cl.Post(serverURL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		return 0
 	}
-	return 1
+	defer resp.Body.Close()
+	var out struct {
+		Timings struct {
+			PredictedPerSecond float64 `json:"predicted_per_second"`
+		} `json:"timings"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return 0
+	}
+	return out.Timings.PredictedPerSecond
+}
+
+// reportDecode prints the measured speed against the 40-80 tok/s baseline band.
+func reportDecode(tps float64, ctx int) {
+	if tps <= 0 {
+		return
+	}
+	switch {
+	case tps < 40:
+		ui.Warn("decode: ~%.0f tok/s at %d context - below the 40 tok/s baseline (a smaller model or quant would be faster; see 'winc detect')", tps, ctx)
+	default:
+		ui.Info("decode: ~%.0f tok/s at %d context", tps, ctx)
+	}
 }
 
 // launchMemoPath is the per-model memo of the last measured-good launch (context +
@@ -303,7 +339,7 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		return proc, ctx // the formula already picked q4; this IS the q4 result
 	}
 	target := engine.ResolveContext(cfg, hw, modelPath, mb, off)
-	starved := ctx/parallelSlots(cfg) < engine.StarvedCtxTokens
+	starved := ctx/engine.ParallelSlots(cfg) < engine.StarvedCtxTokens
 	if ctx >= target && !starved {
 		return proc, ctx // landed where the formula aimed, and no slot is starved
 	}
@@ -314,21 +350,21 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		if best <= ctx {
 			return proc, ctx // probed before: q4 gains nothing on this model here
 		}
-		ui.Info("q4_0 KV cache upgrade (memoized): %d -> %d tokens...", ctx, best)
+		ui.Info("KV cache upgrade (memoized): %d -> %d tokens...", ctx, best)
 		proc.Stop()
 		q4 := *cfg
-		q4.Performance.CacheType = "q4_0"
+		q4.Performance.CacheType = starvedKV
 		if p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, best, false); p2 != nil {
-			cfg.Performance.CacheType = "q4_0"
+			cfg.Performance.CacheType = starvedKV
 			return p2, best
 		}
 		// Didn't come back (VRAM situation changed?) -- fall through to a fresh probe.
 	}
 
-	ui.Info("context settled at %d (target %d) - probing larger windows with q4_0 KV caches...", ctx, target)
+	ui.Info("context settled at %d (target %d) - probing larger windows with the %s KV cache...", ctx, target, starvedKV)
 	proc.Stop()
 	q4 := *cfg
-	q4.Performance.CacheType = "q4_0"
+	q4.Performance.CacheType = starvedKV
 	var bestProc *server.Proc
 	best := ctx
 	for {
@@ -351,8 +387,8 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 	if bestProc != nil {
 		memo[key] = best
 		saveKVProbe(memo)
-		cfg.Performance.CacheType = "q4_0"
-		ui.Good("q4_0 KV caches widened the context: %d -> %d tokens", ctx, best)
+		cfg.Performance.CacheType = starvedKV
+		ui.Good("%s KV cache widened the context: %d -> %d tokens", starvedKV, ctx, best)
 		return bestProc, best
 	}
 	memo[key] = 0

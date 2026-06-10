@@ -2,12 +2,45 @@ package catalog
 
 import (
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	"winc/internal/config"
 	"winc/internal/paths"
 )
+
+// Quality floor: nothing below IQ3-class quantization anywhere, and nothing below
+// Q4_K_M for models under 14B -- destructive quants make small models useless
+// (coding especially, where syntax precision matters). Enforced here so future
+// catalog additions can't erode the floor.
+func TestCatalogQuantFloor(t *testing.T) {
+	params := regexp.MustCompile(`(\d+(?:\.\d+)?)B`)
+	quant := regexp.MustCompile(`(?i)(UD-)?(IQ\d|TQ\d|Q\d)[A-Z0-9_]*`)
+	bannedAnywhere := regexp.MustCompile(`(?i)^(UD-)?(IQ[12]|Q[12]|TQ)`)
+	okUnder14B := regexp.MustCompile(`(?i)^(UD-)?(Q4_K_M|Q4_K_XL|Q[568])`)
+	c := Load(nil)
+	for _, m := range c.Models {
+		q := quant.FindString(m.File)
+		if q == "" {
+			t.Errorf("%s: no quant tag found in file %q", m.Alias, m.File)
+			continue
+		}
+		if bannedAnywhere.MatchString(q) {
+			t.Errorf("%s: quant %s is below the IQ3 floor (>10%% degradation)", m.Alias, q)
+		}
+		pm := params.FindStringSubmatch(m.Name)
+		if pm == nil {
+			t.Errorf("%s: no parameter count found in name %q", m.Alias, m.Name)
+			continue
+		}
+		b, _ := strconv.ParseFloat(pm[1], 64)
+		if b < 14 && !okUnder14B.MatchString(q) {
+			t.Errorf("%s (%sB): quant %s is below Q4_K_M -- too destructive under 14B", m.Alias, pm[1], q)
+		}
+	}
+}
 
 func TestParseCatalog(t *testing.T) {
 	if _, ok := parseCatalog([]byte("not json")); ok {
@@ -126,8 +159,10 @@ func TestMTPVariants(t *testing.T) {
 	for std, want := range map[string]string{
 		"qwen3.6-35b":    "qwen3.6-35b-mtp",
 		"qwen3.6-35b-q4": "qwen3.6-35b-q4-mtp",
+		"qwen3.6-35b-q5": "qwen3.6-35b-q5-mtp",
 		"qwen3.6-27b":    "qwen3.6-27b-mtp",
 		"qwen3.6-27b-q5": "qwen3.6-27b-q5-mtp",
+		"qwen3.6-27b-q6": "qwen3.6-27b-q6-mtp",
 		"qwen3.5-9b":     "qwen3.5-9b-mtp",
 	} {
 		m := c.Find(std)

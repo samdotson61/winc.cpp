@@ -3,6 +3,41 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.14.0 — 2026-06-10
+
+Quality floor + smarter recommendations.
+
+### Added
+- Catalog quality floor, enforced by test: nothing below IQ3-class quantization
+  anywhere, nothing below Q4_K_M for models under 14B (destructive quants make
+  small models useless, coding especially). gemma4-12b moves Q3_K_M -> Q4_K_M.
+- Catalog variants (all verified): qwen3.5-4b-q8 (4.5 GB), qwen3.5-9b-q5
+  (6.6 GB), qwen3.6-27b-q6 + MTP (22.5 GB), qwen3.6-35b-q5 + MTP (26.6 GB),
+  qwen3-coder-next-iq3 (29.7 GB, for 48-64 GB Macs).
+- Conservative recommendations: the recommended model must leave ~2 GB of
+  runtime headroom within the memory budget, stepping DOWN a tier when the
+  budget tier has nothing honest (a 4 GB card gets the 2B, a 12 GB card gets
+  a small-tier model that runs well instead of a 13.6 GB flagship).
+- Uncatalogued Qwen3.5-family downloads auto-pair with the 0.8B speculative
+  draft (same tokenizer family; MoE/MTP/tiny files excluded) -- unknown models
+  now get the full optimization treatment (sampling, MoE/MTP detection,
+  template patching, and KV sizing were already filename/GGUF-based).
+
+### Changed
+- `context = "optimal"` is the new default sizing mode: ~128K total per agent
+  slot (~64K effective working context + system prompt + auto-compaction
+  buffer), keeping decode in the 40-80 tok/s band; team escalation doubles the
+  total so each slot keeps the full baseline. `context = "auto"` keeps the
+  previous behavior (the largest window that fits, up to the 256K ceiling).
+- Every launch now MEASURES decode speed with a small completion and reports
+  it; below 40 tok/s winc says so and points at faster picks.
+- The starved-window KV downshift is now ASYMMETRIC: keys stay q8_0, values
+  drop to q4_0 (4-bit keys measure ~+10% perplexity -- past the usefulness
+  line; 4-bit values are near-lossless). Applies to the MTP draft cache too.
+  cache_type accepts an explicit "k/v" pair.
+- Team workers pin their KV cache to q8_0: small models are the most
+  sensitive to KV quantization, and worker windows are tiny anyway.
+
 ## v1.13.0 — 2026-06-10
 
 Up to 2x the context window, measured not guessed.

@@ -465,6 +465,10 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 		if gpu {
 			wc.Performance.GpuLayers = "99"
 		}
+		// Small models are the MOST sensitive to KV quantization, and worker windows
+		// are tiny anyway -- pin q8_0 so a session-level downshift (the head's KV
+		// upgrade probe mutates cfg) never degrades the workers.
+		wc.Performance.CacheType = "q8_0"
 		wc.Performance.DraftModel = ""
 		wc.Performance.Mtp = "off"
 		wc.Performance.ExtraServerArgs = nil

@@ -101,9 +101,31 @@ func TestResolveContext(t *testing.T) {
 	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, false); got != ctxFloor {
 		t.Errorf("tight VRAM should floor: got %d", got)
 	}
-	// experts offloaded -> aim at the ceiling regardless of the (now-irrelevant) file size
+	// "auto" = the previous largest-fits behavior: offloaded experts aim at the
+	// full ceiling.
 	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, true); got != ctxCeil {
-		t.Errorf("offloaded experts should target the ceiling: got %d", got)
+		t.Errorf("auto + offloaded experts should target the ceiling: got %d", got)
+	}
+	// "optimal" (the default) targets ~128K PER AGENT SLOT: 40-80 tok/s on a 64K
+	// effective window beats a wider-but-slower one. Team escalation (--parallel 2)
+	// doubles the total so each slot still gets the full baseline.
+	cfg.Performance.Context = "optimal"
+	roomy := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
+	if got := ResolveContext(&cfg, roomy, "m.gguf", 5000, false); got != baselineCtxTokens {
+		t.Errorf("optimal single-slot target = %d, want %d", got, baselineCtxTokens)
+	}
+	cfg.Performance.ExtraServerArgs = []string{"--parallel", "2"}
+	if got := ResolveContext(&cfg, roomy, "m.gguf", 5000, false); got != 2*baselineCtxTokens {
+		t.Errorf("optimal two-slot target = %d, want %d", got, 2*baselineCtxTokens)
+	}
+	cfg.Performance.ExtraServerArgs = nil
+	if got := ResolveContext(&cfg, roomy, "m.gguf", 15500, true); got != baselineCtxTokens {
+		t.Errorf("optimal + offloaded experts should target the baseline: got %d", got)
+	}
+	// "auto" largest-fits on the same roomy hardware runs past the baseline.
+	cfg.Performance.Context = "auto"
+	if got := ResolveContext(&cfg, roomy, "m.gguf", 5000, false); got <= baselineCtxTokens {
+		t.Errorf("auto should size past the baseline on roomy hardware, got %d", got)
 	}
 	// An MTP model's draft context eats VRAM the KV cache can't use: same sizes,
 	// smaller window.
@@ -214,16 +236,17 @@ func TestResolveCPUMoEAuto(t *testing.T) {
 	}
 }
 
-// cache_type = "auto" downshifts to q4_0 when the q8-sized window would be starved
-// (roughly doubling it); ample setups keep q8_0, and explicit values are honored.
+// cache_type = "auto" downshifts to the ASYMMETRIC q8_0/q4_0 pair (keys keep
+// precision, values compress) when the q8-sized window would be starved; ample
+// setups keep q8_0, and explicit values are honored.
 func TestAutoKVCacheDownshift(t *testing.T) {
 	cfg := config.Defaults() // cache_type = "auto"
 	tight := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 8192}
-	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 5700, false); got != "q4_0" {
-		t.Errorf("starved window should downshift to q4_0, got %q", got)
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 5700, false); got != "q8_0/q4_0" {
+		t.Errorf("starved window should downshift to q8_0/q4_0, got %q", got)
 	}
-	if got := ResolveContext(&cfg, tight, "m.gguf", 5700, false); got != 114688 {
-		t.Errorf("downshifted window = %d, want 114688", got)
+	if got := ResolveContext(&cfg, tight, "m.gguf", 5700, false); got != 73728 {
+		t.Errorf("downshifted window = %d, want 73728", got)
 	}
 	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
 	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "q8_0" {
@@ -244,6 +267,40 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	cfg.Performance.FlashAttn = true
 	if got := EffectiveCacheType(&cfg, tight, "missing.gguf", 0, false); got != "q8_0" {
 		t.Errorf("unknown size must stay q8_0, got %q", got)
+	}
+}
+
+// Asymmetric pairs split correctly and size harmonically (bytes add per side).
+func TestSplitKVAndPairFactor(t *testing.T) {
+	if k, v := SplitKV("q8_0/q4_0"); k != "q8_0" || v != "q4_0" {
+		t.Errorf("SplitKV pair wrong: %q %q", k, v)
+	}
+	if k, v := SplitKV("q8_0"); k != "q8_0" || v != "q8_0" {
+		t.Errorf("SplitKV plain wrong: %q %q", k, v)
+	}
+	if got := kvCtxFactor("q8_0/q4_0", true); got != 83 { // 2*64*120/(64+120)
+		t.Errorf("pair factor = %d, want 83", got)
+	}
+	if got := kvCtxFactor("q8_0", true); got != 64 {
+		t.Errorf("plain q8 factor = %d, want 64", got)
+	}
+	if got := kvCtxFactor("q8_0/q4_0", false); got != 32 {
+		t.Errorf("no flash-attn must size as f16, got %d", got)
+	}
+}
+
+// ServerArgs and MTPArgs emit the split flags for an asymmetric cache.
+func TestAsymmetricCacheFlags(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Performance.CacheType = "q8_0/q4_0"
+	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
+	s := strings.Join(ServerArgs(&cfg, hw, "m.gguf", 8080, "", 16384), " ")
+	if !strings.Contains(s, "--cache-type-k q8_0 --cache-type-v q4_0") {
+		t.Errorf("asymmetric main cache flags missing: %s", s)
+	}
+	m := strings.Join(MTPArgs(&cfg, hw, "x-MTP.gguf", ""), " ")
+	if !strings.Contains(m, "--spec-draft-type-k q8_0 --spec-draft-type-v q4_0") {
+		t.Errorf("asymmetric draft cache flags missing: %s", m)
 	}
 }
 

@@ -241,7 +241,8 @@ func MTPArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin stri
 	// so a lighter draft cache only nudges acceptance, never output quality.
 	if cfg.Performance.FlashAttn {
 		if ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath)); ct != "" && ct != "f16" {
-			args = append(args, "--spec-draft-type-k", ct, "--spec-draft-type-v", ct)
+			k, v := SplitKV(ct)
+			args = append(args, "--spec-draft-type-k", k, "--spec-draft-type-v", v)
 		}
 	}
 	return args
@@ -324,7 +325,29 @@ func GpuLayers(cfg *config.Config, hw platform.Hardware) int {
 const (
 	ctxFloor = 32768  // enough for Claude Code's system prompt + tools + headroom
 	ctxCeil  = 262144 // every 2026 catalog model is natively >=256K; the load ladder protects the rest
+
+	// baselineCtxTokens is the automatic context target PER AGENT SLOT: ~64K of
+	// effective working context plus Claude Code's system prompt and the
+	// auto-compaction buffer (~128K total). Hardware that could hold more keeps
+	// the headroom for speed instead -- decode in the 40-80 tok/s band beats a
+	// wider window. An explicit `context = N` still goes to the full ceiling.
+	baselineCtxTokens = 131072
 )
+
+// ParallelSlots reads --parallel N from the extra server args (team mode adds it
+// when subagents may escalate to the head): the per-agent window is the total
+// divided across the slots, so sizing targets scale with it.
+func ParallelSlots(cfg *config.Config) int {
+	ex := cfg.Performance.ExtraServerArgs
+	for i, a := range ex {
+		if a == "--parallel" && i+1 < len(ex) {
+			if n, err := strconv.Atoi(ex[i+1]); err == nil && n > 1 {
+				return n
+			}
+		}
+	}
+	return 1
+}
 
 // StarvedCtxTokens is the auto window below which the KV cache downshifts to q4_0
 // (cache_type = "auto"): halving the KV bytes roughly doubles a starved window,
@@ -334,12 +357,21 @@ const StarvedCtxTokens = 65536
 // kvCtxFactor is the auto-context multiplier (tokens per free MB of VRAM) for a KV
 // cache type. q8_0 (~16 KB/token) is the baseline 64; f16 doubles the bytes (so
 // halves the tokens), q4 halves the bytes (so doubles the tokens). Conservative.
-// KV quantization needs flash attention -- without it the cache is f16 regardless.
+// An asymmetric "k/v" pair combines harmonically (bytes add per side). KV
+// quantization needs flash attention -- without it the cache is f16 regardless.
 func kvCtxFactor(cacheType string, flashAttn bool) int {
 	if !flashAttn {
 		return 32 // f16 K+V
 	}
-	switch strings.ToLower(strings.TrimSpace(cacheType)) {
+	if k, v := SplitKV(strings.ToLower(strings.TrimSpace(cacheType))); k != v {
+		fk, fv := kvSideFactor(k), kvSideFactor(v)
+		return 2 * fk * fv / (fk + fv)
+	}
+	return kvSideFactor(strings.ToLower(strings.TrimSpace(cacheType)))
+}
+
+func kvSideFactor(cacheType string) int {
+	switch cacheType {
 	case "f16", "":
 		return 32
 	case "q8_0":
@@ -399,9 +431,13 @@ func fullyFitsGPU(cfg *config.Config, hw platform.Hardware, modelPath string, mo
 }
 
 // EffectiveCacheType resolves cache_type = "auto": q8_0 normally, downshifted to
-// q4_0 when the q8-sized window would be starved (< StarvedCtxTokens). Explicit
-// values pass through untouched. Quantized KV needs flash attention; without it
-// the cache is f16 regardless, so auto stays on q8_0 there (the flags are skipped).
+// the ASYMMETRIC "q8_0/q4_0" (key cache / value cache) when the q8-sized window
+// would be starved (< StarvedCtxTokens). Keys are far more sensitive to
+// quantization than values (4-bit keys measure ~+10% perplexity -- past the
+// usefulness line for coding -- while 4-bit values are near-lossless), so the
+// downshift halves only the value side: ~1.3x the window at minimal quality cost.
+// Explicit values pass through untouched, including an explicit "k/v" pair.
+// Quantized KV needs flash attention; without it the cache is f16 regardless.
 func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath string, modelFileMB int, expertsOffloaded bool) string {
 	ct := strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType))
 	if ct != "" && ct != "auto" {
@@ -411,9 +447,18 @@ func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath stri
 		return "q8_0" // no flash-attn (cache is f16 anyway) or unknown size -> never downshift
 	}
 	if resolveContextFor(cfg, hw, "q8_0", modelPath, modelFileMB, expertsOffloaded) < StarvedCtxTokens {
-		return "q4_0"
+		return "q8_0/q4_0"
 	}
 	return "q8_0"
+}
+
+// SplitKV splits a cache-type value into its key-cache and value-cache types: a
+// plain type applies to both sides; "k/v" sets them separately.
+func SplitKV(ct string) (k, v string) {
+	if i := strings.IndexByte(ct, '/'); i >= 0 {
+		return ct[:i], ct[i+1:]
+	}
+	return ct, ct
 }
 
 // ResolveContext picks a liberal context window: the configured value, or (auto)
@@ -428,14 +473,27 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelPath string, 
 // resolveContextFor is ResolveContext with the KV cache type pinned (the "auto"
 // resolution needs to size the q8 window without recursing).
 func resolveContextFor(cfg *config.Config, hw platform.Hardware, cacheType, modelPath string, modelFileMB int, expertsOffloaded bool) int {
-	if cfg.Performance.Context != "auto" && cfg.Performance.Context != "" {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Performance.Context))
+	switch mode {
+	case "", "auto", "optimal":
+	default:
 		return atoiOr(cfg.Performance.Context, ctxFloor)
 	}
 	if GpuLayers(cfg, hw) == 0 || hw.VRAMMB <= 0 {
 		return ctxFloor
 	}
+	// "optimal" (the default) targets ~128K total per agent slot -- decode speed
+	// in the 40-80 tok/s band beats a wider window. "auto" is the previous
+	// behavior: the largest window that fits, up to the 256K ceiling.
+	limit := ctxCeil
+	if mode != "auto" {
+		limit = baselineCtxTokens * ParallelSlots(cfg)
+		if limit > ctxCeil {
+			limit = ctxCeil
+		}
+	}
 	if expertsOffloaded {
-		return ctxCeil // experts in RAM -> lots of VRAM free; ladder fits the largest that loads
+		return limit // experts in RAM -> lots of VRAM free; ladder fits the largest that loads
 	}
 	if modelFileMB <= 0 {
 		return ctxFloor
@@ -452,8 +510,8 @@ func resolveContextFor(cfg *config.Config, hw platform.Hardware, cacheType, mode
 	if toks < ctxFloor {
 		return ctxFloor
 	}
-	if toks > ctxCeil {
-		return ctxCeil
+	if toks > limit {
+		return limit
 	}
 	return toks
 }
@@ -544,7 +602,8 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	if cfg.Performance.FlashAttn && ngl > 0 {
 		args = append(args, "--flash-attn", "on")
 		if ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath)); ct != "" && ct != "f16" {
-			args = append(args, "--cache-type-k", ct, "--cache-type-v", ct)
+			k, v := SplitKV(ct)
+			args = append(args, "--cache-type-k", k, "--cache-type-v", v)
 		}
 	}
 

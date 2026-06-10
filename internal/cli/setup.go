@@ -44,7 +44,7 @@ func cmdSetup() int {
 	ui.Step(5, 6, "Model")
 	if anyModelDownloaded(cfg) {
 		ui.Good("models already present in %s", modelsDir(cfg))
-	} else if def := firstInTier(cat, tier); def != nil {
+	} else if def := recommendModel(cat, hw.MemoryBudgetMB()); def != nil {
 		if ui.Confirm(fmt.Sprintf("Download recommended model %s (%s) for tier '%s'?", def.Alias, def.Size, tier), true) {
 			if _, err := download.HFDownload(def.Repo, def.File, modelsDir(cfg), cfg.HuggingFace.Token); err != nil {
 				ui.Warn("model download failed: %v", err)

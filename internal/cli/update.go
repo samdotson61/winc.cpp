@@ -100,7 +100,7 @@ func reconcileConfig(hw platform.Hardware) {
 	cat := catalog.Load(cfg.CustomModels)
 
 	if !modelResolvable(cfg, cat, cfg.General.DefaultModel) {
-		if rec := firstInTier(cat, catalog.VramTier(hw.MemoryBudgetMB())); rec != nil {
+		if rec := recommendModel(cat, hw.MemoryBudgetMB()); rec != nil {
 			if err := config.UpdateDefaultModel(rec.Alias); err != nil {
 				ui.Warn("config: couldn't repair default_model: %v", err)
 			} else {

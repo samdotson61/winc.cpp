@@ -138,10 +138,16 @@ complexity_boost = true          # +1 tier if code / tool_result / build-intent 
 [performance]
 backend    = "auto"     # auto | cuda | metal | vulkan | rocm | cpu
 gpu_layers = "auto"     # "auto" or integer (-ngl)
-context    = "auto"     # "auto" sizes the window to fit VRAM (falls back if too big), or a token count (-c)
+
+# Context sizing. "optimal" (recommended) targets ~128K total per agent slot --
+# ~64K of effective working context plus the system prompt and the auto-compaction
+# buffer -- keeping decode in the 40-80 tok/s band. "auto" sizes to the LARGEST
+# window that fits VRAM (up to 256K; wider but can be slower to load and run).
+# Or set a fixed token count (-c).
+context    = "optimal"
 batch      = "auto"
 flash_attn = true
-cache_type = "auto"     # KV cache: "auto" (q8_0; drops to q4_0 when the window would be starved) | q8_0 | f16 (max quality) | q4_0 (smallest -> widest auto context). Needs flash_attn.
+cache_type = "auto"     # KV cache: "auto" (q8_0; value side drops to q4_0 when the window is starved) | q8_0 | f16 | q4_0 | "k/v" pair e.g. "q8_0/q4_0". Needs flash_attn.
 threads    = "auto"
 max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
 

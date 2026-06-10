@@ -255,7 +255,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 |---|---|---|---|---|---|---|
 | ★ qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | agentic **coding** specialist |
-| gemma4-12b | 12B | 5.7 GB (Q3) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist |
+| gemma4-12b | 12B | 7.1 GB (Q4) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist (8+ GB) |
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
 
 Anchors: an RTX 3050 8 GB runs a 9B Q4 at ~25 tok/s; a 4B is ~2x that, a sub-1B ~5x+;
@@ -280,7 +280,7 @@ end of this section only exist if you want to override a decision.
 | **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU but parks the **expert weights in RAM** (`--cpu-moe`), freeing VRAM for a much larger context | A 35B-A3B runs near GPU speed on 12 GB; on a tight 16 GB fit it trades a little speed for a ~32k→~100k+ context |
 | **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and sets the compaction trigger to leave **max(8k, window/8) tokens of headroom** — room for the in-flight turn *plus* the compaction summary itself. If a session still overflows, the router **trims the oldest transcript messages out of the compaction request** so the summary completes instead of truncating mid-write | Long sessions auto-compact and keep going; no more overflow → broken-summary → overflow death loop |
 | **Flash attention + Q8 KV cache** | Enables `--flash-attn` and stores the KV cache at `q8_0` when on GPU | Halves KV-cache memory → bigger context in the same VRAM, and faster attention |
-| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with q4_0 KV caches** (main *and* MTP draft) and keeps the widest that loads — memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
+| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with an asymmetric q8_0/q4_0 KV cache** — keys keep full q8 precision (4-bit keys measurably degrade coding), only values compress — applied to the main *and* MTP draft caches, keeping the widest window that loads, memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
@@ -312,7 +312,7 @@ All default to `auto`/off; set them only to override `winc`'s choice.
 [performance]
 backend    = "auto"   # auto | cuda | metal | vulkan | rocm | cpu  (force a backend)
 gpu_layers = "auto"   # "auto" (fit to VRAM) or an integer -ngl
-context    = "auto"   # "auto" (size to VRAM, with fallback) or a fixed token count
+context    = "optimal"   # "optimal" (~128K/agent, 40-80 tok/s baseline) | "auto" (largest that fits, up to 256K) | a fixed token count
 batch      = "auto"   # "auto" (2048) or an integer
 flash_attn = true     # flash attention when on GPU
 cache_type = "auto"   # KV cache: "auto" (q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 (max quality) | q4_0 (smallest → ~2× the auto context). Needs flash_attn
@@ -366,10 +366,12 @@ older engines just run without it).
 
 `mtp = "off"` disables it.
 
-**More context at ~the same speed:** this is automatic now — `cache_type = "auto"` halves
-the KV-cache bytes (q4_0) whenever the q8_0 window would come up short, and the launch
-probe verifies the wider window actually loads. Set `cache_type = "q4_0"` to force it —
-`winc`'s auto-context sizing then fits roughly **2× the tokens** in the same VRAM
+**More context at ~the same speed:** this is automatic now — `cache_type = "auto"` drops
+the **value** cache to q4_0 (keys stay q8_0; they're the quantization-sensitive side)
+whenever the q8_0 window would come up short, and the launch probe verifies the wider
+window actually loads. Workers always pin q8_0 — small models suffer most from KV
+quantization. Set `cache_type = "q4_0"` (or any `"k/v"` pair) to force a layout —
+`winc`'s auto-context sizing then fits proportionally more tokens in the same VRAM
 (up to the model's trained limit). `q8_0` stays the default for the best speed/accuracy
 balance.
 

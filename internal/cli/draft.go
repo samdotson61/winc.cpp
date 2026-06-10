@@ -3,11 +3,13 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"winc/internal/catalog"
 	"winc/internal/config"
 	"winc/internal/download"
+	"winc/internal/engine"
 	"winc/internal/ui"
 )
 
@@ -24,6 +26,9 @@ func autoPairDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) 
 	m := cat.Find(modelQuery)
 	draft := cat.DraftFor(m)
 	if draft == nil {
+		if m == nil {
+			autoPairUncataloguedDraft(cfg, cat, modelQuery)
+		}
 		return
 	}
 	if !fileExists(filepath.Join(modelsDir(cfg), draft.LocalFile())) {
@@ -32,6 +37,39 @@ func autoPairDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) 
 	}
 	cfg.Performance.DraftModel = draft.LocalFile()
 	ui.Info("speculative decoding on: drafting %s with %s", m.Alias, draft.Alias)
+}
+
+// qwen35Family matches the Qwen3.5 model family in a filename -- the one family
+// whose tokenizer the catalog's 0.8B draft shares (Qwen3.6 changed tokenizers and
+// must never be externally drafted).
+var qwen35Family = regexp.MustCompile(`(?i)qwen[-_.]?3[._]5`)
+
+// autoPairUncataloguedDraft extends speculative decoding to unknown downloads with
+// catalog-family features: a big dense Qwen3.5-family GGUF pairs with the catalog's
+// 0.8B draft when both are downloaded. MoE files are skipped (drafts backfire on
+// MoE), MTP files carry their own heads, and tiny models aren't worth drafting.
+func autoPairUncataloguedDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) {
+	p, _ := downloadedPath(cfg, cat, modelQuery)
+	if p == "" {
+		return
+	}
+	base := filepath.Base(p)
+	if !qwen35Family.MatchString(base) || engine.IsMoEFile(base) || engine.IsMTPFile(base) {
+		return
+	}
+	if engine.FileMB(p) < 4000 {
+		return // the draft only pays off on 9B-class and bigger
+	}
+	draft := cat.Find("qwen3.5-0.8b")
+	if draft == nil || strings.EqualFold(base, draft.LocalFile()) {
+		return
+	}
+	if !fileExists(filepath.Join(modelsDir(cfg), draft.LocalFile())) {
+		ui.Dim("tip: 'winc -d %s' enables speculative decoding (faster) for %s (same family)", draft.Alias, base)
+		return
+	}
+	cfg.Performance.DraftModel = draft.LocalFile()
+	ui.Info("speculative decoding on: drafting %s with %s (family match)", base, draft.Alias)
 }
 
 // offerDraft prompts to also fetch the matching draft for a freshly-downloaded dense

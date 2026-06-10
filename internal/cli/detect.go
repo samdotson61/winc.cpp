@@ -60,7 +60,7 @@ func cmdDetect() int {
 	}
 	ui.Say("  Engine backend: %s", platform.DefaultBackend(hw))
 	ui.Say("  Memory budget : %d MB  ->  tier '%s'", hw.MemoryBudgetMB(), tier)
-	if def := firstInTier(cat, tier); def != nil {
+	if def := recommendModel(cat, hw.MemoryBudgetMB()); def != nil {
 		ui.Say("  Recommended   : %s (%s)", def.Alias, def.Size)
 
 		// Show what winc would resolve for that model (real on-disk size if it's
