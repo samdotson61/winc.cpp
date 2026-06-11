@@ -3,6 +3,13 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.17.1 — 2026-06-11
+
+### Fixed
+- The new .winc-hw hardware identity cache is machine-local state and is now
+  gitignored (one had been committed alongside v1.17.0; a stale clone's cache
+  self-heals at first launch either way).
+
 ## v1.17.0 — 2026-06-11
 
 Low-end hardware gets a usable window, and the PATH actually lands on
