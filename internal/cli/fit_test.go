@@ -55,6 +55,30 @@ func TestLaunchMemoRoundTrip(t *testing.T) {
 	}
 }
 
+// The placement gate's residency arithmetic: a forced-full-GPU load must drop
+// free dedicated VRAM by at least half the model's size, and only positive
+// evidence (probe data on both sides + a known model size) may reject.
+func TestResidencyBroken(t *testing.T) {
+	if !residencyBroken(26000, 25000, 19000) {
+		t.Error("a 19 GB model that moved free VRAM by 1 GB is not resident (the observed sysmem-fallback shape)")
+	}
+	if residencyBroken(26000, 4000, 19000) {
+		t.Error("a full-size VRAM drop is resident")
+	}
+	if residencyBroken(26000, 15000, 19000) {
+		t.Error("a drop larger than half the model (KV sizing varies) must pass")
+	}
+	if residencyBroken(0, 4000, 19000) {
+		t.Error("no pre-load probe data must never reject")
+	}
+	if residencyBroken(26000, 0, 19000) {
+		t.Error("no post-load probe data must never reject")
+	}
+	if residencyBroken(26000, 25000, 0) {
+		t.Error("unknown model size must never reject")
+	}
+}
+
 // The memo applies only when winc chose the sizing; explicit settings run as written.
 func TestAutoSized(t *testing.T) {
 	cfg := config.Defaults()

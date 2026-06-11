@@ -137,6 +137,22 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	// cards, not estimated. Hand it out largest worker first: the 4B is the ladder's
 	// information-agent catch-all, so it benefits most from GPU decode.
 	gpuLeft := leftoverVRAMMB()
+	// Sanity-check the leftover before spending it: a head the driver silently
+	// placed in shared system memory leaves dedicated VRAM looking untouched, so
+	// the "leftover" reading is really the head's own unclaimed seat -- seating
+	// workers in it evicts the head for good (observed live: ~24 GB of phantom
+	// leftover with a 19 GB head supposedly resident). If the arithmetic says the
+	// head can't be in dedicated memory, no worker touches the GPU.
+	if headMB := engine.FileMB(mainPath); gpuLeft > 0 && headMB > 0 && engine.ForcedFullGPU(cfg, hw, mainPath) {
+		preHead := 0
+		for _, g := range hw.GPUs {
+			preHead += g.FreeMB
+		}
+		if preHead > 0 && gpuLeft > preHead-headMB/2 {
+			ui.Warn("team: the head does not look resident in dedicated VRAM (%d MB free after loading a %d MB model into %d MB) - workers stay on CPU", gpuLeft, headMB, preHead)
+			gpuLeft = 0
+		}
+	}
 	if gpuLeft > 0 {
 		ui.Dim("team: ~%d MB VRAM left over after the head - workers that fit will use it (largest first)", gpuLeft)
 	}
@@ -149,32 +165,71 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		return 0
 	}
 
-	// Launch the worker(s), capturing each one's URL.
+	// Launch the worker(s) as records, so the head re-check below can demote GPU
+	// claimants to the CPU and the tier mapping reflects the final reality.
+	type workerLaunch struct {
+		run                   bool
+		path, alias, role, lp string
+		par, ctx              int
+		proc                  *server.Proc
+		url                   string
+		onGPU                 bool
+	}
+	ws := []*workerLaunch{
+		{run: runSonnet, path: sonnetPath, alias: sonnetAlias, role: "sonnet", lp: filepath.Join(logDir, "worker-sonnet.log"), par: sonnetPar, ctx: sonnetCtx},
+		{run: runMid, path: midPath, alias: midAlias, role: "mid", lp: filepath.Join(logDir, "worker-mid.log"), par: workerPar, ctx: workerCtx},
+		{run: runHaiku, path: haikuPath, alias: haikuAlias, role: "haiku", lp: filepath.Join(logDir, "worker-haiku.log"), par: workerPar, ctx: workerCtx},
+	}
+	anyOnGPU := false
+	for _, w := range ws {
+		if !w.run || w.path == "" {
+			continue
+		}
+		if p, url, _, gpu := startWorker(cfg, hw, serverBin, w.path, w.alias, mainAlias, w.par, w.ctx, w.role, w.lp, claimGPU(w.path, w.ctx)); p != nil {
+			procs = append(procs, p)
+			w.proc, w.url, w.onGPU = p, url, gpu
+			anyOnGPU = anyOnGPU || gpu
+		}
+	}
+
+	// The head was verified GPU-resident when it loaded -- but worker GPU claims
+	// land AFTER that, and the driver satisfies a new allocation by evicting
+	// whatever it must. If any worker took VRAM, re-measure the head's prompt
+	// speed; a degraded head means the workers' speedup is costing far more than
+	// it gives, so those workers move back to the CPU (they were started this
+	// session, so stopping them is winc's to do).
+	if anyOnGPU {
+		if pp, _, measured, slow := benchServer(mainURL); slow || (measured && pp < ppHealthyFloor) {
+			ui.Warn("team: head prompt processing degraded to ~%.0f tok/s after workers claimed VRAM - moving those workers to the CPU", pp)
+			for _, w := range ws {
+				if w.proc == nil || !w.onGPU {
+					continue
+				}
+				w.proc.Stop()
+				w.proc, w.url, w.onGPU = nil, "", false
+				if p, url, _, _ := startWorker(cfg, hw, serverBin, w.path, w.alias, mainAlias, w.par, w.ctx, w.role, w.lp, 0); p != nil {
+					procs = append(procs, p)
+					w.proc, w.url = p, url
+				}
+			}
+		}
+	}
+
 	slots := agent.Slots{Opus: mainAlias, Sonnet: mainAlias, Haiku: mainAlias}
 	var sonnetURL, midURL, haikuURL string
 	var workers []teamWorker
-	if runSonnet {
-		lp := filepath.Join(logDir, "worker-sonnet.log")
-		if p, url, alias := startWorker(cfg, hw, serverBin, sonnetPath, sonnetAlias, mainAlias, sonnetPar, sonnetCtx, "sonnet", lp, claimGPU(sonnetPath, sonnetCtx)); p != nil {
-			procs = append(procs, p)
-			sonnetURL, slots.Sonnet = url, alias
-			workers = append(workers, teamWorker{proc: p, name: "sonnet", url: url, logPath: lp})
+	for _, w := range ws {
+		if w.proc == nil {
+			continue
 		}
-	}
-	if runMid {
-		lp := filepath.Join(logDir, "worker-mid.log")
-		if p, url, _ := startWorker(cfg, hw, serverBin, midPath, midAlias, mainAlias, workerPar, workerCtx, "mid", lp, claimGPU(midPath, workerCtx)); p != nil {
-			procs = append(procs, p)
-			midURL = url // ladder-only rung; not mapped to a Claude Code tier
-			workers = append(workers, teamWorker{proc: p, name: "mid", url: url, logPath: lp})
-		}
-	}
-	if runHaiku {
-		lp := filepath.Join(logDir, "worker-haiku.log")
-		if p, url, alias := startWorker(cfg, hw, serverBin, haikuPath, haikuAlias, mainAlias, workerPar, workerCtx, "haiku", lp, claimGPU(haikuPath, workerCtx)); p != nil {
-			procs = append(procs, p)
-			haikuURL, slots.Haiku = url, alias
-			workers = append(workers, teamWorker{proc: p, name: "haiku", url: url, logPath: lp})
+		workers = append(workers, teamWorker{proc: w.proc, name: w.role, url: w.url, logPath: w.lp})
+		switch w.role {
+		case "sonnet":
+			sonnetURL, slots.Sonnet = w.url, w.alias
+		case "mid":
+			midURL = w.url // ladder-only rung; not mapped to a Claude Code tier
+		case "haiku":
+			haikuURL, slots.Haiku = w.url, w.alias
 		}
 	}
 
@@ -434,18 +489,19 @@ func workerGPUNeedMB(modelPath string, ctx int) int {
 }
 
 // startWorker launches one worker (dense small model) and returns its proc, URL,
-// and alias, or (nil,"","") when it has no model, no engine, an alias colliding with
-// the main model, or it fails to come up. parallel slots serve concurrent subagents.
-// gpuMB > 0 grants the worker that much of the VRAM the head left over: all its
-// layers are forced onto the GPU, with a CPU relaunch as the fallback if the load
-// fails. gpuMB == 0 is the classic CPU worker.
-func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath, alias, mainAlias string, parallel, ctx int, role, logPath string, gpuMB int) (*server.Proc, string, string) {
+// alias, and whether it landed on the GPU -- or (nil,"","",false) when it has no
+// model, no engine, an alias colliding with the main model, or it fails to come
+// up. parallel slots serve concurrent subagents. gpuMB > 0 grants the worker that
+// much of the VRAM the head left over: all its layers are forced onto the GPU,
+// with a CPU relaunch as the fallback if the load fails. gpuMB == 0 is the
+// classic CPU worker.
+func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath, alias, mainAlias string, parallel, ctx int, role, logPath string, gpuMB int) (*server.Proc, string, string, bool) {
 	if modelPath == "" || serverBin == "" {
-		return nil, "", ""
+		return nil, "", "", false
 	}
 	if strings.EqualFold(alias, mainAlias) {
 		ui.Dim("team: %s worker is the same model as main - skipping (no separate tier needed)", role)
-		return nil, "", ""
+		return nil, "", "", false
 	}
 
 	// One launch attempt. Worker config: GPU only within the granted leftover slice
@@ -499,15 +555,15 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 
 	if gpuMB > 0 {
 		if proc, url := try(true); proc != nil {
-			return proc, url, alias
+			return proc, url, alias, true
 		}
 		ui.Dim("team: %s worker didn't come up on the GPU - retrying on the CPU", role)
 	}
 	if proc, url := try(false); proc != nil {
-		return proc, url, alias
+		return proc, url, alias, false
 	}
 	ui.Warn("team: %s worker didn't become ready - tier falls back to main; see %s", role, logPath)
-	return nil, "", ""
+	return nil, "", "", false
 }
 
 // freePort grabs an ephemeral localhost port for a worker server (0 on failure).

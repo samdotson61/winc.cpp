@@ -75,6 +75,23 @@ func WillOffloadExperts(cfg *config.Config, hw platform.Hardware, modelPath stri
 	return resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), GpuLayers(cfg, hw)) == "all"
 }
 
+// ForcedFullGPU reports whether this launch pins the model fully onto the GPU
+// (the fullyFitsGPU -ngl 99 policy) -- the loads whose VRAM residency the
+// launcher verifies after each attempt, because a pinned load that exceeds free
+// dedicated memory can be silently satisfied from shared system memory instead
+// of failing. Explicit gpu_layers, unified memory, expert offload, and partial
+// fits run as written and are never gated.
+func ForcedFullGPU(cfg *config.Config, hw platform.Hardware, modelPath string) bool {
+	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
+		return false
+	}
+	modelMB := FileMB(modelPath)
+	if resolveCPUMoE(cfg, hw, modelPath, modelMB, GpuLayers(cfg, hw)) != "" {
+		return false
+	}
+	return fullyFitsGPU(cfg, hw, modelPath, modelMB)
+}
+
 // mainEscalationHeadroomMB is the free VRAM (after the main model + compute buffer)
 // required before winc will let subagents escalate onto the main GPU model. Below this,
 // escalation tops out at the CPU worker so the orchestrator stays responsive and the KV

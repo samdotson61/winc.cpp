@@ -3,6 +3,47 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.14.3 — 2026-06-11
+
+A model that should be fully in VRAM now provably IS -- or the launcher steps
+down until it is.
+
+### Fixed
+- Silent shared-memory fallback. When a pinned full-GPU load (-ngl 99) exceeds
+  free dedicated VRAM, the Windows driver can satisfy the allocations from
+  SHARED system memory instead of failing: the server passes /health, answers
+  small completions normally -- and the first real prompt crawls (observed
+  live: a 19 GB model "loaded" with both cards still ~93% free, ~20 GB
+  committed in system RAM, and the agent's first message processing at 50-125
+  tok/s, decelerating, where ~30 seconds was normal). The load looked
+  measured-good, so the launch memo then replayed the broken placement on
+  every start. Every forced-full-GPU, auto-sized load is now verified after
+  /health by a placement gate:
+  - residency: free dedicated VRAM must drop by at least HALF the model's size
+    across the load (a resident model consumes at least its own weights);
+  - throughput: a ~2.5k-token bench prompt must clear 150 tok/s of batched
+    prompt processing (GPU-resident measures many hundreds; sysmem-paged
+    weights measured 50-125).
+  A rung that fails either is treated exactly like a failed load -- the ladder
+  steps down and the memos record only gated-healthy rungs (existing poisoned
+  memo entries self-heal on the next launch). The floor rung and last-resort
+  reloads always accept, warning loudly, so the gate can never block a launch.
+  Explicit gpu_layers/context settings run as written, ungated.
+- Team mode could finish the job: the leftover-VRAM probe read the phantom
+  "free" cards as ~24 GB of leftover and seated workers on top of the paged-out
+  head. Two guards now: leftover is sanity-checked against what a resident head
+  could possibly leave (impossible numbers keep every worker on the CPU), and
+  when any worker does claim VRAM the head's prompt speed is re-measured
+  afterwards -- if it degraded, those workers are stopped and relaunched on the
+  CPU (the head's residency outranks worker speedup, always).
+
+### Changed
+- The remembered launch (.winc-launch) is re-verified by the gate on every
+  start -- free VRAM drifts day to day, and a window that was healthy yesterday
+  can be over the cliff today. The launch speed report now includes measured
+  prompt processing alongside decode (e.g. "decode: ~36 tok/s (prompt ~620
+  tok/s)"), from the gate's own bench -- a launch is never benched twice.
+
 ## v1.14.2 — 2026-06-10
 
 Faster launches and a leaner router. Pure overhead removal -- every decision,

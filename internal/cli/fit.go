@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -59,23 +60,52 @@ func waitVRAMFree(neededMB int, timeout time.Duration) {
 }
 
 // tryContextOnce launches llama-server at exactly one context size. Returns nil
-// when it doesn't come up (the caller decides what to try next).
-func tryContextOnce(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, ctx int, noMTP bool) *server.Proc {
+// when it doesn't come up -- or when it comes up but the placement gate finds it
+// isn't actually GPU-resident (the caller steps down exactly as for a failed
+// load). lastResort marks a load that must never be rejected outright (the
+// ladder's floor rung, or a reload of a rung that already passed): gate failures
+// there warn loudly and accept, so the gate can never block a launch. gated says
+// the USER's sizing was auto -- it must be computed against the original config
+// by the top of the launch, because the ladder/probe/memo paths derive configs
+// with the context or cache type PINNED for the attempt (those pins are still
+// winc-chosen sizing, not user settings, and skipping the gate for them is what
+// let a sysmem-paged 98304 probe rung get recorded as measured-good).
+func tryContextOnce(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, ctx int, noMTP, lastResort, gated bool) *server.Proc {
 	waitVRAMFree(engine.FileMB(modelPath)+2048, 20*time.Second)
+	// The gate covers exactly the loads where winc pins -ngl 99 because the model
+	// SHOULD fit: those are the ones the driver can silently satisfy from shared
+	// system memory when the pin turns out to be over budget. Explicit user
+	// settings run as written.
+	gate := gated && engine.ForcedFullGPU(cfg, hw, modelPath)
+	preFree := 0
+	if gate {
+		for _, g := range platform.ProbeGPUFree() {
+			preFree += g.FreeMB
+		}
+	}
 	args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
 	if !noMTP {
 		args = append(args, engine.MTPArgs(cfg, hw, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
 	}
 	args = append(args, engine.CacheReuseArgs(serverBin)...) // extend prompt-cache reuse (probed)
+	lastBench = benchResult{}
 	proc, err := server.Start(serverBin, args, logPath)
 	if err != nil {
 		return nil
 	}
-	if server.WaitReady(serverURL, "/health", 240*time.Second, proc.Dead) {
-		return proc
+	if !server.WaitReady(serverURL, "/health", 240*time.Second, proc.Dead) {
+		proc.Stop() // didn't fit / failed
+		return nil
 	}
-	proc.Stop() // didn't fit / failed
-	return nil
+	if gate {
+		ok := verifyOnGPU(serverURL, modelPath, ctx, preFree, lastResort)
+		lastBench.tried = true
+		if !ok {
+			proc.Stop()
+			return nil
+		}
+	}
+	return proc
 }
 
 // rungWorthTrying consults the engine's fit calculator (seconds, metadata only)
@@ -115,14 +145,14 @@ func rungWorthTrying(cfg *config.Config, hw platform.Hardware, modelPath string,
 
 // tryContextLadder launches llama-server at the most liberal context that fits,
 // silently stepping down if a size fails to load. Returns (proc, ctx) or (nil, 0).
-func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, noMTP bool) (*server.Proc, int) {
+func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, noMTP, gated bool) (*server.Proc, int) {
 	target := engine.ResolveContext(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 	rungs := engine.ContextLadder(target)
 	for i, ctx := range rungs {
 		if !rungWorthTrying(cfg, hw, modelPath, ctx, 2, i == len(rungs)-1) {
 			continue
 		}
-		if proc := tryContextOnce(cfg, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP); proc != nil {
+		if proc := tryContextOnce(cfg, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP, i == len(rungs)-1, gated); proc != nil {
 			return proc, ctx
 		}
 	}
@@ -148,19 +178,17 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		// Fast path: a previous session already measured this model's best window and
 		// KV cache -- load straight there (one load instead of re-walking the ladder).
 		if wasAuto {
-			if mctx, mct, mtps := loadLaunchMemo(modelPath); mctx > 0 {
+			if mctx, mct, _ := loadLaunchMemo(modelPath); mctx > 0 {
 				lc := *cfg
 				lc.Performance.CacheType = mct
-				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false); proc != nil {
+				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false, false, true); proc != nil {
 					cfg.Performance.CacheType = mct
-					// The decode bench is a real completion (seconds of startup); the speed
-					// for this exact window + cache was measured when the memo was written,
-					// so reuse it and re-measure only entries that predate the speed field.
-					if mtps <= 0 {
-						mtps = benchDecodeTPS(serverURL)
-						saveLaunchMemo(modelPath, mctx, mct, mtps)
-					}
-					reportDecode(mtps, mctx)
+					// The placement gate already measured this server (a remembered rung
+					// gets re-verified every launch -- free VRAM drifts day to day); the
+					// report and the memo reuse its numbers.
+					pp, tps := launchBench(serverURL)
+					reportDecode(pp, tps, mctx)
+					saveLaunchMemo(modelPath, mctx, mct, tps)
 					return proc, mctx
 				}
 				// Some boundary windows only load via the probe's staircase (the forced
@@ -171,13 +199,13 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				ui.Dim("remembered launch (%d tokens, %s KV) didn't load standalone - re-measuring from one rung down...", mctx, mct)
 				lc2 := *cfg
 				lc2.Performance.Context = strconv.Itoa(ladderBelow(mctx))
-				if proc, ctx := tryContextLadder(&lc2, hw, modelPath, bin, port, serverURL, logPath, false); proc != nil {
+				if proc, ctx := tryContextLadder(&lc2, hw, modelPath, bin, port, serverURL, logPath, false, true); proc != nil {
 					lc2.Performance.Context = cfg.Performance.Context // restore auto for the probe's sizing math
-					proc, ctx = upgradeLadderQ4(&lc2, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
+					proc, ctx = upgradeLadderQ4(&lc2, hw, modelPath, bin, port, serverURL, logPath, proc, ctx, true)
 					if proc != nil {
 						cfg.Performance.CacheType = lc2.Performance.CacheType
-						tps := benchDecodeTPS(serverURL)
-						reportDecode(tps, ctx)
+						pp, tps := launchBench(serverURL)
+						reportDecode(pp, tps, ctx)
 						ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 						saveLaunchMemo(modelPath, ctx, ct, tps)
 					}
@@ -186,11 +214,11 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				// Even the remembered range failed (hardware changed?) -> full flow below.
 			}
 		}
-		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false); proc != nil {
-			proc, ctx = upgradeLadderQ4(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
+		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false, wasAuto); proc != nil {
+			proc, ctx = upgradeLadderQ4(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx, wasAuto)
 			if proc != nil {
-				tps := benchDecodeTPS(serverURL)
-				reportDecode(tps, ctx)
+				pp, tps := launchBench(serverURL)
+				reportDecode(pp, tps, ctx)
 				if wasAuto {
 					ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 					saveLaunchMemo(modelPath, ctx, ct, tps)
@@ -204,7 +232,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		// model still runs, just without the speedup.
 		if len(engine.MTPArgs(cfg, hw, modelPath, bin)) > 0 {
 			ui.Warn("server didn't start with MTP - retrying without speculative decoding...")
-			if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, true); proc != nil {
+			if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, true, wasAuto); proc != nil {
 				return proc, ctx
 			}
 		}
@@ -251,38 +279,147 @@ func autoSized(cfg *config.Config) bool {
 // values drop to q4_0 (near-lossless) -- ~1.3x the window at minimal quality cost.
 const starvedKV = "q8_0/q4_0"
 
-// benchDecodeTPS measures real decode speed with a tiny fixed completion against
-// the freshly-loaded (and warmed-up) server. Returns 0 when the request fails --
-// the launch proceeds either way; this is measurement, never a gate.
-func benchDecodeTPS(serverURL string) float64 {
-	body := `{"messages":[{"role":"user","content":"Count from 1 to 30 as plain digits separated by spaces."}],"max_tokens":48,"temperature":0}`
+// benchResult is the placement gate's measurement for the accepted server,
+// reused by the final speed report so a launch is never benched twice.
+type benchResult struct {
+	pp, gen  float64
+	measured bool // the numbers are real (vs a failed measurement)
+	tried    bool // the gate measured this server; the report must not re-bench
+}
+
+var lastBench benchResult
+
+// ppHealthyFloor is the batched prompt-processing speed (tok/s) below which a
+// forced-full-GPU load is treated as not actually GPU-resident. Fully resident
+// models measure many hundreds on any hardware this policy covers; weights the
+// driver paged to shared system memory measured 50-125 -- and decelerating --
+// on real 16+12 GB hardware. 150 sits well clear of both.
+const ppHealthyFloor = 150
+
+// benchSickSecs: a bench request that drags past this before failing is itself
+// the verdict -- ~2.5k prompt tokens + 48 generated takes single-digit seconds
+// on any healthy GPU-resident server.
+const benchSickSecs = 45
+
+// benchServer measures real prompt-processing and decode speed with one fixed
+// completion against the freshly-loaded (and warmed-up) server. The prompt is
+// ~2.5k tokens so prompt processing runs in the batched regime (tiny prompts
+// are overhead-bound and read 5-10x low). measured=false when speeds couldn't
+// be determined (fast transport failure, or a response without timings) --
+// callers never gate on a broken measurement. slow=true when the request itself
+// dragged past benchSickSecs before failing.
+func benchServer(serverURL string) (pp, gen float64, measured, slow bool) {
+	words := strings.Repeat("alpha bravo charlie delta echo foxtrot golf hotel india juliet ", 200)
+	body, _ := json.Marshal(map[string]any{
+		"messages":    []map[string]string{{"role": "user", "content": "Repeat the word alpha once. Ignore the rest: " + words}},
+		"max_tokens":  48,
+		"temperature": 0,
+	})
+	start := time.Now()
 	cl := &http.Client{Timeout: 120 * time.Second}
-	resp, err := cl.Post(serverURL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err := cl.Post(serverURL+"/v1/chat/completions", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return 0
+		return 0, 0, false, time.Since(start) > benchSickSecs*time.Second
 	}
 	defer resp.Body.Close()
 	var out struct {
 		Timings struct {
+			PromptPerSecond    float64 `json:"prompt_per_second"`
 			PredictedPerSecond float64 `json:"predicted_per_second"`
 		} `json:"timings"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return 0
+	if json.NewDecoder(resp.Body).Decode(&out) != nil || out.Timings.PromptPerSecond <= 0 {
+		return 0, 0, false, time.Since(start) > benchSickSecs*time.Second
 	}
-	return out.Timings.PredictedPerSecond
+	return out.Timings.PromptPerSecond, out.Timings.PredictedPerSecond, true, false
 }
 
-// reportDecode prints the measured speed against the 40-80 tok/s baseline band.
-func reportDecode(tps float64, ctx int) {
+// verifyOnGPU is the placement gate for forced-full-GPU loads. /health says
+// nothing about WHERE the model landed: when a pinned -ngl 99 load exceeds free
+// dedicated memory, the Windows driver can satisfy the allocations from SHARED
+// system memory instead of failing (observed live: a 19 GB model "loaded" with
+// both cards still ~93% free, ~20 GB committed in system RAM, health green, a
+// tiny bench answering normally -- and the first real prompt crawling at 50-125
+// tok/s, decelerating as the KV filled). Two measured checks catch it:
+//   - residency: free dedicated VRAM must drop by at least HALF the model size
+//     across the load. A resident model consumes at least its own weights, so
+//     the loose bound cannot misfire on a healthy load.
+//   - throughput: batched prompt processing must clear ppHealthyFloor.
+//
+// Rejecting returns false; the caller then steps the ladder down exactly as if
+// the load had failed. lastResort loads always accept, warning loudly instead.
+func verifyOnGPU(serverURL, modelPath string, ctx, preFreeMB int, lastResort bool) bool {
+	sick := ""
+	if mb := engine.FileMB(modelPath); residencyBroken(preFreeMB, postFreeMB(), mb) {
+		sick = fmt.Sprintf("dedicated VRAM use rose by less than half the model's %d MB", mb)
+	} else {
+		pp, gen, measured, slow := benchServer(serverURL)
+		lastBench = benchResult{pp: pp, gen: gen, measured: measured}
+		if slow || (measured && pp < ppHealthyFloor) {
+			sick = fmt.Sprintf("prompt processing measured ~%.0f tok/s (GPU-resident is %d+)", pp, ppHealthyFloor)
+		} else if measured {
+			ui.Dim("placement check: prompt ~%.0f tok/s at %d tokens - GPU-resident", pp, ctx)
+		}
+	}
+	if sick == "" {
+		return true
+	}
+	if lastResort {
+		ui.Warn("the %d-token window loaded but is NOT GPU-resident: %s", ctx, sick)
+		ui.Warn("  nothing smaller left to try - continuing; expect slow prompts (free some VRAM and relaunch to fix)")
+		return true
+	}
+	ui.Warn("the %d-token window loaded but is not GPU-resident (%s) - stepping down", ctx, sick)
+	return false
+}
+
+// postFreeMB is the combined free dedicated VRAM right now (0 = no probe data).
+func postFreeMB() int {
+	free := 0
+	for _, g := range platform.ProbeGPUFree() {
+		free += g.FreeMB
+	}
+	return free
+}
+
+// residencyBroken reports whether the free-VRAM drop across a load is too small
+// for the model to actually be resident in dedicated memory. Missing probe data
+// (either side) or an unknown model size never rejects -- only positive
+// evidence does.
+func residencyBroken(preFreeMB, postFreeMB, modelMB int) bool {
+	if preFreeMB <= 0 || postFreeMB <= 0 || modelMB <= 0 {
+		return false
+	}
+	return preFreeMB-postFreeMB < modelMB/2
+}
+
+// launchBench returns the launch's measured speeds: the placement gate's numbers
+// when it ran (gated rungs are benched as part of acceptance -- never bench
+// twice), one fresh measurement otherwise (explicit settings, unified memory,
+// expert-offload: configs the gate doesn't cover).
+func launchBench(serverURL string) (pp, gen float64) {
+	if lastBench.tried {
+		return lastBench.pp, lastBench.gen
+	}
+	pp, gen, _, _ = benchServer(serverURL)
+	return pp, gen
+}
+
+// reportDecode prints the measured speeds against the 40-80 tok/s decode
+// baseline band.
+func reportDecode(pp, tps float64, ctx int) {
 	if tps <= 0 {
 		return
 	}
+	note := ""
+	if pp > 0 {
+		note = fmt.Sprintf(" (prompt ~%.0f tok/s)", pp)
+	}
 	switch {
 	case tps < 40:
-		ui.Warn("decode: ~%.0f tok/s at %d context - below the 40 tok/s baseline (a smaller model or quant would be faster; see 'winc detect')", tps, ctx)
+		ui.Warn("decode: ~%.0f tok/s%s at %d context - below the 40 tok/s baseline (a smaller model or quant would be faster; see 'winc detect')", tps, note, ctx)
 	default:
-		ui.Info("decode: ~%.0f tok/s at %d context", tps, ctx)
+		ui.Info("decode: ~%.0f tok/s%s at %d context", tps, note, ctx)
 	}
 }
 
@@ -383,7 +520,7 @@ func saveKVProbe(m map[string]int) {
 // placement throughout (the engine's spill-happy fit costs 2-4x decode; measured).
 // Verified on a 16+12 GB pair: the 35B MoE goes 131072 -> 262144 fully on GPU at
 // full speed. Outcomes are memoized per model so the probe cost is paid once.
-func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin string, port int, serverURL, logPath string, proc *server.Proc, ctx int) (*server.Proc, int) {
+func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin string, port int, serverURL, logPath string, proc *server.Proc, ctx int, gated bool) (*server.Proc, int) {
 	raw := strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType))
 	if (raw != "" && raw != "auto") || !cfg.Performance.FlashAttn {
 		return proc, ctx
@@ -409,7 +546,7 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		proc.Stop()
 		q4 := *cfg
 		q4.Performance.CacheType = starvedKV
-		if p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, best, false); p2 != nil {
+		if p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, best, false, false, gated); p2 != nil {
 			cfg.Performance.CacheType = starvedKV
 			return p2, best
 		}
@@ -430,7 +567,7 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		if !rungWorthTrying(&q4, hw, modelPath, next, 1, false) {
 			break
 		}
-		p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, next, false)
+		p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, next, false, false, gated)
 		if p2 == nil {
 			break
 		}
@@ -451,8 +588,10 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 	}
 	memo[key] = 0
 	saveKVProbe(memo)
-	// No gain -- reload the exact q8 setup that just worked.
-	if p2 := tryContextOnce(cfg, hw, modelPath, bin, port, serverURL, logPath, ctx, false); p2 != nil {
+	// No gain -- reload the exact q8 setup that just worked. Last resort: this
+	// rung already passed the placement gate moments ago, so a gate hiccup here
+	// must warn, not fail the whole launch.
+	if p2 := tryContextOnce(cfg, hw, modelPath, bin, port, serverURL, logPath, ctx, false, true, gated); p2 != nil {
 		return p2, ctx
 	}
 	ui.Err("engine did not come back after the KV-cache probe; see %s", logPath)
