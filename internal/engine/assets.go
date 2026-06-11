@@ -108,6 +108,17 @@ func latestRelease(repo, fallback string) releaseInfo {
 func LatestLlamaTag() string { return latestTag(llamaRepo, llamaFallbackTag) }
 func LatestSwapTag() string  { return latestTag(swapRepo, swapFallbackTag) }
 
+// WincAsset resolves the latest winc release's download URL and published
+// sha256 digest for the named asset (digest "" when unpublished). ok=false
+// when the release can't be reached -- callers keep the current binary.
+func WincAsset(name string) (url, digest string, ok bool) {
+	rel := latestRelease(wincRepo, "")
+	if rel.Tag == "" {
+		return "", "", false
+	}
+	return "https://github.com/" + wincRepo + "/releases/download/" + rel.Tag + "/" + name, rel.Digests[name], true
+}
+
 // LlamaAsset is one downloadable engine archive (plus any runtime companion).
 type LlamaAsset struct {
 	Backend string

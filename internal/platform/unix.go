@@ -62,9 +62,21 @@ func OnPath(dir string) bool {
 	return false
 }
 
+// localBinLink is ~/.local/bin/winc: most modern distros put ~/.local/bin on
+// PATH out of the box (systemd defaults, fish, and the major login shells'
+// stock profiles), so a symlink there works even in shells whose rc files winc
+// doesn't know about. Best-effort alongside the rc edits, never instead.
+func localBinLink() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "bin", "winc")
+}
+
 // AddToPath records dir for every shell the user might log into: a marked
-// export line in the POSIX rc files, plus a fish conf.d drop-in (fish reads
-// none of the POSIX files). Idempotent.
+// export line in the POSIX rc files, a fish conf.d drop-in (fish reads none of
+// the POSIX files), and a ~/.local/bin symlink. Idempotent.
 func AddToPath(dir string) error {
 	block := "\n" + pathMarker + "\nexport PATH=\"" + dir + ":$PATH\"\n"
 	for _, f := range rcFiles() {
@@ -84,6 +96,22 @@ func AddToPath(dir string) error {
 			if os.MkdirAll(filepath.Dir(fp), 0o755) == nil {
 				fish := pathMarker + "\nif not contains \"" + dir + "\" $PATH\n    set -gx PATH \"" + dir + "\" $PATH\nend\n"
 				_ = os.WriteFile(fp, []byte(fish), 0o644)
+			}
+		}
+	}
+	if lb := localBinLink(); lb != "" {
+		target := filepath.Join(dir, "winc")
+		cur, lerr := os.Readlink(lb)
+		_, serr := os.Lstat(lb)
+		switch {
+		case lerr == nil && cur == target:
+			// already ours
+		case serr != nil || lerr == nil:
+			// missing, or an existing symlink (stale) -> (re)point it. A regular
+			// file (lstat ok, readlink fails) is the user's own -- never touched.
+			if os.MkdirAll(filepath.Dir(lb), 0o755) == nil {
+				_ = os.Remove(lb)
+				_ = os.Symlink(target, lb)
 			}
 		}
 	}
@@ -113,6 +141,11 @@ func RemoveFromPath(dir string) error {
 	}
 	if fp := fishConfPath(); fp != "" {
 		_ = os.Remove(fp)
+	}
+	if lb := localBinLink(); lb != "" {
+		if cur, err := os.Readlink(lb); err == nil && cur == filepath.Join(dir, "winc") {
+			_ = os.Remove(lb) // only a link that points at us; user files stay
+		}
 	}
 	return nil
 }

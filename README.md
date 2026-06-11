@@ -224,8 +224,10 @@ built-in one (delete it to revert). The embedded catalogue is the offline fallba
 On a **git clone**, `winc update` goes further: it `git pull`s the whole repo and
 **rebuilds the binary**, so *all* source changes land (code, embedded catalogue, fixes) —
 not just the engine and catalogue. `winc check` shows whether your source is behind origin.
-(Prebuilt installs can't self-rebuild — redownload the release for code changes; the
-catalogue + engine still refresh.)
+**Prebuilt installs self-update too**: `winc update` downloads the latest release binary
+for your OS/arch (sha256-verified against the release's published digests) and swaps it
+in — the next invocation runs the new build. It also re-applies the PATH entry (bash/zsh/
+profile, fish conf.d, `~/.local/bin`) whenever `winc` isn't reachable from the live PATH.
 
 `winc update` also **reconciles `winc.toml`** so an update never strands you on a stale
 config that silently disables newer defaults: if your `default_model` points at a model

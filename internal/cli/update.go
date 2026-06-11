@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,7 @@ import (
 
 	"winc/internal/catalog"
 	"winc/internal/config"
+	"winc/internal/download"
 	"winc/internal/engine"
 	"winc/internal/paths"
 	"winc/internal/platform"
@@ -96,13 +100,118 @@ func cmdUpdate() int {
 		} else {
 			ui.Good("catalog up to date (%d models)", total)
 		}
-		ui.Info("prebuilt install - redownload the release binary for winc code changes")
+		selfUpdatePrebuilt()
 	}
 
 	reconcileConfig(hw)
 	refreshEngine(hw)
+	// PATH reconcile: older installs recorded PATH only for bash/zsh -- fish-first
+	// distros (CachyOS) never saw it, and a moved folder breaks the recorded entry
+	// anyway. If the LIVE environment can't reach winc, re-apply for every
+	// supported shell (idempotent).
+	if dir := paths.InstallDir(); !liveOnPath(dir) {
+		_ = platform.AddToPath(dir)
+		ui.Good("added winc to PATH (bash/zsh/profile, fish, ~/.local/bin) - open a NEW terminal to pick it up")
+	}
 	ui.Good("update complete.")
 	return 0
+}
+
+// liveOnPath reports whether dir is reachable in THIS process's PATH -- the
+// check that matters for "I have to run ./winc from its folder".
+func liveOnPath(dir string) bool {
+	for _, p := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+		if p == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// wincAssetName is this platform's release asset, exactly as `make release`
+// names them (dist/winc-<os>-<arch>[.exe]).
+func wincAssetName() string {
+	name := "winc-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
+}
+
+// selfUpdatePrebuilt replaces a prebuilt winc binary with the latest release
+// build for this OS/arch. Previously `winc update` refreshed everything EXCEPT
+// winc itself on prebuilt installs -- they stayed stranded on old code (and old
+// fixes) forever unless the user manually re-downloaded. The download is
+// sha256-verified against the release's published digests (a mismatch is a
+// hard fail and the file is discarded); the swap uses the same rename dance as
+// rebuildFromSource, so the running process finishes normally and the NEXT
+// invocation is the new build.
+func selfUpdatePrebuilt() {
+	tag := engine.LatestWincTag()
+	if tag == "" {
+		ui.Warn("could not reach the winc releases API - keeping the current binary")
+		return
+	}
+	if strings.TrimPrefix(tag, "v") == Version {
+		ui.Good("winc is up to date (%s)", Version)
+		return
+	}
+	asset := wincAssetName()
+	url, digest, ok := engine.WincAsset(asset)
+	if !ok {
+		ui.Warn("no release asset for this platform (%s) - keeping the current binary", asset)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		ui.Warn("can't locate the running binary: %v", err)
+		return
+	}
+	tmp := exe + ".new"
+	ui.Info("updating winc %s -> %s ...", Version, tag)
+	if err := download.Fetch(url, tmp, nil, asset); err != nil {
+		ui.Warn("download failed: %v - keeping the current binary", err)
+		return
+	}
+	if digest != "" {
+		if err := verifySHA256(tmp, digest); err != nil {
+			_ = os.Remove(tmp)
+			ui.Err("release digest mismatch: %v (download discarded)", err)
+			return
+		}
+	} else {
+		ui.Dim("release published no digest for %s - proceeding unverified", asset)
+	}
+	_ = os.Chmod(tmp, 0o755)
+	// Windows can't delete a running .exe, but it CAN rename it aside; Unix replaces in place.
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(exe + ".old")
+		_ = os.Rename(exe, exe+".old")
+	}
+	if err := os.Rename(tmp, exe); err != nil {
+		ui.Warn("downloaded the new binary but couldn't replace the running one: %v", err)
+		ui.Say("    move %s -> %s manually", tmp, exe)
+		return
+	}
+	ui.Good("winc updated to %s - re-run your command to use it", tag)
+}
+
+// verifySHA256 checks a file against a "sha256:<hex>" digest.
+func verifySHA256(path, digest string) error {
+	want := strings.TrimPrefix(strings.TrimSpace(digest), "sha256:")
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
+		return fmt.Errorf("sha256 %s != published %s", got, want)
+	}
+	return nil
 }
 
 // reconcileConfig brings winc.toml forward after an update: it repoints an unresolvable

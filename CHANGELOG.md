@@ -3,6 +3,42 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.18.0 — 2026-06-11
+
+Prebuilt installs stop going stale, and 4 GB cards get the 4B.
+
+### Added
+- Prebuilt self-update: `winc update` now downloads the latest release binary
+  for this OS/arch (sha256-verified against the release's published digests; a
+  mismatch is a hard fail and the file is discarded) and swaps it in with the
+  same rename dance as the source rebuild. Previously prebuilt installs
+  refreshed everything EXCEPT winc itself -- every fix shipped since the
+  install simply never arrived unless the user manually re-downloaded, which
+  is exactly how a laptop ended up reporting bugs that were already fixed.
+- `winc update` re-applies the PATH entry whenever winc isn't reachable from
+  the live PATH (the "I have to run ./winc from its folder" state) -- fixes
+  installs that recorded PATH before fish support existed.
+- PATH on Unix now also gets a ~/.local/bin/winc symlink (on PATH out of the
+  box on most modern distros, fish included) alongside the rc-file edits and
+  the fish conf.d drop-in. Only ever creates or repoints a symlink -- a user's
+  own file at that path is never touched. Uninstall removes it.
+
+### Changed
+- The recommendation's runtime headroom now scales with the model instead of a
+  flat 2 GB (calibrated on mid-tier models, which keep it): measured on the
+  4B-Q4 at full GPU, weights + CUDA/compute overhead + a working KV cache need
+  ~1 GB of headroom, not 2. A 4 GB card now gets qwen3.5-4b -- a capable coder
+  it demonstrably runs -- instead of stepping down to the 2B.
+
+### Measured (and why no KV-factor change shipped)
+- The 4B's KV cache costs ~33 KB/token (measured: two full-GPU loads, 16k vs
+  64k windows, VRAM delta) -- HIGHER per token than the big hybrid models the
+  64 tokens/MB sizing factor was calibrated on (their Gated-Delta-Net layers
+  carry constant-size state; the 4B pays full GQA attention every layer). So
+  small models do NOT get a bigger sizing factor: on a 4 GB card the 4B holds
+  ~16-24k tokens fully resident, and the v1.17.0 usable-window-via-partial-
+  offload behavior is the correct path to an agent-sized 49k window.
+
 ## v1.17.1 — 2026-06-11
 
 ### Fixed
