@@ -24,7 +24,10 @@ func WaitReady(baseURL, path string, timeout time.Duration, dead func() bool) bo
 				return true
 			}
 		}
-		time.Sleep(time.Second)
+		// A fine-grained poll: the model finishes loading at an unpredictable moment,
+		// and a 1-second sleep wasted most of a second per server start -- which adds
+		// up across the context ladder's rungs and team mode's head + workers.
+		time.Sleep(250 * time.Millisecond)
 	}
 	return false
 }

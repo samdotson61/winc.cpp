@@ -3,6 +3,7 @@
 package reasoning
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -34,10 +35,14 @@ func IsCompaction(body []byte) bool { return isCompaction(body) }
 // system prompt or a tool description. Raw request load is the primary escalation signal;
 // this is the orthogonal "kind of task" hint.
 func Heavy(body []byte) bool {
-	return bytesCount(body, "```") >= 6 // 6 fences = 3 code blocks (open + close)
+	return bytes.Count(body, fence) >= 6 // 6 fences = 3 code blocks (open + close)
 }
 
-func bytesCount(b []byte, sub string) int { return strings.Count(string(b), sub) }
+var (
+	fence      = []byte("```")
+	toolResult = []byte("tool_result")
+	toolUse    = []byte("tool_use")
+)
 
 // contentText flattens an Anthropic content field (a plain string or an array of
 // {type,text} blocks) into one string.
@@ -80,9 +85,21 @@ func isCompaction(body []byte) bool {
 	if json.Unmarshal(body, &req) != nil {
 		return false
 	}
-	probe := contentText(req.System)
+	var last json.RawMessage
 	if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == "user" {
-		probe += " " + contentText(req.Messages[n-1].Content)
+		last = req.Messages[n-1].Content
+	}
+	return CompactionProbe(req.System, last)
+}
+
+// CompactionProbe is the compaction check over already-extracted fields: the
+// system prompt plus the FINAL message's content when that message is a user
+// message (nil otherwise). Lets the router reuse its single parse of the body
+// instead of re-decoding the whole transcript here.
+func CompactionProbe(system, lastUserContent json.RawMessage) bool {
+	probe := contentText(system)
+	if len(lastUserContent) > 0 {
+		probe += " " + contentText(lastUserContent)
 	}
 	s := strings.ToLower(probe)
 	return strings.Contains(s, "summary of the conversation") ||
@@ -90,9 +107,17 @@ func isCompaction(body []byte) bool {
 		strings.Contains(s, "wrap your summary")
 }
 
-func looksComplex(body []byte) bool {
+// LooksComplex reports whether a request carries code blocks, tool activity, or a
+// build-intent verb. The JSON markers are lowercase literals on the wire, so the
+// common case (any agent transcript) is decided by raw byte scans with no
+// allocation; only a marker-free body pays for the one lowercased copy the verb
+// search needs (verbs appear in user text with arbitrary case).
+func LooksComplex(body []byte) bool {
+	if bytes.Contains(body, fence) || bytes.Contains(body, toolResult) || bytes.Contains(body, toolUse) {
+		return true
+	}
 	s := strings.ToLower(string(body))
-	if strings.Contains(s, "```") || strings.Contains(s, "tool_result") || strings.Contains(s, "tool_use") {
+	if strings.Contains(s, "tool_result") || strings.Contains(s, "tool_use") {
 		return true
 	}
 	for _, v := range buildVerbs {
@@ -108,14 +133,20 @@ func looksComplex(body []byte) bool {
 // whose threshold covers the estimate wins. complexity_boost nudges one tier up
 // (more thinking) so short-but-complex prompts aren't starved.
 func Decide(cfg *config.Config, body []byte) Decision {
+	return DecideFrom(cfg, EstimateInputTokens(body), isCompaction(body), LooksComplex(body))
+}
+
+// DecideFrom is Decide with the request signals precomputed -- the router parses
+// each request exactly once and feeds the pieces in, instead of this package
+// re-decoding the full body per signal.
+func DecideFrom(cfg *config.Config, est int, compaction, complex bool) Decision {
 	// Compaction is a mechanical summary -- never burn a thinking budget on it (on a
 	// big local context that thinking is minutes of pure overhead before the summary).
-	if isCompaction(body) {
+	if compaction {
 		return Decision{BudgetTokens: 0, EnableThinking: false, Set: true}
 	}
 	a := cfg.Reasoning.Adaptive
 	tiers := a.Tiers
-	est := EstimateInputTokens(body)
 
 	idx := len(tiers) // sentinel -> ceiling
 	for i, t := range tiers {
@@ -124,7 +155,7 @@ func Decide(cfg *config.Config, body []byte) Decision {
 			break
 		}
 	}
-	if a.ComplexityBoost && looksComplex(body) && idx < len(tiers) {
+	if a.ComplexityBoost && complex && idx < len(tiers) {
 		idx++ // bump toward the larger-budget tier (or ceiling)
 	}
 

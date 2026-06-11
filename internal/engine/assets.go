@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"winc/internal/platform"
@@ -52,11 +53,26 @@ type releaseInfo struct {
 	Digests map[string]string // asset filename -> "sha256:<hex>"; empty when unavailable
 }
 
+var (
+	releaseMu    sync.Mutex
+	releaseCache = map[string]releaseInfo{} // repo -> fetched release; successes only
+)
+
 // latestRelease fetches the newest release's tag and asset digests in one API call.
 // Offline (or rate-limited) it falls back to a known-good tag with NO digests --
 // callers then download without verification and say so, rather than refusing to
-// install at all.
+// install at all. A successful fetch is cached for the rest of the run: `winc
+// update` asks for the same release from the check, the candidate list, and the
+// digest verification, and one answer also keeps those consistent. Failures are
+// never cached (a flaky network can recover mid-run, and the fallback tag varies
+// by caller).
 func latestRelease(repo, fallback string) releaseInfo {
+	releaseMu.Lock()
+	ri, ok := releaseCache[repo]
+	releaseMu.Unlock()
+	if ok {
+		return ri
+	}
 	c := &http.Client{Timeout: 10 * time.Second}
 	resp, err := c.Get("https://api.github.com/repos/" + repo + "/releases/latest")
 	if err != nil {
@@ -76,12 +92,15 @@ func latestRelease(repo, fallback string) releaseInfo {
 	if json.NewDecoder(resp.Body).Decode(&r) != nil || r.TagName == "" {
 		return releaseInfo{Tag: fallback}
 	}
-	ri := releaseInfo{Tag: r.TagName, Digests: map[string]string{}}
+	ri = releaseInfo{Tag: r.TagName, Digests: map[string]string{}}
 	for _, a := range r.Assets {
 		if a.Digest != "" {
 			ri.Digests[a.Name] = a.Digest
 		}
 	}
+	releaseMu.Lock()
+	releaseCache[repo] = ri
+	releaseMu.Unlock()
 	return ri
 }
 

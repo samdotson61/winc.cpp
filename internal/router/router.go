@@ -71,14 +71,19 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 		if req.Method == http.MethodPost && isChatPath(req.URL.Path) {
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
-				body = trimCompaction(body, ctxWindow)
-				cb, _, _ := compactRequest(body, nil) // lossless minify only (no tool stripping in single mode)
-				// Thinking is rewritten only in adaptive mode; on/off/fixed are set by the
-				// server's own flags, so pass those through untouched. The router still runs
-				// in every mode (minify + the context-overflow rewrite below apply always).
-				nb := cb
-				if cfg.Reasoning.Mode == "adaptive" {
-					nb = injectThinking(cfg, cb)
+				nb := body
+				// One parse for the whole rewrite pipeline (see preq); an unparseable
+				// body passes through untouched.
+				if p := parseReq(body); p != nil {
+					p.trimCompaction(ctxWindow)
+					p.compact(nil) // lossless minify only (no tool stripping in single mode)
+					// Thinking is rewritten only in adaptive mode; on/off/fixed are set by the
+					// server's own flags, so pass those through untouched. The router still runs
+					// in every mode (minify + the context-overflow rewrite below apply always).
+					if cfg.Reasoning.Mode == "adaptive" {
+						p.injectThinking(cfg)
+					}
+					nb = p.encode()
 				}
 				req.Body = io.NopCloser(bytes.NewReader(nb))
 				req.ContentLength = int64(len(nb))
@@ -440,19 +445,25 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 		if req.Method == http.MethodPost && isChatPath(req.URL.Path) {
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
-				model := modelOf(body)
-				if ladderTag == "" || model != ladderTag {
-					// Head-bound request: a compaction that no longer fits the head's
-					// window gets its oldest transcript messages dropped so the summary
-					// can complete (subagent/ladder requests have their own windows).
-					body = trimCompaction(body, headCtx)
+				// One parse for the whole rewrite pipeline (see preq); an unparseable
+				// body is forwarded untouched to the fallback.
+				p := parseReq(body)
+				model := ""
+				if p != nil {
+					model = p.model()
+					if ladderTag == "" || model != ladderTag {
+						// Head-bound request: a compaction that no longer fits the head's
+						// window gets its oldest transcript messages dropped so the summary
+						// can complete (subagent/ladder requests have their own windows).
+						p.trimCompaction(headCtx)
+					}
 				}
 				name := fallbackName
 				think := ""
 				var allow []string // tool allowlist for the chosen worker backend (nil = HEAD, keep all)
 				maxTok := 0        // generation cap for the chosen worker backend (0 = uncapped, e.g. the HEAD)
-				if ladderTag != "" && model == ladderTag && len(ladder) > 0 {
-					if t, ok := r.pickAliveTier(ladder, body); ok {
+				if p != nil && ladderTag != "" && model == ladderTag && len(ladder) > 0 {
+					if t, ok := r.pickAliveTier(ladder, p); ok {
 						target, name, think, allow, maxTok = t.Upstream, nameOr(t.Name, t.Upstream), t.Think, t.Tools, t.MaxTokens
 					}
 				} else if rt, ok := byModel[model]; ok {
@@ -462,12 +473,17 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 						target, name, think, allow, maxTok = rt.Upstream, nameOr(rt.Name, rt.Upstream), rt.Think, rt.Tools, rt.MaxTokens
 					}
 				}
-				cb, toolsBefore, toolsAfter := compactRequest(body, allow)
-				nb, lowered := clampMaxTokens(injectThinkingPolicy(cfg, cb, think), maxTok)
-				if lowered {
-					r.mu.Lock()
-					r.capsLow++
-					r.mu.Unlock()
+				nb := body
+				toolsBefore, toolsAfter := 0, 0
+				if p != nil {
+					toolsBefore, toolsAfter = p.compact(allow)
+					p.injectPolicy(cfg, think)
+					if p.clamp(maxTok) {
+						r.mu.Lock()
+						r.capsLow++
+						r.mu.Unlock()
+					}
+					nb = p.encode()
 				}
 				r.note(name)
 				req.Body = io.NopCloser(bytes.NewReader(nb))
@@ -498,8 +514,9 @@ func thinkTag(think string) string {
 // watchdog marked dead: the pick re-runs over only the alive rungs, so requests
 // escalate past a dead rung (or settle on the highest alive one when the top died).
 // ok=false when every rung is dead -- the caller then uses the fallback backend.
-func (r *Router) pickAliveTier(ladder []Tier, body []byte) (Tier, bool) {
-	t, pinned := pickTier(ladder, body)
+func (r *Router) pickAliveTier(ladder []Tier, p *preq) (Tier, bool) {
+	est, heavy := p.estTokens(), reasoning.Heavy(p.body)
+	t, pinned := pickTierFrom(ladder, est, heavy, p.infoOnly)
 	if r.isDead(t.Upstream) {
 		r.countDeadSkip()
 		alive := make([]Tier, 0, len(ladder))
@@ -511,7 +528,7 @@ func (r *Router) pickAliveTier(ladder []Tier, body []byte) (Tier, bool) {
 		if len(alive) == 0 {
 			return Tier{}, false
 		}
-		t, pinned = pickTier(alive, body)
+		t, pinned = pickTierFrom(alive, est, heavy, p.infoOnly)
 	}
 	if pinned {
 		r.mu.Lock()
@@ -527,12 +544,17 @@ func (r *Router) pickAliveTier(ladder []Tier, body []byte) (Tier, bool) {
 // highest worker rung instead of a Head rung: spinning a second full session on the big
 // GPU model just to read and report is strictly slower than a worker, and the request
 // carries no tool that could use the head's extra capability. pinned=true when that cap
-// changed the pick.
+// changed the pick. Byte-based form of pickTierFrom, kept as the testable contract.
 func pickTier(ladder []Tier, body []byte) (Tier, bool) {
-	est := reasoning.EstimateInputTokens(body)
-	heavy := reasoning.Heavy(body)
+	return pickTierFrom(ladder, reasoning.EstimateInputTokens(body), reasoning.Heavy(body),
+		func() bool { return infoOnlyRequest(body) })
+}
+
+// pickTierFrom is pickTier with the request signals precomputed; infoOnly is lazy
+// because only a Head pick needs the tools inspection.
+func pickTierFrom(ladder []Tier, est int, heavy bool, infoOnly func() bool) (Tier, bool) {
 	t := pickAt(ladder, est, heavy)
-	if !t.Head || !infoOnlyRequest(body) {
+	if !t.Head || !infoOnly() {
 		return t, false
 	}
 	workers := make([]Tier, 0, len(ladder))
@@ -578,12 +600,75 @@ var infoTools = map[string]bool{
 // tools at all (pure read-context-and-report generation), or every tool it carries is
 // in the read/search/fetch set. Anything unrecognized (Bash, Edit, Write, MCP tools,
 // ...) disqualifies, so a request that can act keeps its right to escalate.
+// Byte-based form of (*preq).infoOnly, kept as the testable contract.
 func infoOnlyRequest(body []byte) bool {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(body, &m); err != nil {
+	p := parseReq(body)
+	if p == nil {
 		return false
 	}
-	arr, ok := toolsArray(m)
+	return p.infoOnly()
+}
+
+// preq is one chat request parsed ONCE for the whole rewrite pipeline. The previous
+// pipeline re-unmarshaled and re-marshaled the full body at every stage (model
+// extraction, compaction trim, tool strip, thinking injection, max_tokens clamp) --
+// 5+ decode passes and 3 encode passes over a transcript that grows to megabytes
+// late in a session. Stages now mutate the shared top-level map and the body is
+// re-encoded exactly once at the end (or passed through byte-identical when no
+// stage changed anything, which also keeps llama.cpp's prefix cache stable).
+type preq struct {
+	m        map[string]json.RawMessage
+	body     []byte            // original wire bytes (cheap scans + pass-through)
+	estBytes int               // body size for token estimates, net of stripped bytes
+	msgs     []json.RawMessage // lazily parsed m["messages"]
+	msgsOK   bool
+	changed  bool // any field mutated -> re-encode on output
+}
+
+// parseReq parses a chat request's top level, or nil when the body isn't an
+// object we understand (callers then pass the bytes through untouched).
+func parseReq(body []byte) *preq {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return nil
+	}
+	return &preq{m: m, body: body, estBytes: len(body)}
+}
+
+// estTokens mirrors reasoning.EstimateInputTokens over the tracked size, so a
+// stage that strips tools keeps later estimates honest without re-encoding.
+func (p *preq) estTokens() int { return p.estBytes / 4 }
+
+func (p *preq) messages() []json.RawMessage {
+	if !p.msgsOK {
+		p.msgsOK = true
+		_ = json.Unmarshal(p.m["messages"], &p.msgs) // stays nil when absent/malformed
+	}
+	return p.msgs
+}
+
+// model extracts the request's `model` field ("" if absent/unparseable).
+func (p *preq) model() string {
+	var s string
+	_ = json.Unmarshal(p.m["model"], &s)
+	return s
+}
+
+// encode renders the request: the original bytes when nothing changed, one
+// marshal otherwise.
+func (p *preq) encode() []byte {
+	if !p.changed {
+		return p.body
+	}
+	if nb, err := json.Marshal(p.m); err == nil {
+		return nb
+	}
+	return p.body
+}
+
+// infoOnly mirrors infoOnlyRequest over the parsed request.
+func (p *preq) infoOnly() bool {
+	arr, ok := toolsArray(p.m)
 	if !ok || len(arr) == 0 {
 		return true
 	}
@@ -596,6 +681,22 @@ func infoOnlyRequest(body []byte) bool {
 		}
 	}
 	return true
+}
+
+// isCompaction mirrors reasoning.IsCompaction over the parsed request.
+func (p *preq) isCompaction() bool {
+	msgs := p.messages()
+	var last json.RawMessage
+	if n := len(msgs); n > 0 {
+		var msg struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(msgs[n-1], &msg) == nil && msg.Role == "user" {
+			last = msg.Content
+		}
+	}
+	return reasoning.CompactionProbe(p.m["system"], last)
 }
 
 // summaryRoomTokens is the share of the context window kept free for a compaction
@@ -611,23 +712,29 @@ const summaryRoomTokens = 6144
 // state) until the prompt leaves summaryRoomTokens for the summary itself, keeping
 // the final instruction and opening the kept transcript on a plain user message (no
 // orphaned tool results). Non-compaction requests and compactions that already fit
-// pass through untouched.
+// pass through untouched. Byte-based form of (*preq).trimCompaction, kept as the
+// testable contract.
 func trimCompaction(body []byte, window int) []byte {
-	if window <= 0 || reasoning.EstimateInputTokens(body) <= window-summaryRoomTokens {
+	p := parseReq(body)
+	if p == nil {
 		return body
 	}
-	if !reasoning.IsCompaction(body) {
-		return body
+	p.trimCompaction(window)
+	return p.encode()
+}
+
+func (p *preq) trimCompaction(window int) {
+	if window <= 0 || p.estTokens() <= window-summaryRoomTokens {
+		return
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body
+	if !p.isCompaction() {
+		return
 	}
-	var msgs []json.RawMessage
-	if err := json.Unmarshal(m["messages"], &msgs); err != nil || len(msgs) < 3 {
-		return body
+	msgs := p.messages()
+	if len(msgs) < 3 {
+		return
 	}
-	overBytes := len(body) - (window-summaryRoomTokens)*4
+	overBytes := p.estBytes - (window-summaryRoomTokens)*4
 	drop := 0
 	for drop < len(msgs)-2 && overBytes > 0 {
 		overBytes -= len(msgs[drop])
@@ -638,18 +745,20 @@ func trimCompaction(body []byte, window int) []byte {
 		drop++
 	}
 	if drop == 0 {
-		return body
+		return
+	}
+	dropped := 0
+	for _, m := range msgs[:drop] {
+		dropped += len(m)
 	}
 	nb, err := json.Marshal(msgs[drop:])
 	if err != nil {
-		return body
+		return
 	}
-	m["messages"] = nb
-	out, err := json.Marshal(m)
-	if err != nil {
-		return body
-	}
-	return out
+	p.m["messages"] = nb
+	p.msgs = msgs[drop:]
+	p.estBytes -= dropped
+	p.changed = true
 }
 
 // plainUserMessage reports whether a message is role=user carrying no tool_result
@@ -665,15 +774,6 @@ func plainUserMessage(raw json.RawMessage) bool {
 	return !bytes.Contains(msg.Content, []byte(`"tool_result"`))
 }
 
-// modelOf extracts the request's `model` field ("" if absent/unparseable).
-func modelOf(body []byte) string {
-	var m struct {
-		Model string `json:"model"`
-	}
-	_ = json.Unmarshal(body, &m)
-	return m.Model
-}
-
 // lowThinkBudget is the small thinking allowance for worker tiers. Small models call
 // tools far more reliably with a LITTLE thinking than with none, but unbounded thinking
 // is slow and can trap the tool call inside the reasoning block -- so keep it tight.
@@ -685,36 +785,33 @@ const lowThinkBudget = 512
 //     tool use (brief planning, then act), without the latency/trap of full thinking.
 //   - "" (adaptive): mirror single mode -- only ADAPTIVE mode rewrites requests; on/off/
 //     fixed are set by server flags on each backend, so the request passes through.
+//
+// Byte-based form of (*preq).injectPolicy, kept as the testable contract.
 func injectThinkingPolicy(cfg *config.Config, body []byte, think string) []byte {
+	p := parseReq(body)
+	if p == nil {
+		return body
+	}
+	p.injectPolicy(cfg, think)
+	return p.encode()
+}
+
+func (p *preq) injectPolicy(cfg *config.Config, think string) {
 	switch think {
 	case "off":
-		var m map[string]json.RawMessage
-		if err := json.Unmarshal(body, &m); err != nil {
-			return body
-		}
-		delete(m, "thinking")
-		m["chat_template_kwargs"] = mergeKwargs(m["chat_template_kwargs"], "enable_thinking", false)
-		if out, err := json.Marshal(m); err == nil {
-			return out
-		}
-		return body
+		delete(p.m, "thinking")
+		p.m["chat_template_kwargs"] = mergeKwargs(p.m["chat_template_kwargs"], "enable_thinking", false)
+		p.changed = true
 	case "low":
-		var m map[string]json.RawMessage
-		if err := json.Unmarshal(body, &m); err != nil {
-			return body
-		}
 		tk, _ := json.Marshal(map[string]any{"type": "enabled", "budget_tokens": lowThinkBudget})
-		m["thinking"] = tk
-		ensureMaxTokens(m, lowThinkBudget)
-		if out, err := json.Marshal(m); err == nil {
-			return out
-		}
-		return body
+		p.m["thinking"] = tk
+		ensureMaxTokens(p.m, lowThinkBudget)
+		p.changed = true
 	default:
 		if cfg.Reasoning.Mode != "adaptive" {
-			return body
+			return
 		}
-		return injectThinking(cfg, body)
+		p.injectThinking(cfg)
 	}
 }
 
@@ -723,31 +820,36 @@ func injectThinkingPolicy(cfg *config.Config, body []byte, think string) []byte 
 // ["all"] = keep all tools (the HEAD model). Returns the new body and the tool counts
 // before/after (for the router log). Deterministic per (body, allow), so a stripped worker
 // prefix stays byte-stable and llama.cpp's prefix cache still reuses it.
+// Byte-based form of (*preq).compact, kept as the testable contract.
 func compactRequest(body []byte, allow []string) (out []byte, toolsBefore, toolsAfter int) {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(body, &m) != nil {
+	p := parseReq(body)
+	if p == nil {
 		return body, 0, 0
 	}
-	if arr, ok := toolsArray(m); ok {
+	toolsBefore, toolsAfter = p.compact(allow)
+	return p.encode(), toolsBefore, toolsAfter
+}
+
+func (p *preq) compact(allow []string) (toolsBefore, toolsAfter int) {
+	rawToolsLen := len(p.m["tools"])
+	if arr, ok := toolsArray(p.m); ok {
 		toolsBefore = len(arr)
 	}
 	changed := false
 	if len(allow) > 0 && !containsFold(allow, "all") {
-		changed = stripToolsToAllowlist(m, allow) || changed
+		changed = stripToolsToAllowlist(p.m, allow) || changed
 	}
-	changed = minifyRequest(m) || changed
-	if arr, ok := toolsArray(m); ok {
+	changed = minifyRequest(p.m) || changed
+	if arr, ok := toolsArray(p.m); ok {
 		toolsAfter = len(arr)
 	} else {
 		toolsAfter = toolsBefore
 	}
-	if !changed {
-		return body, toolsBefore, toolsAfter
+	if changed {
+		p.estBytes -= rawToolsLen - len(p.m["tools"]) // keep later token estimates honest
+		p.changed = true
 	}
-	if nb, err := json.Marshal(m); err == nil {
-		return nb, toolsBefore, toolsAfter
-	}
-	return body, toolsBefore, toolsAfter
+	return toolsBefore, toolsAfter
 }
 
 func toolsArray(m map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -846,26 +948,23 @@ func isChatPath(p string) bool {
 	return strings.HasSuffix(p, "/v1/messages") || strings.HasSuffix(p, "/v1/chat/completions")
 }
 
-func injectThinking(cfg *config.Config, body []byte) []byte {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body // not an object we understand; pass through untouched
-	}
-	d := reasoning.Decide(cfg, body)
+// injectThinking applies the adaptive thinking decision. The size estimate uses
+// the tracked post-strip size; the complexity scan runs over the original bytes
+// (scanning is cheap, and stripped tool text could only have bumped the budget
+// CEILING up one tier, never down -- the model may always think less).
+func (p *preq) injectThinking(cfg *config.Config) {
+	d := reasoning.DecideFrom(cfg, p.estTokens(), p.isCompaction(), reasoning.LooksComplex(p.body))
 	if !d.Set {
-		return body
+		return
 	}
 	if d.EnableThinking && d.BudgetTokens > 0 {
 		think, _ := json.Marshal(map[string]any{"type": "enabled", "budget_tokens": d.BudgetTokens})
-		m["thinking"] = think
-		ensureMaxTokens(m, d.BudgetTokens)
+		p.m["thinking"] = think
+		ensureMaxTokens(p.m, d.BudgetTokens)
 	} else {
-		m["chat_template_kwargs"] = mergeKwargs(m["chat_template_kwargs"], "enable_thinking", false)
+		p.m["chat_template_kwargs"] = mergeKwargs(p.m["chat_template_kwargs"], "enable_thinking", false)
 	}
-	if out, err := json.Marshal(m); err == nil {
-		return out
-	}
-	return body
+	p.changed = true
 }
 
 // ensureMaxTokens guarantees room for the answer beyond the thinking budget.
@@ -885,29 +984,33 @@ func ensureMaxTokens(m map[string]json.RawMessage, budget int) {
 // stuck in a repetition loop can't generate until it slams into its context window (minutes
 // of CPU time producing truncated garbage). cap <= 0 is a no-op -- the HEAD model is never
 // capped. It only lowers: a request already at/below cap is left untouched; an absent
-// max_tokens is set to cap. Runs after injectThinkingPolicy, so the thinking floor still
+// max_tokens is set to cap. Runs after the thinking policy, so the thinking floor still
 // holds as long as cap exceeds the thinking budget (the defaults do). lowered reports
 // whether the request was actually capped (for the session stats).
+// Byte-based form of (*preq).clamp, kept as the testable contract.
 func clampMaxTokens(body []byte, maxTok int) (out []byte, lowered bool) {
+	p := parseReq(body)
+	if p == nil {
+		return body, false
+	}
+	lowered = p.clamp(maxTok)
+	return p.encode(), lowered
+}
+
+func (p *preq) clamp(maxTok int) (lowered bool) {
 	if maxTok <= 0 {
-		return body, false
+		return false
 	}
-	var m map[string]json.RawMessage
-	if json.Unmarshal(body, &m) != nil {
-		return body, false
-	}
-	if raw, ok := m["max_tokens"]; ok {
+	if raw, ok := p.m["max_tokens"]; ok {
 		var cur int
 		if json.Unmarshal(raw, &cur) == nil && cur <= maxTok {
-			return body, false // already within the cap -- don't touch
+			return false // already within the cap -- don't touch
 		}
 	}
 	v, _ := json.Marshal(maxTok)
-	m["max_tokens"] = v
-	if nb, err := json.Marshal(m); err == nil {
-		return nb, true
-	}
-	return body, false
+	p.m["max_tokens"] = v
+	p.changed = true
+	return true
 }
 
 func mergeKwargs(existing json.RawMessage, key string, val any) json.RawMessage {

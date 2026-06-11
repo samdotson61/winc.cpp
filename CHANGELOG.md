@@ -3,6 +3,39 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.14.2 — 2026-06-10
+
+Faster launches and a leaner router. Pure overhead removal -- every decision,
+rewrite, and report behaves exactly as before.
+
+### Changed
+- The request router parses each chat request ONCE and runs the whole rewrite
+  pipeline (compaction trim, tool strip + minify, thinking policy, max_tokens
+  clamp) against that single parsed form, re-encoding once at the end. The old
+  pipeline re-decoded and re-encoded the full body at every stage; on a
+  late-session transcript (~1 MB) that was ~33 ms and ~11 MB of allocation per
+  request, now ~15 ms and ~5.7 MB (measured). Untouched requests still pass
+  through byte-identical, so prefix-cache reuse is unaffected.
+- Request scans (code fences, tool markers) read the raw bytes instead of
+  making lowercased copies of the whole body -- two full-body copies per
+  request gone.
+- The launch decode bench is remembered in the launch memo (.winc-launch) next
+  to the measured window + KV cache: a warm launch reports the remembered
+  speed instead of re-running the bench completion (seconds saved per start).
+  Anything that re-measures the memo re-measures the speed; deleting the file
+  forces both.
+- VRAM polls (the post-stop drain wait, team mode's leftover-VRAM probe) re-read
+  only the per-GPU memory snapshot -- one nvidia-smi call -- instead of a full
+  hardware re-detection per poll, and the driver's CUDA version is probed once
+  per process instead of on every detection.
+- Server readiness is polled every 250 ms instead of every 1 s, so each context
+  rung and each team worker start stops wasting most of a second.
+- `winc check` runs its three release lookups, the local engine version probe,
+  and the git status fetch concurrently -- the check waits for the slowest one
+  instead of all five in sequence. `winc update` reuses one GitHub release
+  answer per repo instead of re-fetching it for the version check, the asset
+  list, and the digest verification.
+
 ## v1.14.1 — 2026-06-10
 
 Fast, accurate VRAM feasibility -- no more multi-minute failed loads.

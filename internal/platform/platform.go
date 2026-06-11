@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Hardware describes the machine for model sizing + backend selection.
@@ -78,15 +79,24 @@ func DetectHardware() Hardware {
 	return hw
 }
 
+// ProbeGPUFree re-reads just the per-GPU memory snapshot: one nvidia-smi query,
+// none of the RAM/vendor/CUDA probes a full DetectHardware pays for. For poll
+// loops (VRAM drain waits) and post-load leftover checks that only care how free
+// VRAM moved. Empty on non-NVIDIA machines (no per-GPU data), matching the
+// Hardware.GPUs contract.
+func ProbeGPUFree() []GPUDevice {
+	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.total,memory.free,name", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return nil
+	}
+	return parseNvidiaSmi(string(out))
+}
+
 // detectNvidia is shared (nvidia-smi exists on Windows + Linux). Returns true on success.
 // All GPUs are detected, not just the first -- a second card extends both the memory
 // budget (VRAMMB is the sum) and the launch flags (layers split across the cards).
 func detectNvidia(hw *Hardware) bool {
-	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.total,memory.free,name", "--format=csv,noheader,nounits").Output()
-	if err != nil {
-		return false
-	}
-	gpus := parseNvidiaSmi(string(out))
+	gpus := ProbeGPUFree()
 	if len(gpus) == 0 {
 		return false
 	}
@@ -124,19 +134,31 @@ func parseNvidiaSmi(out string) []GPUDevice {
 	return gpus
 }
 
+// Drivers vary: "CUDA Version: 12.4" (older) and "CUDA UMD Version: 13.3" (newer).
+var cudaVersionRe = regexp.MustCompile(`(?i)cuda[a-z ]*version:\s*(\d+)\.(\d+)`)
+
+var (
+	cudaOnce             sync.Once
+	cudaMajor, cudaMinor int
+)
+
 // detectCuda reads the max CUDA version the driver supports from nvidia-smi's
 // header ("CUDA Version: 12.4"). Used to pick a matching prebuilt CUDA build.
+// The version can't change while winc runs, but a launch detects hardware
+// several times (sizing, the context ladder, team leftover) -- so the extra
+// nvidia-smi invocation this needs is paid once per process.
 func detectCuda(hw *Hardware) {
-	out, err := exec.Command("nvidia-smi").Output()
-	if err != nil {
-		return
-	}
-	// Drivers vary: "CUDA Version: 12.4" (older) and "CUDA UMD Version: 13.3" (newer).
-	m := regexp.MustCompile(`(?i)cuda[a-z ]*version:\s*(\d+)\.(\d+)`).FindStringSubmatch(string(out))
-	if len(m) == 3 {
-		hw.CudaMajor, _ = strconv.Atoi(m[1])
-		hw.CudaMinor, _ = strconv.Atoi(m[2])
-	}
+	cudaOnce.Do(func() {
+		out, err := exec.Command("nvidia-smi").Output()
+		if err != nil {
+			return
+		}
+		if m := cudaVersionRe.FindStringSubmatch(string(out)); len(m) == 3 {
+			cudaMajor, _ = strconv.Atoi(m[1])
+			cudaMinor, _ = strconv.Atoi(m[2])
+		}
+	})
+	hw.CudaMajor, hw.CudaMinor = cudaMajor, cudaMinor
 }
 
 // DefaultBackend chooses a llama.cpp backend from detected hardware + OS.

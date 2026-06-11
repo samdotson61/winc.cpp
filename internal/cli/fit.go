@@ -30,12 +30,12 @@ func waitVRAMFree(neededMB int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	lastFree := -1
 	for time.Now().Before(deadline) {
-		fresh := platform.DetectHardware()
-		if len(fresh.GPUs) == 0 {
+		gpus := platform.ProbeGPUFree() // memory snapshot only -- not a full re-detection per poll
+		if len(gpus) == 0 {
 			return
 		}
 		free, total := 0, 0
-		for _, g := range fresh.GPUs {
+		for _, g := range gpus {
 			free += g.FreeMB
 			total += g.TotalMB
 		}
@@ -148,12 +148,19 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		// Fast path: a previous session already measured this model's best window and
 		// KV cache -- load straight there (one load instead of re-walking the ladder).
 		if wasAuto {
-			if mctx, mct := loadLaunchMemo(modelPath); mctx > 0 {
+			if mctx, mct, mtps := loadLaunchMemo(modelPath); mctx > 0 {
 				lc := *cfg
 				lc.Performance.CacheType = mct
 				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false); proc != nil {
 					cfg.Performance.CacheType = mct
-					reportDecode(benchDecodeTPS(serverURL), mctx)
+					// The decode bench is a real completion (seconds of startup); the speed
+					// for this exact window + cache was measured when the memo was written,
+					// so reuse it and re-measure only entries that predate the speed field.
+					if mtps <= 0 {
+						mtps = benchDecodeTPS(serverURL)
+						saveLaunchMemo(modelPath, mctx, mct, mtps)
+					}
+					reportDecode(mtps, mctx)
 					return proc, mctx
 				}
 				// Some boundary windows only load via the probe's staircase (the forced
@@ -169,9 +176,10 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 					proc, ctx = upgradeLadderQ4(&lc2, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
 					if proc != nil {
 						cfg.Performance.CacheType = lc2.Performance.CacheType
-						reportDecode(benchDecodeTPS(serverURL), ctx)
+						tps := benchDecodeTPS(serverURL)
+						reportDecode(tps, ctx)
 						ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-						saveLaunchMemo(modelPath, ctx, ct)
+						saveLaunchMemo(modelPath, ctx, ct, tps)
 					}
 					return proc, ctx
 				}
@@ -181,10 +189,11 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false); proc != nil {
 			proc, ctx = upgradeLadderQ4(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
 			if proc != nil {
-				reportDecode(benchDecodeTPS(serverURL), ctx)
+				tps := benchDecodeTPS(serverURL)
+				reportDecode(tps, ctx)
 				if wasAuto {
 					ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-					saveLaunchMemo(modelPath, ctx, ct)
+					saveLaunchMemo(modelPath, ctx, ct, tps)
 				}
 			}
 			return proc, ctx
@@ -290,26 +299,33 @@ func launchMemoKey(modelPath string) string {
 	return fmt.Sprintf("%s|%d", filepath.Base(modelPath), engine.FileMB(modelPath))
 }
 
-// loadLaunchMemo returns the memoized (ctx, cacheType) for a model, or (0, "").
-func loadLaunchMemo(modelPath string) (int, string) {
+// loadLaunchMemo returns the memoized (ctx, cacheType, decode tok/s) for a model,
+// or (0, "", 0). tps is 0 for entries written before the speed field existed --
+// the caller then measures once and rewrites the entry.
+func loadLaunchMemo(modelPath string) (int, string, float64) {
 	data, err := os.ReadFile(launchMemoPath())
 	if err != nil {
-		return 0, ""
+		return 0, "", 0
 	}
 	key := launchMemoKey(modelPath)
 	for _, line := range strings.Split(string(data), "\n") {
 		f := strings.Fields(strings.TrimSpace(line))
-		if len(f) == 3 && f[0] == key {
+		if (len(f) == 3 || len(f) == 4) && f[0] == key {
 			if ctx, err := strconv.Atoi(f[1]); err == nil && ctx > 0 {
-				return ctx, f[2]
+				tps := 0.0
+				if len(f) == 4 {
+					tps, _ = strconv.ParseFloat(f[3], 64)
+				}
+				return ctx, f[2], tps
 			}
 		}
 	}
-	return 0, ""
+	return 0, "", 0
 }
 
-// saveLaunchMemo records a measured-good launch, replacing the model's prior line.
-func saveLaunchMemo(modelPath string, ctx int, cacheType string) {
+// saveLaunchMemo records a measured-good launch (and its measured decode speed),
+// replacing the model's prior line.
+func saveLaunchMemo(modelPath string, ctx int, cacheType string, tps float64) {
 	key := launchMemoKey(modelPath)
 	var out []string
 	if data, err := os.ReadFile(launchMemoPath()); err == nil {
@@ -322,9 +338,9 @@ func saveLaunchMemo(modelPath string, ctx int, cacheType string) {
 		}
 	}
 	if len(out) == 0 {
-		out = append(out, "# winc: last measured-good launch per model (ctx + KV cache). Delete to re-measure.")
+		out = append(out, "# winc: last measured-good launch per model (ctx + KV cache + decode tok/s). Delete to re-measure.")
 	}
-	out = append(out, fmt.Sprintf("%s %d %s", key, ctx, cacheType))
+	out = append(out, fmt.Sprintf("%s %d %s %.1f", key, ctx, cacheType, tps))
 	_ = os.WriteFile(launchMemoPath(), []byte(strings.Join(out, "\n")+"\n"), 0o644)
 }
 

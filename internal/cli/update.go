@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"winc/internal/catalog"
 	"winc/internal/config"
@@ -21,14 +22,28 @@ func cmdCheck() int {
 	dir := paths.InstallDir()
 	ui.Say("")
 	ui.Say("Checking for updates...")
-	ui.Info("winc version    : %s", Version)
-	if tag := engine.LatestWincTag(); tag != "" && strings.TrimPrefix(tag, "v") != Version {
-		ui.Warn("newer winc available: %s (you have %s)", tag, Version)
+	// The three release lookups, the local engine version probe, and the git
+	// upstream fetch are independent -- run them concurrently so the check waits
+	// for the slowest one instead of paying for all of them in sequence.
+	var wincTag, latest, swapTag, inst string
+	behind := make(chan int, 1)
+	clone := isGitClone(dir)
+	if clone {
+		go func() { behind <- gitBehindCount(dir) }()
 	}
-	latest := engine.LatestLlamaTag()
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() { defer wg.Done(); wincTag = engine.LatestWincTag() }()
+	go func() { defer wg.Done(); latest = engine.LatestLlamaTag() }()
+	go func() { defer wg.Done(); swapTag = engine.LatestSwapTag() }()
+	go func() { defer wg.Done(); inst = engine.InstalledLlamaTag() }()
+	wg.Wait()
+	ui.Info("winc version    : %s", Version)
+	if wincTag != "" && strings.TrimPrefix(wincTag, "v") != Version {
+		ui.Warn("newer winc available: %s (you have %s)", wincTag, Version)
+	}
 	ui.Good("llama.cpp latest : %s", latest)
-	ui.Good("llama-swap latest: %s", engine.LatestSwapTag())
-	inst := engine.InstalledLlamaTag()
+	ui.Good("llama-swap latest: %s", swapTag)
 	switch {
 	case inst == "" && engine.LlamaServerPath() == "":
 		ui.Warn("engine not installed - run 'winc setup'")
@@ -43,8 +58,8 @@ func cmdCheck() int {
 	if cfg := loadConfig(); !modelResolvable(cfg, catalog.Load(cfg.CustomModels), cfg.General.DefaultModel) {
 		ui.Warn("config: default_model %q is unavailable - 'winc update' will repair it", cfg.General.DefaultModel)
 	}
-	if isGitClone(dir) {
-		switch n := gitBehindCount(dir); {
+	if clone {
+		switch n := <-behind; {
 		case n > 0:
 			ui.Warn("source is %d commit(s) behind origin - 'winc update' pulls all files + rebuilds", n)
 		case n == 0:

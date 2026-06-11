@@ -413,9 +413,8 @@ func ensureWorker(cfg *config.Config, cat *catalog.Catalog, query, role string) 
 // workspaces grow a little under load, and we must NEVER make the head compete).
 // 0 when the cards can't be probed (non-NVIDIA paths) -- workers then stay on CPU.
 func leftoverVRAMMB() int {
-	fresh := platform.DetectHardware()
 	total := 0
-	for _, g := range fresh.GPUs {
+	for _, g := range platform.ProbeGPUFree() { // memory snapshot only -- the GPU list hasn't changed since launch
 		if free := g.FreeMB - 768; free > 0 {
 			total += free
 		}

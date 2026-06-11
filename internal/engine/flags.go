@@ -565,6 +565,8 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	// tool-call parser generation -> 400 on every request. Override with a patched copy.
 	args = append(args, ChatTemplateArgs(modelPath)...)
 
+	modelMB := FileMB(modelPath)
+	expertsOff := WillOffloadExperts(cfg, hw, modelPath)
 	ngl := GpuLayers(cfg, hw)
 	// GPU placement policy, head-first:
 	//  - MoE expert offload: all layers on the GPU (-ngl 99), expert weights in RAM,
@@ -573,19 +575,19 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	//  - Model fully fits VRAM: force -ngl 99 so the engine's conservative device
 	//    fit can't spill a layer to the CPU (the CPU belongs to the team workers).
 	//  - Otherwise (partial fit, dense): omit -ngl and let the engine fit layers.
-	switch cpuMoe := resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), ngl); {
+	switch cpuMoe := resolveCPUMoE(cfg, hw, modelPath, modelMB, ngl); {
 	case cpuMoe == "all":
 		args = append(args, "-ngl", "99", "--cpu-moe")
 	case cpuMoe != "":
 		args = append(args, "-ngl", "99", "--n-cpu-moe", cpuMoe)
 	case cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "":
 		args = append(args, "-ngl", strconv.Itoa(ngl))
-	case fullyFitsGPU(cfg, hw, modelPath, FileMB(modelPath)):
+	case fullyFitsGPU(cfg, hw, modelPath, modelMB):
 		args = append(args, "-ngl", "99")
 	}
 
 	if ctx <= 0 {
-		ctx = ResolveContext(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath))
+		ctx = ResolveContext(cfg, hw, modelPath, modelMB, expertsOff)
 	}
 	args = append(args, "-c", strconv.Itoa(ctx))
 
@@ -601,7 +603,7 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	// Flash attention + quantized KV cache only when offloading to GPU.
 	if cfg.Performance.FlashAttn && ngl > 0 {
 		args = append(args, "--flash-attn", "on")
-		if ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath)); ct != "" && ct != "f16" {
+		if ct := EffectiveCacheType(cfg, hw, modelPath, modelMB, expertsOff); ct != "" && ct != "f16" {
 			k, v := SplitKV(ct)
 			args = append(args, "--cache-type-k", k, "--cache-type-v", v)
 		}
