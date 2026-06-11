@@ -99,15 +99,14 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	}
 	defer stopAll()
 
-	// Dynamic mode may escalate heavy subagents onto the main GPU model -- but only when
-	// there's VRAM headroom to serve them concurrently AND the expected window is big
-	// enough that the --parallel 2 split leaves workable per-slot contexts. When so, give
-	// the main server a second parallel slot (which halves its per-slot context ->
-	// headCtx below).
-	mainEscalate := sub == "dynamic" && engine.MainEscalationOK(cfg, hw, mainPath, expectedHeadCtx(cfg, hw, mainPath))
-	if mainEscalate {
-		cfg.Performance.ExtraServerArgs = append([]string{"--parallel", "2"}, cfg.Performance.ExtraServerArgs...)
-	}
+	// Dynamic mode may escalate heavy subagents onto the main GPU model -- but only
+	// when there's VRAM headroom to serve them concurrently. No --parallel flag is
+	// passed: the engine's auto mode runs a UNIFIED KV pool (verified on the shipped
+	// engine: n_parallel auto + kv_unified, every sequence may use the FULL window),
+	// so the head keeps its whole context and an escalated subagent borrows from the
+	// shared pool only while it actually runs. The old explicit --parallel 2 HALVED
+	// the head's window permanently -- even with zero subagents active.
+	mainEscalate := sub == "dynamic" && engine.MainEscalationOK(cfg, hw, mainPath)
 
 	// Main model on the primary port (GPU, full fitting ladder), as in single mode.
 	port := cfg.General.Port
@@ -121,26 +120,10 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		return 1
 	}
 	procs = append(procs, mainProc)
-	// The escalation decision was made against the EXPECTED window; if the ladder
-	// landed lower, half of what actually loaded may not be a workable agent slot
-	// (Claude Code's fixed overhead alone is ~24k tokens -- a 32k slot starved an
-	// overnight session to death). One slower unsplit relaunch beats that.
-	if mainEscalate && loadedCtx/2 < engine.MinEscalationHeadCtx {
-		ui.Warn("team: %d tokens split in two leaves unworkable slots - relaunching the head unsplit (no main escalation)", loadedCtx)
-		mainProc.Stop()
-		mainEscalate = false
-		cfg.Performance.ExtraServerArgs = trimParallel2(cfg.Performance.ExtraServerArgs)
-		mainProc, loadedCtx = startLlamaFitting(cfg, hw, mainPath, port, mainURL, filepath.Join(logDir, "llama-server.log"))
-		if mainProc == nil {
-			ui.Err("could not start the main engine; see %s", filepath.Join(logDir, "llama-server.log"))
-			return 1
-		}
-		procs = append(procs, mainProc)
-	}
+	// Unified KV pool: the head's window is the WHOLE loaded window (escalated
+	// subagents share the pool transiently; exhaustion surfaces as an ordinary
+	// context error the router already rewrites into the compaction signal).
 	headCtx := loadedCtx
-	if mainEscalate {
-		headCtx = loadedCtx / 2 // --parallel 2 splits the window into per-slot contexts
-	}
 	// Provision the agent-side notes: the REAL window (the agent's own UI cannot
 	// show local windows below 100k), measured speeds, and small-window practices.
 	if err := config.WriteAgentNotes(loadedCtx, headCtx, lastBench.gen, lastBench.pp); err != nil {
@@ -405,30 +388,6 @@ func buildDispatch(cfg *config.Config, sub string, slots agent.Slots, sonnetURL,
 		}
 	}
 	return d
-}
-
-// expectedHeadCtx is the window the head will most likely load: the remembered
-// measured-good value when one exists (the launch memo), else the sizing
-// target. Used BEFORE launch to decide whether splitting the head in two
-// (--parallel 2) leaves workable slots; the post-launch guard re-checks
-// against what actually loaded.
-func expectedHeadCtx(cfg *config.Config, hw platform.Hardware, modelPath string) int {
-	if autoSized(cfg) {
-		// Pre-decision, so the fingerprint is the unsplit (no --parallel) one.
-		if ctx, _, _ := loadLaunchMemo(modelPath, launchFingerprint(cfg, hw)); ctx > 0 {
-			return ctx
-		}
-	}
-	return engine.ResolveContext(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-}
-
-// trimParallel2 removes the exact ["--parallel","2"] prefix that the escalation
-// path prepended, restoring the user's own extra args.
-func trimParallel2(args []string) []string {
-	if len(args) >= 2 && args[0] == "--parallel" && args[1] == "2" {
-		return args[2:]
-	}
-	return args
 }
 
 // teamWorker is one launched CPU worker, as the watchdog sees it.

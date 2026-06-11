@@ -3,6 +3,59 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.19.0 — 2026-06-11
+
+One universal sizing policy, a pooled KV cache, and no more half answers.
+
+### Changed
+- POOLED KV: team escalation no longer passes --parallel 2. The engine's auto
+  mode runs a UNIFIED KV pool (verified on the shipped engine: every sequence
+  may use the full window), so the head keeps its WHOLE context and an
+  escalated subagent borrows from the pool only while it runs. The explicit
+  flag hard-split the window -- half the head's context gone even with zero
+  subagents active. (Across two discrete GPUs, buffers can never pool --
+  PCIe-separated memory, each card hosts its own layers' buffers; this was the
+  one split that was ours to remove.)
+- UNIVERSAL sizing: `context = "optimal"` and `"auto"` are now the same
+  policy -- aim at the 262144 ceiling, let the ladder + fit oracle + placement
+  gate settle the largest window that is measurably healthy, and never settle
+  below the ~100k bottom target (BottomCtxTokens = 98304: ~64k usable working
+  context + the agent's ~24k fixed overhead + the compaction reserve) while a
+  slower path exists. When full-GPU residency can't reach the bottom, the
+  launcher trades in cost order: first drop the MTP draft (frees its context +
+  buffers, ~1-2 GB at big windows, costs ~25-35% decode, stays fully resident
+  and gate-verified); only then fall back to the engine's device placement
+  (layers spill to RAM, measured 2-4x decode). The decode report states what
+  was traded; the launch memo records the placement (gpu/nomtp/spill) so
+  replays load the same way instead of being gate-rejected every start.
+- The starved-KV downshift now reads the RAW full-GPU estimate instead of the
+  bottom-bumped target -- the bump would have hidden starvation and silently
+  disabled the asymmetric q8_0/q4_0 downshift on exactly the cards it exists
+  for.
+
+### Added
+- Auto-continuation (cloud parity): a response that stops at max_tokens
+  mid-TEXT is continued by the router itself -- the partial answer goes back
+  to the same backend as an assistant prefill (the /v1/messages contract:
+  a trailing assistant message is resumed, not answered) and the continuation
+  is spliced into the SAME client response, streaming and non-streaming alike,
+  up to 2 legs. The agent receives ONE complete message instead of a half
+  answer it treats as final -- the local models' worker caps and small windows
+  hit this constantly where the cloud rarely does. Never applies to tool_use/
+  thinking cuts (no prefill form exists), tiny-cap probe requests, or OpenAI-
+  shape paths. The client still receives every token, so its transcript and
+  token accounting stay truthful. Session stats: `answers-continued=N`.
+
+### Notes (the 28 GB question, answered with the real ledger)
+- "28.6 GB minus a 19.8 GB model" is not 8.8 GB of context: ~1-2 GB of
+  desktop/driver use was already on the cards, each GPU allocates its own
+  compute buffers (~1-2.5 GB combined at -b 2048), the MTP draft keeps its own
+  context + buffers (~1.5-2 GB at big windows -- it is what OOM'd the smaller
+  card at 131k), and a dual-GPU split strands what the per-card ratio can't
+  use. The fit-oracle skips in the launch log were echoing a measured truth
+  (98304-with-MTP was sysmem-paged at 89 tok/s two days ago); what changed in
+  this release is the POLICY above them.
+
 ## v1.18.1 — 2026-06-11
 
 ### Fixed

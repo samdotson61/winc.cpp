@@ -59,45 +59,47 @@ func TestLaunchMemoRoundTrip(t *testing.T) {
 	}
 	const fpA, fpB = "aaaa1111", "bbbb2222"
 	p := mk("Model-Q4_K_M.gguf", 50)
-	if ctx, _, _ := loadLaunchMemo(p, fpA); ctx != 0 {
+	if ctx, _, _, _ := loadLaunchMemo(p, fpA); ctx != 0 {
 		t.Fatalf("empty memo should miss, got %d", ctx)
 	}
-	saveLaunchMemo(p, 131072, "q4_0", 89.6, fpA)
-	ctx, ct, tps := loadLaunchMemo(p, fpA)
-	if ctx != 131072 || ct != "q4_0" || tps != 89.6 {
-		t.Fatalf("memo round-trip failed: %d %q %v", ctx, ct, tps)
+	saveLaunchMemo(p, 131072, "q4_0", 89.6, fpA, plGPU)
+	ctx, ct, tps, pl := loadLaunchMemo(p, fpA)
+	if ctx != 131072 || ct != "q4_0" || tps != 89.6 || pl != plGPU {
+		t.Fatalf("memo round-trip failed: %d %q %v %q", ctx, ct, tps, pl)
 	}
 	// A different fingerprint (changed sizing inputs) must miss, not replay.
-	if ctx, _, _ := loadLaunchMemo(p, fpB); ctx != 0 {
+	if ctx, _, _, _ := loadLaunchMemo(p, fpB); ctx != 0 {
 		t.Fatalf("changed fingerprint should miss, got %d", ctx)
 	}
-	saveLaunchMemo(p, 98304, "q8_0", 72, fpA) // same fingerprint replaces, never duplicates
-	ctx, ct, tps = loadLaunchMemo(p, fpA)
-	if ctx != 98304 || ct != "q8_0" || tps != 72 {
-		t.Fatalf("memo replace failed: %d %q %v", ctx, ct, tps)
+	// Placement survives the round trip: a spill or no-MTP result must replay
+	// the same way or the gate/sizing rejects it every start.
+	saveLaunchMemo(p, 98304, "q8_0/q4_0", 22, fpA, plSpill) // same fingerprint replaces, never duplicates
+	ctx, ct, tps, pl = loadLaunchMemo(p, fpA)
+	if ctx != 98304 || ct != "q8_0/q4_0" || tps != 22 || pl != plSpill {
+		t.Fatalf("spill memo replace failed: %d %q %v %q", ctx, ct, tps, pl)
 	}
 	// Two geometries of the same model coexist (e.g. single vs team --parallel).
-	saveLaunchMemo(p, 65536, "q8_0", 40, fpB)
-	if ctx, _, _ := loadLaunchMemo(p, fpA); ctx != 98304 {
+	saveLaunchMemo(p, 65536, "q8_0", 40, fpB, plNoMTP)
+	if ctx, _, _, _ := loadLaunchMemo(p, fpA); ctx != 98304 {
 		t.Fatalf("fpA entry must survive an fpB save, got %d", ctx)
 	}
-	if ctx, _, _ := loadLaunchMemo(p, fpB); ctx != 65536 {
-		t.Fatalf("fpB entry should hit, got %d", ctx)
+	if ctx, _, _, pl := loadLaunchMemo(p, fpB); ctx != 65536 || pl != plNoMTP {
+		t.Fatalf("fpB entry should hit with its placement, got %d %q", ctx, pl)
 	}
 	// A different file size means a different model -> miss (re-measure).
 	other := mk("Model2-Q4_K_M.gguf", 60)
-	if ctx, _, _ := loadLaunchMemo(other, fpA); ctx != 0 {
+	if ctx, _, _, _ := loadLaunchMemo(other, fpA); ctx != 0 {
 		t.Fatalf("different model should miss, got %d", ctx)
 	}
-	// Pre-fingerprint entries (3/4 fields) can never match again: they miss, and
-	// the next save purges them.
-	if err := os.WriteFile(launchMemoPath(), []byte(launchMemoKey(other)+" 65536 q8_0 37.5\n"), 0o644); err != nil {
+	// Entries from older formats (here: the 5-field pre-placement form) can never
+	// match again: they miss, and the next save purges them.
+	if err := os.WriteFile(launchMemoPath(), []byte(launchMemoKey(other)+" 65536 q8_0 37.5 "+fpA+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if ctx, _, _ := loadLaunchMemo(other, fpA); ctx != 0 {
-		t.Fatalf("legacy 4-field memo must miss under fingerprints, got %d", ctx)
+	if ctx, _, _, _ := loadLaunchMemo(other, fpA); ctx != 0 {
+		t.Fatalf("legacy 5-field memo must miss under the placement format, got %d", ctx)
 	}
-	saveLaunchMemo(other, 49152, "q8_0", 30, fpA)
+	saveLaunchMemo(other, 49152, "q8_0", 30, fpA, plGPU)
 	data, _ := os.ReadFile(launchMemoPath())
 	if strings.Count(string(data), launchMemoKey(other)) != 1 {
 		t.Fatalf("legacy line must be purged on save:\n%s", data)

@@ -814,3 +814,158 @@ func TestInfoRequestsNeverReachHead(t *testing.T) {
 		t.Errorf("head-less ladder should be unchanged, got %s (pinned=%v)", tier.Name, pinned)
 	}
 }
+
+// A response cut at max_tokens mid-TEXT is continued in place: the client
+// receives ONE complete message ending end_turn -- no more half answers the
+// agent treats as final. The continuation is the router's own prefill request
+// to the same backend, and every token still reaches the client (the
+// never-inject rule is about hiding content; nothing is hidden here).
+func TestRouterContinuesTruncatedStream(t *testing.T) {
+	cfg := config.Defaults()
+	var contReqs int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, rq *http.Request) {
+		body, _ := io.ReadAll(rq.Body)
+		if strings.Contains(string(body), "\"role\":\"assistant\"") {
+			contReqs++
+			if !strings.Contains(string(body), "Half an answer") {
+				t.Errorf("continuation must carry the partial text as assistant prefill: %s", body)
+			}
+			if !strings.Contains(string(body), "\"stream\":false") {
+				t.Errorf("continuation legs are non-streaming: %s", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":" and the rest."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":4}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Half an answer\"}}",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":7}}",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}",
+		} {
+			_, _ = io.WriteString(w, ev+"\n\n")
+		}
+	}))
+	defer up.Close()
+	rt, err := Start(&cfg, up.URL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		bytes.NewReader([]byte(`{"model":"m","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	s := string(raw)
+	if !strings.Contains(s, "Half an answer") || !strings.Contains(s, " and the rest.") {
+		t.Fatalf("client must receive the full spliced text:\n%s", s)
+	}
+	if !strings.Contains(s, "\"stop_reason\":\"end_turn\"") {
+		t.Errorf("final stop must be the continuation's end_turn:\n%s", s)
+	}
+	if strings.Contains(s, "\"stop_reason\":\"max_tokens\"") {
+		t.Errorf("the max_tokens cut must not leak to the client:\n%s", s)
+	}
+	if got := strings.Count(s, "\"type\":\"message_stop\""); got != 1 {
+		t.Errorf("exactly one message_stop must reach the client, got %d:\n%s", got, s)
+	}
+	if !strings.Contains(s, "\"output_tokens\":11") {
+		t.Errorf("usage must sum both legs (7+4):\n%s", s)
+	}
+	if contReqs != 1 {
+		t.Errorf("expected exactly one continuation leg, got %d", contReqs)
+	}
+	if n := rt.Stats().Continued; n != 1 {
+		t.Errorf("continued counter = %d, want 1", n)
+	}
+}
+
+// A cut ending in a tool_use block has no prefill form -- it must pass through
+// untouched (no continuation request, max_tokens preserved for the client).
+func TestRouterNoContinueOnToolUseCut(t *testing.T) {
+	cfg := config.Defaults()
+	var contReqs int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, rq *http.Request) {
+		body, _ := io.ReadAll(rq.Body)
+		if strings.Contains(string(body), "\"role\":\"assistant\"") {
+			contReqs++
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Write\"}}",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":7}}",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}",
+		} {
+			_, _ = io.WriteString(w, ev+"\n\n")
+		}
+	}))
+	defer up.Close()
+	rt, err := Start(&cfg, up.URL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		bytes.NewReader([]byte(`{"model":"m","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), "\"stop_reason\":\"max_tokens\"") {
+		t.Errorf("tool_use cut must pass through with its real stop reason:\n%s", raw)
+	}
+	if contReqs != 0 {
+		t.Errorf("tool_use cut must not trigger continuation, got %d legs", contReqs)
+	}
+	if n := rt.Stats().Continued; n != 0 {
+		t.Errorf("continued counter = %d, want 0", n)
+	}
+}
+
+// The non-streaming shape gets the same treatment: text spliced, usage summed,
+// final stop reason replacing the cut.
+func TestRouterContinuesTruncatedJSON(t *testing.T) {
+	cfg := config.Defaults()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, rq *http.Request) {
+		body, _ := io.ReadAll(rq.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "\"role\":\"assistant\"") {
+			_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":" finished."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":9,"output_tokens":3}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"Started but"}],"stop_reason":"max_tokens","stop_sequence":null,"usage":{"input_tokens":9,"output_tokens":5}}`))
+	}))
+	defer up.Close()
+	rt, err := Start(&cfg, up.URL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		bytes.NewReader([]byte(`{"model":"m","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	s := string(raw)
+	if !strings.Contains(s, "Started but finished.") {
+		t.Fatalf("non-stream splice failed:\n%s", s)
+	}
+	if !strings.Contains(s, "\"stop_reason\":\"end_turn\"") || strings.Contains(s, "max_tokens") {
+		t.Errorf("final stop must replace the cut:\n%s", s)
+	}
+	if n := rt.Stats().Continued; n != 1 {
+		t.Errorf("continued counter = %d, want 1", n)
+	}
+}

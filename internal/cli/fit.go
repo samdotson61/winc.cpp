@@ -189,17 +189,29 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		// KV cache under these exact sizing inputs -- load straight there (one load
 		// instead of re-walking the ladder).
 		if wasAuto {
-			if mctx, mct, _ := loadLaunchMemo(modelPath, fp); mctx > 0 {
+			if mctx, mct, _, mpl := loadLaunchMemo(modelPath, fp); mctx > 0 {
 				lc := *cfg
 				lc.Performance.CacheType = mct
+				// Replay the remembered PLACEMENT, not just the window: a spill result
+				// must use engine placement (forcing residency would gate-reject it),
+				// and a no-MTP result only fits because the draft allowance is gone.
+				switch mpl {
+				case plSpill:
+					lc.Performance.GpuLayers = engine.GpuLayersEngine
+				case plNoMTP:
+					lc.Performance.Mtp = "off"
+				}
 				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false, false, true); proc != nil {
 					cfg.Performance.CacheType = mct
+					if mpl == plNoMTP {
+						cfg.Performance.Mtp = "off"
+					}
 					// The placement gate already measured this server (a remembered rung
 					// gets re-verified every launch -- free VRAM drifts day to day); the
 					// report and the memo reuse its numbers.
 					pp, tps := launchBench(serverURL)
 					reportDecode(pp, tps, mctx)
-					saveLaunchMemo(modelPath, mctx, mct, tps, fp)
+					saveLaunchMemo(modelPath, mctx, mct, tps, fp, mpl)
 					return proc, mctx
 				}
 				// Some boundary windows only load via the probe's staircase (the forced
@@ -213,12 +225,16 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				if proc, ctx := tryContextLadder(&lc2, hw, modelPath, bin, port, serverURL, logPath, false, true); proc != nil {
 					lc2.Performance.Context = cfg.Performance.Context // restore auto for the probe's sizing math
 					proc, ctx = upgradeLadderQ4(&lc2, hw, modelPath, bin, port, serverURL, logPath, proc, ctx, true)
+					placement := plGPU
 					if proc != nil {
 						cfg.Performance.CacheType = lc2.Performance.CacheType
+						proc, ctx, placement = ensureBottomTarget(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
+					}
+					if proc != nil {
 						pp, tps := launchBench(serverURL)
 						reportDecode(pp, tps, ctx)
 						ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-						saveLaunchMemo(modelPath, ctx, ct, tps, fp)
+						saveLaunchMemo(modelPath, ctx, ct, tps, fp, placement)
 					}
 					return proc, ctx
 				}
@@ -227,12 +243,16 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		}
 		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false, wasAuto); proc != nil {
 			proc, ctx = upgradeLadderQ4(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx, wasAuto)
+			placement := plGPU
+			if proc != nil && wasAuto {
+				proc, ctx, placement = ensureBottomTarget(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
+			}
 			if proc != nil {
 				pp, tps := launchBench(serverURL)
 				reportDecode(pp, tps, ctx)
 				if wasAuto {
 					ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-					saveLaunchMemo(modelPath, ctx, ct, tps, fp)
+					saveLaunchMemo(modelPath, ctx, ct, tps, fp, placement)
 				}
 			}
 			return proc, ctx
@@ -262,6 +282,64 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		ui.Warn("%s backend isn't compatible here - trying another...", backend)
 		engine.ClearBinEngine()
 	}
+}
+
+// Launch placements, recorded in the memo so replays load the same way:
+// plGPU = fully resident (forced -ngl 99, gate-verified); plNoMTP = fully
+// resident with the MTP draft dropped to afford the window; plSpill = engine
+// device placement, layers spilled to RAM for the window.
+const (
+	plGPU   = "gpu"
+	plNoMTP = "nomtp"
+	plSpill = "spill"
+)
+
+// ensureBottomTarget upgrades a launch that settled below the universal bottom
+// target (~64k usable + the agent's fixed overhead, BottomCtxTokens total): the
+// fully-resident ladder maxed out under it, so trade for the window in cost
+// order. Stage 1, MTP models only: drop the speculative draft -- its context +
+// buffers cost 1-2 GB at big windows and the loss is ~25-35% decode, and the
+// result stays FULLY resident (gate-verified). Stage 2: the engine's device
+// placement -- layers spill to RAM, measured 2-4x decode, but every agent gets
+// a workable window; the decode report states the price. The resident server
+// is restored when neither attempt loads (RAM-tight boxes). Only for
+// winc-sized GPU launches; CPU-only and unified memory size their own way,
+// and explicit settings never reach here.
+func ensureBottomTarget(cfg *config.Config, hw platform.Hardware, modelPath, bin string, port int, serverURL, logPath string, proc *server.Proc, ctx int) (*server.Proc, int, string) {
+	if proc == nil || ctx >= engine.BottomCtxTokens || hw.Unified || hw.VRAMMB <= 0 || len(hw.GPUs) == 0 {
+		return proc, ctx, plGPU
+	}
+	stopped := false
+	if len(engine.MTPArgs(cfg, hw, modelPath, bin)) > 0 {
+		ui.Info("settled at %d - below the %d-token bottom target; trying the bottom without the MTP draft (frees its context + buffers, costs the speculative speedup)...", ctx, engine.BottomCtxTokens)
+		proc.Stop()
+		stopped = true
+		nm := *cfg
+		nm.Performance.Mtp = "off" // also zeroes the sizing allowance + the fit-oracle's draft margin
+		if p2 := tryContextOnce(&nm, hw, modelPath, bin, port, serverURL, logPath, engine.BottomCtxTokens, false, false, true); p2 != nil {
+			ui.Good("bottom target reached fully on GPU by dropping the MTP draft: %d tokens", engine.BottomCtxTokens)
+			cfg.Performance.Mtp = "off"
+			return p2, engine.BottomCtxTokens, plNoMTP
+		}
+	}
+	if !stopped {
+		ui.Info("settled at %d fully on GPU - below the %d-token bottom target; retrying with engine placement (layers may spill to RAM: slower, roomier)...", ctx, engine.BottomCtxTokens)
+		proc.Stop()
+	} else {
+		ui.Info("retrying the bottom target with engine placement (layers may spill to RAM: slower, roomier)...")
+	}
+	sp := *cfg
+	sp.Performance.GpuLayers = engine.GpuLayersEngine
+	if p2 := tryContextOnce(&sp, hw, modelPath, bin, port, serverURL, logPath, engine.BottomCtxTokens, false, false, false); p2 != nil {
+		ui.Good("engine placement reached the bottom target: %d tokens", engine.BottomCtxTokens)
+		return p2, engine.BottomCtxTokens, plSpill
+	}
+	ui.Warn("the bottom-target attempts didn't load - keeping the %d-token fully-resident window", ctx)
+	if p2 := tryContextOnce(cfg, hw, modelPath, bin, port, serverURL, logPath, ctx, false, true, true); p2 != nil {
+		return p2, ctx, plGPU
+	}
+	ui.Err("engine did not come back after the bottom-target attempt; see %s", logPath)
+	return nil, 0, plGPU
 }
 
 // ladderBelow is the standard rung below ctx (the ladder's second entry when ctx
@@ -494,34 +572,41 @@ func launchFingerprint(cfg *config.Config, hw platform.Hardware) string {
 	return fmt.Sprintf("%08x", h.Sum32())
 }
 
-// loadLaunchMemo returns the memoized (ctx, cacheType, decode tok/s) for a
-// model under the given launch fingerprint, or (0, "", 0). Entries written
-// under a different fingerprint -- or by versions before fingerprints -- miss,
-// re-measure once, and are rewritten in the current format.
-func loadLaunchMemo(modelPath, fp string) (int, string, float64) {
+// loadLaunchMemo returns the memoized (ctx, cacheType, decode tok/s, placement)
+// for a model under the given launch fingerprint, or (0, "", 0, plGPU). The
+// placement tells the replay HOW the window loaded: plSpill must not force
+// full-GPU residency (the gate would reject it every start), plNoMTP must keep
+// the draft off (its allowance is what made the window fit). Entries written
+// under a different fingerprint -- or by versions with older formats -- miss,
+// re-measure once, and are rewritten in the current form.
+func loadLaunchMemo(modelPath, fp string) (int, string, float64, string) {
 	data, err := os.ReadFile(launchMemoPath())
 	if err != nil {
-		return 0, "", 0
+		return 0, "", 0, plGPU
 	}
 	key := launchMemoKey(modelPath)
 	for _, line := range strings.Split(string(data), "\n") {
 		f := strings.Fields(strings.TrimSpace(line))
-		if len(f) == 5 && f[0] == key && f[4] == fp {
+		if len(f) == 6 && f[0] == key && f[4] == fp {
 			if ctx, err := strconv.Atoi(f[1]); err == nil && ctx > 0 {
 				tps, _ := strconv.ParseFloat(f[3], 64)
-				return ctx, f[2], tps
+				pl := f[5]
+				if pl != plSpill && pl != plNoMTP {
+					pl = plGPU
+				}
+				return ctx, f[2], tps, pl
 			}
 		}
 	}
-	return 0, "", 0
+	return 0, "", 0, plGPU
 }
 
-// saveLaunchMemo records a measured-good launch (and its measured decode speed)
-// under its fingerprint. One line per (model, fingerprint): a model launched in
-// several geometries (single vs team --parallel) keeps one remembered stepping
-// per geometry instead of the modes evicting each other. Same-key lines from
-// pre-fingerprint versions can never match again and are purged.
-func saveLaunchMemo(modelPath string, ctx int, cacheType string, tps float64, fp string) {
+// saveLaunchMemo records a measured-good launch (its measured decode speed and
+// placement) under its fingerprint. One line per (model, fingerprint): a model
+// launched in several geometries (single vs team --parallel) keeps one
+// remembered stepping per geometry instead of the modes evicting each other.
+// Same-key lines from older formats can never match again and are purged.
+func saveLaunchMemo(modelPath string, ctx int, cacheType string, tps float64, fp, placement string) {
 	key := launchMemoKey(modelPath)
 	var out []string
 	if data, err := os.ReadFile(launchMemoPath()); err == nil {
@@ -530,16 +615,16 @@ func saveLaunchMemo(modelPath string, ctx int, cacheType string, tps float64, fp
 			if t == "" {
 				continue
 			}
-			if f := strings.Fields(t); f[0] == key && (len(f) != 5 || f[4] == fp) {
+			if f := strings.Fields(t); f[0] == key && (len(f) != 6 || f[4] == fp) {
 				continue // replaced below (same fingerprint) or unreadable legacy format
 			}
 			out = append(out, t)
 		}
 	}
 	if len(out) == 0 {
-		out = append(out, "# winc: last measured-good launch per model (ctx + KV cache + decode tok/s + config fingerprint). Delete to re-measure.")
+		out = append(out, "# winc: last measured-good launch per model (ctx + KV cache + decode tok/s + config fingerprint + placement). Delete to re-measure.")
 	}
-	out = append(out, fmt.Sprintf("%s %d %s %.1f %s", key, ctx, cacheType, tps, fp))
+	out = append(out, fmt.Sprintf("%s %d %s %.1f %s %s", key, ctx, cacheType, tps, fp, placement))
 	_ = os.WriteFile(launchMemoPath(), []byte(strings.Join(out, "\n")+"\n"), 0o644)
 }
 

@@ -97,36 +97,27 @@ func TestResolveContext(t *testing.T) {
 	if got < ctxFloor || got > ctxCeil {
 		t.Errorf("auto range: got %d", got)
 	}
-	// near-full VRAM -> the usable window (engine fit spills layers), not a
+	// near-full VRAM -> the bottom target (engine fit spills layers), not a
 	// floor smaller than the agent's own fixed overhead.
-	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, false); got != usableCtxTokens {
-		t.Errorf("tight VRAM should target the usable window via partial offload: got %d", got)
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, false); got != BottomCtxTokens {
+		t.Errorf("tight VRAM should target the bottom window via partial offload: got %d", got)
 	}
-	// "auto" = the previous largest-fits behavior: offloaded experts aim at the
-	// full ceiling.
+	// Offloaded experts aim at the full ceiling (most VRAM is free for KV).
 	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, true); got != ctxCeil {
-		t.Errorf("auto + offloaded experts should target the ceiling: got %d", got)
+		t.Errorf("offloaded experts should target the ceiling: got %d", got)
 	}
-	// "optimal" (the default) targets ~128K PER AGENT SLOT: 40-80 tok/s on a 64K
-	// effective window beats a wider-but-slower one. Team escalation (--parallel 2)
-	// doubles the total so each slot still gets the full baseline.
-	cfg.Performance.Context = "optimal"
+	// One universal policy: "optimal" and "auto" both aim at the ceiling; the
+	// ladder + fit oracle + placement gate settle the largest TRUE window.
 	roomy := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
-	if got := ResolveContext(&cfg, roomy, "m.gguf", 5000, false); got != baselineCtxTokens {
-		t.Errorf("optimal single-slot target = %d, want %d", got, baselineCtxTokens)
-	}
-	cfg.Performance.ExtraServerArgs = []string{"--parallel", "2"}
-	if got := ResolveContext(&cfg, roomy, "m.gguf", 5000, false); got != 2*baselineCtxTokens {
-		t.Errorf("optimal two-slot target = %d, want %d", got, 2*baselineCtxTokens)
-	}
-	cfg.Performance.ExtraServerArgs = nil
-	if got := ResolveContext(&cfg, roomy, "m.gguf", 15500, true); got != baselineCtxTokens {
-		t.Errorf("optimal + offloaded experts should target the baseline: got %d", got)
-	}
-	// "auto" largest-fits on the same roomy hardware runs past the baseline.
+	cfg.Performance.Context = "optimal"
+	optimal := ResolveContext(&cfg, roomy, "m.gguf", 5000, false)
 	cfg.Performance.Context = "auto"
-	if got := ResolveContext(&cfg, roomy, "m.gguf", 5000, false); got <= baselineCtxTokens {
-		t.Errorf("auto should size past the baseline on roomy hardware, got %d", got)
+	auto := ResolveContext(&cfg, roomy, "m.gguf", 5000, false)
+	if optimal != auto {
+		t.Errorf("optimal and auto are the same universal policy: %d vs %d", optimal, auto)
+	}
+	if optimal != ctxCeil {
+		t.Errorf("roomy hardware should target the ceiling, got %d", optimal)
 	}
 	// An MTP model's draft context eats VRAM the KV cache can't use: same sizes,
 	// smaller window.
@@ -251,9 +242,10 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 6200, false); got != "q8_0/q4_0" {
 		t.Errorf("starved window should downshift to q8_0/q4_0, got %q", got)
 	}
-	// free = 8192 - 6200 - (512+6200/8) = 705 MB -> asym factor 85 -> 57344.
-	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != 57344 {
-		t.Errorf("downshifted window = %d, want 57344", got)
+	// The raw asym window (705 MB free -> ~57k) is still under the bottom
+	// target, so sizing aims at the bottom and placement spills the difference.
+	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != BottomCtxTokens {
+		t.Errorf("downshifted window = %d, want %d", got, BottomCtxTokens)
 	}
 	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
 	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "q8_0" {
@@ -262,8 +254,8 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	// Explicit q8_0 never downshifts the CACHE; the window that pure-q8 KV can't
 	// reach lands at the usable floor instead (partial offload places the rest).
 	cfg.Performance.CacheType = "q8_0"
-	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != usableCtxTokens {
-		t.Errorf("explicit q8_0 sizes to the usable floor: got %d", got)
+	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != BottomCtxTokens {
+		t.Errorf("explicit q8_0 sizes to the bottom target: got %d", got)
 	}
 	// Without flash attention the cache is f16 regardless -- auto stays q8_0.
 	cfg.Performance.CacheType = "auto"
@@ -606,8 +598,8 @@ func TestGpuReserveScalesWithModel(t *testing.T) {
 func TestResolveContextTinyCard(t *testing.T) {
 	cfg := config.Defaults()
 	tiny := platform.Hardware{OS: "linux", GPUVendor: "nvidia", VRAMMB: 4096, GPUs: []platform.GPUDevice{{TotalMB: 4096}}}
-	if got := ResolveContext(&cfg, tiny, "Qwen3.5-4B-Q4_K_M.gguf", 2800, false); got != usableCtxTokens {
-		t.Errorf("4 GB + 4B should target the usable window via partial offload, got %d", got)
+	if got := ResolveContext(&cfg, tiny, "Qwen3.5-4B-Q4_K_M.gguf", 2800, false); got != BottomCtxTokens {
+		t.Errorf("4 GB + 4B should target the bottom window via partial offload, got %d", got)
 	}
 	// And the ladder must be allowed to TRY it: a partial fit is never vetoed by
 	// the full-GPU oracle (ForcedFullGPU is false on this hardware).
@@ -616,7 +608,7 @@ func TestResolveContextTinyCard(t *testing.T) {
 	}
 	// A roomy fit keeps full-GPU sizing exactly as before.
 	roomy := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000, GPUs: []platform.GPUDevice{{TotalMB: 16000}}}
-	if got := ResolveContext(&cfg, roomy, "Dense-9B-Q5_K_M.gguf", 8000, false); got < usableCtxTokens {
+	if got := ResolveContext(&cfg, roomy, "Dense-9B-Q5_K_M.gguf", 8000, false); got < BottomCtxTokens {
 		t.Errorf("a roomy fit must not shrink, got %d", got)
 	}
 }

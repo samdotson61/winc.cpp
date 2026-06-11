@@ -113,27 +113,14 @@ func forcedFullGPUAt(cfg *config.Config, hw platform.Hardware, modelPath string,
 // cache isn't starved by extra concurrent sequences.
 const mainEscalationHeadroomMB = 6000
 
-// MinEscalationHeadCtx is the smallest per-slot window worth splitting the head
-// for. Claude Code's fixed overhead (system prompt + tools) is ~24k tokens on
-// its own: a 32k slot leaves ~8k of working conversation, the agent fills it in
-// minutes, and generation then truncates silently at the wall (observed live --
-// an overnight session burned 20+ turns on tool calls whose arguments never
-// fit). Escalation costs half the window (--parallel 2), so it only engages
-// when each half is still a workable agent window.
-const MinEscalationHeadCtx = 49152
-
 // MainEscalationOK reports whether the main GPU model has enough spare VRAM to also
-// serve escalated subagents concurrently -- and a large enough expected window that
-// the --parallel 2 split leaves each slot workable. False when there's no GPU, when
-// experts are offloaded to RAM (the main model is already compute-compromised), or
-// when free VRAM after the model is below the headroom threshold -- in those cases
-// escalation stops at the CPU worker. expectedCtx is the window the head is expected
-// to load (the launch memo's remembered value, or the sizing target); <= 0 skips the
-// window check (the post-launch guard still applies).
-func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string, expectedCtx int) bool {
-	if expectedCtx > 0 && expectedCtx/2 < MinEscalationHeadCtx {
-		return false
-	}
+// serve escalated subagents concurrently. They share the engine's unified KV pool
+// (no --parallel split -- the head keeps its WHOLE window; concurrency costs pool
+// room only while a subagent actually runs), so the only question is headroom.
+// False when there's no GPU, when experts are offloaded to RAM (the main model is
+// already compute-compromised), or when free VRAM after the model is below the
+// headroom threshold -- in those cases escalation stops at the CPU worker.
+func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string) bool {
 	if GpuLayers(cfg, hw) <= 0 || hw.VRAMMB <= 0 {
 		return false
 	}
@@ -358,9 +345,15 @@ func FileMB(path string) int {
 	return 0
 }
 
+// GpuLayersEngine is the winc-internal gpu_layers sentinel for the bottom-target
+// spill rescue: ServerArgs omits -ngl entirely so the engine's device fit places
+// the layers (spilling to RAM as needed). Everything else treats it like a
+// GPU-offloaded launch (flash attention, batch sizes, KV quantization).
+const GpuLayersEngine = "engine"
+
 // GpuLayers resolves the -ngl value from config + hardware.
 func GpuLayers(cfg *config.Config, hw platform.Hardware) int {
-	if cfg.Performance.GpuLayers == "auto" || cfg.Performance.GpuLayers == "" {
+	if cfg.Performance.GpuLayers == "auto" || cfg.Performance.GpuLayers == "" || cfg.Performance.GpuLayers == GpuLayersEngine {
 		if hw.GPUVendor != "" && hw.GPUVendor != "none" {
 			return 99
 		}
@@ -370,24 +363,19 @@ func GpuLayers(cfg *config.Config, hw platform.Hardware) int {
 }
 
 const (
-	ctxFloor = 32768  // enough for Claude Code's system prompt + tools + headroom
+	ctxFloor = 32768  // last-resort ladder bottom; enough to boot an agent at all
 	ctxCeil  = 262144 // every 2026 catalog model is natively >=256K; the load ladder protects the rest
 
-	// usableCtxTokens is the smallest auto-sized window worth launching an agent
-	// into: Claude Code's fixed overhead (system prompt + tools) is ~24k tokens
-	// and the compaction reserve is 8k, so anything under ~48k leaves no real
-	// room to work -- a 4 GB card's formula result of "the floor" produced
-	// sessions that rejected every request. Below this, sizing switches intent
-	// from "largest fully-resident window" to "usable window, engine places the
-	// layers" (partial offload).
-	usableCtxTokens = 49152
-
-	// baselineCtxTokens is the automatic context target PER AGENT SLOT: ~64K of
-	// effective working context plus Claude Code's system prompt and the
-	// auto-compaction buffer (~128K total). Hardware that could hold more keeps
-	// the headroom for speed instead -- decode in the 40-80 tok/s band beats a
-	// wider window. An explicit `context = N` still goes to the full ceiling.
-	baselineCtxTokens = 131072
+	// BottomCtxTokens is the UNIVERSAL bottom target: ~64K of usable working
+	// context on top of Claude Code's fixed overhead (~24k system prompt +
+	// tools) and the compaction reserve (~8-12k) -- ~100k total. Auto sizing
+	// aims at the ceiling and settles at the largest window that loads
+	// HEALTHY; but it never settles below this bottom while a slower path
+	// exists: when full-GPU residency can't reach it, the launcher retries
+	// with the engine's device placement (layers spill to RAM) at exactly
+	// this window. A slower usable window beats a fast cramped one -- the
+	// decode report states the price.
+	BottomCtxTokens = 98304
 )
 
 // ParallelSlots reads --parallel N from the extra server args (team mode adds it
@@ -502,7 +490,10 @@ func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath stri
 	if !cfg.Performance.FlashAttn || modelFileMB <= 0 {
 		return "q8_0" // no flash-attn (cache is f16 anyway) or unknown size -> never downshift
 	}
-	if resolveContextFor(cfg, hw, "q8_0", modelPath, modelFileMB, expertsOffloaded) < StarvedCtxTokens {
+	// Starvation is judged on the RAW full-GPU estimate, not the bottom-bumped
+	// target: the bump reports a window the KV budget can't actually hold, which
+	// would hide starvation from the exact cards the downshift exists for.
+	if !expertsOffloaded && rawCtxTokens(cfg, hw, "q8_0", modelPath, modelFileMB) < StarvedCtxTokens {
 		return "q8_0/q4_0"
 	}
 	return "q8_0"
@@ -538,47 +529,48 @@ func resolveContextFor(cfg *config.Config, hw platform.Hardware, cacheType, mode
 	if GpuLayers(cfg, hw) == 0 || hw.VRAMMB <= 0 {
 		return ctxFloor
 	}
-	// "optimal" (the default) targets ~128K total per agent slot -- decode speed
-	// in the 40-80 tok/s band beats a wider window. "auto" is the previous
-	// behavior: the largest window that fits, up to the 256K ceiling.
+	// One universal aim: the 262144 ceiling when it loads healthy ("optimal" and
+	// "auto" are the same policy now); the ladder, the fit oracle, and the
+	// placement gate settle the largest TRUE window from there.
 	limit := ctxCeil
-	if mode != "auto" {
-		limit = baselineCtxTokens * ParallelSlots(cfg)
-		if limit > ctxCeil {
-			limit = ctxCeil
-		}
-	}
 	if expertsOffloaded {
 		return limit // experts in RAM -> lots of VRAM free; ladder fits the largest that loads
 	}
 	if modelFileMB <= 0 {
 		return ctxFloor
 	}
-	// Reserve compute buffer(s), the MTP draft context when one will load, + safety.
-	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw, modelFileMB) - mtpReserveMB(cfg, modelPath)
-	// Bytes/token depends on the KV cache type, so a smaller cache (q4) fits a
-	// proportionally larger window. Default q8_0 keeps the original factor (64).
-	toks := 0
-	if free > 0 {
-		toks = free * kvCtxFactor(cacheType, cfg.Performance.FlashAttn)
-		toks = (toks / 8192) * 8192
-	}
-	if toks < usableCtxTokens {
-		// Full-GPU sizing can't reach a window an agent can work in (a tiny card,
-		// or a model near the card's size). Aim at the usable floor instead and
-		// let the engine's device fit spill layers to RAM: a partially offloaded
-		// usable window beats a fully resident useless one -- the ladder still
-		// steps down if even that won't load, and the loud <49k warning plus the
-		// decode report tell the user exactly what they got.
-		if limit < usableCtxTokens {
+	toks := rawCtxTokens(cfg, hw, cacheType, modelPath, modelFileMB)
+	if toks < BottomCtxTokens {
+		// Full-GPU sizing can't reach the bottom target (a tiny card, or a model
+		// near the card's size). Aim at the bottom and let the engine's device
+		// fit spill layers to RAM -- the ladder still steps down if even that
+		// won't load, and the decode report states the price.
+		if limit < BottomCtxTokens {
 			return limit
 		}
-		return usableCtxTokens
+		return BottomCtxTokens
 	}
 	if toks > limit {
 		return limit
 	}
 	return toks
+}
+
+// rawCtxTokens is the UNBUMPED full-GPU window estimate: what the KV budget
+// alone affords, before the bottom-target policy raises the aim. The starved
+// KV downshift must read THIS value -- the bottom bump would otherwise hide
+// starvation (a 40k raw window reported as the 98k target reads as "ample",
+// the asym downshift never fires, and the exact cards it exists for lose it).
+func rawCtxTokens(cfg *config.Config, hw platform.Hardware, cacheType, modelPath string, modelFileMB int) int {
+	// Reserve compute buffer(s), the MTP draft context when one will load, + safety.
+	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw, modelFileMB) - mtpReserveMB(cfg, modelPath)
+	if free <= 0 {
+		return 0
+	}
+	// Bytes/token depends on the KV cache type, so a smaller cache (q4) fits a
+	// proportionally larger window. Default q8_0 keeps the original factor (64).
+	toks := free * kvCtxFactor(cacheType, cfg.Performance.FlashAttn)
+	return (toks / 8192) * 8192
 }
 
 // ContextLadder returns descending context sizes to try (largest fitting first),
@@ -636,6 +628,9 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	// GPU placement policy, head-first:
 	//  - MoE expert offload: all layers on the GPU (-ngl 99), expert weights in RAM,
 	//    so a MoE bigger than VRAM still runs fast (only activations cross PCIe).
+	//  - gpu_layers = "engine" (winc-internal, the bottom-target spill rescue):
+	//    omit -ngl so the engine's device fit places layers -- a deliberate spill
+	//    for a window the resident set can't hold.
 	//  - Explicit gpu_layers: the user's number wins.
 	//  - Model fully fits VRAM: force -ngl 99 so the engine's conservative device
 	//    fit can't spill a layer to the CPU (the CPU belongs to the team workers).
@@ -645,6 +640,8 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		args = append(args, "-ngl", "99", "--cpu-moe")
 	case cpuMoe != "":
 		args = append(args, "-ngl", "99", "--n-cpu-moe", cpuMoe)
+	case cfg.Performance.GpuLayers == GpuLayersEngine:
+		// engine placement: no -ngl
 	case cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "":
 		args = append(args, "-ngl", strconv.Itoa(ngl))
 	case fullyFitsGPU(cfg, hw, modelPath, modelMB):

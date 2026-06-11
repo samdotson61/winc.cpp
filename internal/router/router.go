@@ -46,6 +46,7 @@ type Router struct {
 	capsLow    int             // requests whose max_tokens was lowered to a tier cap
 	deadSkips  int             // requests re-routed past a dead backend
 	infoPinned int             // information-only requests held on a worker instead of the head model
+	continued  int             // truncated answers auto-continued to completion
 }
 
 // fallbackName is the stats/log name for the fallback backend (the main model).
@@ -93,6 +94,9 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
 				req.Header.Del("Accept-Encoding")
+				if continuable(req.URL.Path, nb) {
+					req = req.WithContext(context.WithValue(req.Context(), contKey, &contInfo{body: nb, target: upstream}))
+				}
 			}
 		}
 		rp.ServeHTTP(w, req)
@@ -146,6 +150,7 @@ type Stats struct {
 	CapsLowered int            // requests whose max_tokens was lowered to a tier cap
 	DeadSkips   int            // requests re-routed past a dead backend
 	InfoPinned  int            // information-only requests held on a worker instead of the head model
+	Continued   int            // truncated answers auto-continued to completion
 }
 
 // String renders a compact one-line summary, backends sorted by name.
@@ -168,6 +173,9 @@ func (s Stats) String() string {
 	}
 	if s.CapsLowered > 0 {
 		fmt.Fprintf(&b, "  caps-lowered=%d", s.CapsLowered)
+	}
+	if s.Continued > 0 {
+		fmt.Fprintf(&b, "  answers-continued=%d", s.Continued)
 	}
 	if s.InfoPinned > 0 {
 		fmt.Fprintf(&b, "  info-pinned=%d", s.InfoPinned)
@@ -194,7 +202,7 @@ func (r *Router) Stats() Stats {
 	}
 	s.Dead = append(s.Dead, r.deadNames...)
 	sort.Strings(s.Dead)
-	s.Overflows, s.CapsLowered, s.DeadSkips, s.InfoPinned = r.overflows, r.capsLow, r.deadSkips, r.infoPinned
+	s.Overflows, s.CapsLowered, s.DeadSkips, s.InfoPinned, s.Continued = r.overflows, r.capsLow, r.deadSkips, r.infoPinned, r.continued
 	return s
 }
 
@@ -252,13 +260,17 @@ func nameOr(name, upstream string) string {
 }
 
 // rewriteOverflow is the proxy's ModifyResponse hook: it applies the context-
-// overflow rewrite and counts each rewrite for the end-of-session stats.
+// overflow rewrite (errors), then the auto-continuation wrap (successes) --
+// the two touch disjoint status codes.
 func (r *Router) rewriteOverflow(resp *http.Response) error {
 	rewritten, err := rewriteContextOverflowError(resp)
 	if rewritten {
 		r.mu.Lock()
 		r.overflows++
 		r.mu.Unlock()
+	}
+	if err == nil {
+		r.maybeContinue(resp)
 	}
 	return err
 }
@@ -546,6 +558,9 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 				req.ContentLength = int64(len(nb))
 				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(nb)))
 				req.Header.Del("Accept-Encoding")
+				if continuable(req.URL.Path, nb) {
+					req = req.WithContext(context.WithValue(req.Context(), contKey, &contInfo{body: nb, target: target}))
+				}
 				if rlog != nil {
 					rlog.Printf("model=%q -> %s (%s)%s%s", model, name, target, thinkTag(think), toolsTag(toolsBefore, toolsAfter))
 				}
