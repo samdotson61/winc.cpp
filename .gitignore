@@ -35,6 +35,7 @@
 winc-support-*.zip
 
 # Measured launch memos (per-machine; delete to re-measure)
+/.winc-hw
 /.winc-kvprobe
 /.winc-launch
 
