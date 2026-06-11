@@ -21,8 +21,10 @@ func TestMainEscalationOK(t *testing.T) {
 	if !MainEscalationOK(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 24000}, model, 131072) {
 		t.Error("ample VRAM should allow main escalation")
 	}
-	// Tight VRAM (below the headroom threshold) -> escalation capped at the CPU worker.
-	if MainEscalationOK(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 7000}, model, 131072) {
+	// Tight VRAM (below the headroom threshold) -> escalation capped at the CPU
+	// worker. The stand-in model is tiny, so its scaled reserve is small too --
+	// the fixture must be genuinely tight.
+	if MainEscalationOK(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 6500}, model, 131072) {
 		t.Error("tight VRAM should block main escalation")
 	}
 	// No GPU -> never escalate to main.

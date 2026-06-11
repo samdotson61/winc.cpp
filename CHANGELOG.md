@@ -3,6 +3,34 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.17.0 — 2026-06-11
+
+Low-end hardware gets a usable window, and the PATH actually lands on
+fish-first distros. A partially offloaded usable window beats a fully resident
+useless one.
+
+### Fixed
+- 4 GB-class cards collapsed to unusable windows: the sizing reserve was a
+  flat 1536 MB calibrated on 20+ GB models (a 4B's real compute buffer is
+  ~300 MB), which left the formula negative on a 4 GB card -- and the
+  fit-oracle then vetoed every rung that couldn't stay FULLY on GPU, driving
+  the launch down to a 16k window, smaller than the agent's own ~24k fixed
+  overhead. Three changes:
+  - the per-GPU reserve now scales with the model (512 MB + size/8, capped at
+    the calibrated 1536 -- models >= 8 GB size exactly as before);
+  - when full-GPU sizing still can't reach a workable window, the target
+    becomes the 48k usable floor and layer placement falls to the engine's
+    device fit (partial offload). The ladder still verifies the load, the
+    <49k warning and the decode report tell the user what they got;
+  - the fit-oracle only vetoes rungs for forced-full-GPU loads -- a partial
+    fit is SUPPOSED to spill, and a failed small-model attempt costs seconds.
+  A 4 GB card with the 4B now sizes to 49152 instead of a floor it could
+  never use.
+- PATH on fish-first distros (CachyOS notably): winc wrote its PATH line to
+  .bashrc/.zshrc/.profile -- fish reads none of them. `winc setup` now also
+  drops ~/.config/fish/conf.d/winc.fish (fish sources every conf.d file);
+  OnPath sees it, uninstall removes it.
+
 ## v1.16.0 — 2026-06-11
 
 Lighter on low-end hardware, faster on every relaunch.

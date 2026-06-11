@@ -97,9 +97,10 @@ func TestResolveContext(t *testing.T) {
 	if got < ctxFloor || got > ctxCeil {
 		t.Errorf("auto range: got %d", got)
 	}
-	// near-full VRAM -> floor
-	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, false); got != ctxFloor {
-		t.Errorf("tight VRAM should floor: got %d", got)
+	// near-full VRAM -> the usable window (engine fit spills layers), not a
+	// floor smaller than the agent's own fixed overhead.
+	if got := ResolveContext(&cfg, platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}, "m.gguf", 15500, false); got != usableCtxTokens {
+		t.Errorf("tight VRAM should target the usable window via partial offload: got %d", got)
 	}
 	// "auto" = the previous largest-fits behavior: offloaded experts aim at the
 	// full ceiling.
@@ -142,10 +143,13 @@ func TestResolveContext(t *testing.T) {
 }
 
 func TestResolveContextCacheType(t *testing.T) {
-	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 6000}
-	const modelMB = 3000 // leaves a small VRAM window so factors stay below the ceiling
+	// Sized so every cache type lands BETWEEN the usable floor and the auto
+	// ceiling -- the factor ordering is only observable in that band.
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000, GPUs: []platform.GPUDevice{{TotalMB: 16000}}}
+	const modelMB = 12500
 
 	cfg := config.Defaults() // q8_0 + flash_attn (defaults)
+	cfg.Performance.Context = "auto"
 	q8 := ResolveContext(&cfg, hw, "m.gguf", modelMB, false)
 
 	cfg.Performance.CacheType = "f16"
@@ -158,9 +162,11 @@ func TestResolveContextCacheType(t *testing.T) {
 	if !(q4 > q8 && q8 > f16) {
 		t.Errorf("expected q4 > q8 > f16, got q4=%d q8=%d f16=%d", q4, q8, f16)
 	}
-	// q8_0 must keep the original factor (no regression for the default).
-	if q8 != 90112 {
-		t.Errorf("q8_0 context changed from baseline: got %d want 90112", q8)
+	// q8_0 must keep the original 64 tokens/MB factor (no regression for the
+	// default): free = 16000 - 12500 - 1536 = 1964 MB -> 1964*64 rounded down
+	// to the 8192 grid.
+	if q8 != 122880 {
+		t.Errorf("q8_0 context changed from baseline: got %d want 122880", q8)
 	}
 	// Without flash attention the cache is f16 regardless of cache_type.
 	cfg.Performance.FlashAttn = false // cache_type is still q4_0 here
@@ -242,25 +248,27 @@ func TestResolveCPUMoEAuto(t *testing.T) {
 func TestAutoKVCacheDownshift(t *testing.T) {
 	cfg := config.Defaults() // cache_type = "auto"
 	tight := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 8192}
-	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 5700, false); got != "q8_0/q4_0" {
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 6200, false); got != "q8_0/q4_0" {
 		t.Errorf("starved window should downshift to q8_0/q4_0, got %q", got)
 	}
-	if got := ResolveContext(&cfg, tight, "m.gguf", 5700, false); got != 73728 {
-		t.Errorf("downshifted window = %d, want 73728", got)
+	// free = 8192 - 6200 - (512+6200/8) = 705 MB -> asym factor 85 -> 57344.
+	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != 57344 {
+		t.Errorf("downshifted window = %d, want 57344", got)
 	}
 	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
 	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "q8_0" {
 		t.Errorf("ample window should stay q8_0, got %q", got)
 	}
-	// Explicit q8_0 never downshifts.
+	// Explicit q8_0 never downshifts the CACHE; the window that pure-q8 KV can't
+	// reach lands at the usable floor instead (partial offload places the rest).
 	cfg.Performance.CacheType = "q8_0"
-	if got := ResolveContext(&cfg, tight, "m.gguf", 5700, false); got != 57344 {
-		t.Errorf("explicit q8_0 must not downshift: got %d", got)
+	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != usableCtxTokens {
+		t.Errorf("explicit q8_0 sizes to the usable floor: got %d", got)
 	}
 	// Without flash attention the cache is f16 regardless -- auto stays q8_0.
 	cfg.Performance.CacheType = "auto"
 	cfg.Performance.FlashAttn = false
-	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 5700, false); got != "q8_0" {
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 6200, false); got != "q8_0" {
 		t.Errorf("no flash-attn: auto must stay q8_0, got %q", got)
 	}
 	// Unknown model size never downshifts.
@@ -568,5 +576,47 @@ func TestForcedFullGPU(t *testing.T) {
 	cfg.Performance.GpuLayers = "99"
 	if forcedFullGPUAt(&cfg, hw, "Dense-9B-Q5_K_M.gguf", 8000) {
 		t.Error("explicit gpu_layers runs as written and is never gated")
+	}
+}
+
+// Small models reserve proportionally less VRAM for compute buffers; >= 8 GB
+// models keep the calibrated 1536 exactly. The flat reserve ate a 4 GB card
+// whole (4096 - 2800 model - 1536 reserve < 0 -> sizing collapsed to the floor).
+func TestGpuReserveScalesWithModel(t *testing.T) {
+	one := platform.Hardware{GPUs: []platform.GPUDevice{{TotalMB: 4096}}}
+	if got, want := gpuReserveMB(one, 2800), 512+2800/8; got != want {
+		t.Errorf("4B-class reserve = %d, want %d", got, want)
+	}
+	if got := gpuReserveMB(one, 18915); got != 1536 {
+		t.Errorf("big-model reserve must stay the calibrated 1536, got %d", got)
+	}
+	if got := gpuReserveMB(one, 0); got != 1536 {
+		t.Errorf("unknown model size stays conservative, got %d", got)
+	}
+	two := platform.Hardware{GPUs: []platform.GPUDevice{{TotalMB: 16000}, {TotalMB: 12000}}}
+	if got := gpuReserveMB(two, 18915); got != 1536+768 {
+		t.Errorf("multi-GPU adds 768 per extra card, got %d", got)
+	}
+}
+
+// A 4 GB card with the 4B: full-GPU sizing cannot reach a workable agent window,
+// so the target becomes the usable floor and the engine's device fit places the
+// layers (partial offload) -- instead of collapsing to a window smaller than
+// Claude Code's own fixed overhead.
+func TestResolveContextTinyCard(t *testing.T) {
+	cfg := config.Defaults()
+	tiny := platform.Hardware{OS: "linux", GPUVendor: "nvidia", VRAMMB: 4096, GPUs: []platform.GPUDevice{{TotalMB: 4096}}}
+	if got := ResolveContext(&cfg, tiny, "Qwen3.5-4B-Q4_K_M.gguf", 2800, false); got != usableCtxTokens {
+		t.Errorf("4 GB + 4B should target the usable window via partial offload, got %d", got)
+	}
+	// And the ladder must be allowed to TRY it: a partial fit is never vetoed by
+	// the full-GPU oracle (ForcedFullGPU is false on this hardware).
+	if forcedFullGPUAt(&cfg, tiny, "Qwen3.5-4B-Q4_K_M.gguf", 2800) {
+		t.Error("a 4 GB card must not be treated as a forced-full-GPU fit")
+	}
+	// A roomy fit keeps full-GPU sizing exactly as before.
+	roomy := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000, GPUs: []platform.GPUDevice{{TotalMB: 16000}}}
+	if got := ResolveContext(&cfg, roomy, "Dense-9B-Q5_K_M.gguf", 8000, false); got < usableCtxTokens {
+		t.Errorf("a roomy fit must not shrink, got %d", got)
 	}
 }

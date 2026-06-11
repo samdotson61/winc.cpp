@@ -28,7 +28,19 @@ func rcFiles() []string {
 	}
 }
 
-// OnPath reports whether dir is on PATH now or recorded in a shell rc file.
+// fishConfPath is winc's fish drop-in. Fish sources every
+// ~/.config/fish/conf.d/*.fish and NEVER reads .bashrc/.zshrc/.profile -- on
+// distros where fish is the default interactive shell (CachyOS notably), the
+// POSIX rc edits alone never take effect and winc "never lands on PATH".
+func fishConfPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "fish", "conf.d", "winc.fish")
+}
+
+// OnPath reports whether dir is on PATH now or recorded for any supported shell.
 func OnPath(dir string) bool {
 	for _, p := range strings.Split(os.Getenv("PATH"), ":") {
 		if p == dir {
@@ -42,10 +54,17 @@ func OnPath(dir string) bool {
 			}
 		}
 	}
+	if fp := fishConfPath(); fp != "" {
+		if b, err := os.ReadFile(fp); err == nil && strings.Contains(string(b), dir) {
+			return true
+		}
+	}
 	return false
 }
 
-// AddToPath appends a marked export line to the user's shell rc files (idempotent).
+// AddToPath records dir for every shell the user might log into: a marked
+// export line in the POSIX rc files, plus a fish conf.d drop-in (fish reads
+// none of the POSIX files). Idempotent.
 func AddToPath(dir string) error {
 	block := "\n" + pathMarker + "\nexport PATH=\"" + dir + ":$PATH\"\n"
 	for _, f := range rcFiles() {
@@ -60,10 +79,19 @@ func AddToPath(dir string) error {
 		_, _ = fh.WriteString(block)
 		_ = fh.Close()
 	}
+	if fp := fishConfPath(); fp != "" {
+		if b, err := os.ReadFile(fp); err != nil || !strings.Contains(string(b), dir) {
+			if os.MkdirAll(filepath.Dir(fp), 0o755) == nil {
+				fish := pathMarker + "\nif not contains \"" + dir + "\" $PATH\n    set -gx PATH \"" + dir + "\" $PATH\nend\n"
+				_ = os.WriteFile(fp, []byte(fish), 0o644)
+			}
+		}
+	}
 	return nil
 }
 
-// RemoveFromPath strips the marked block from the user's shell rc files.
+// RemoveFromPath strips the marked block from the user's shell rc files and
+// removes the fish drop-in (that file is wholly winc's).
 func RemoveFromPath(dir string) error {
 	for _, f := range rcFiles() {
 		b, err := os.ReadFile(f)
@@ -82,6 +110,9 @@ func RemoveFromPath(dir string) error {
 			out = append(out, lines[i])
 		}
 		_ = os.WriteFile(f, []byte(strings.Join(out, "\n")), 0o644)
+	}
+	if fp := fishConfPath(); fp != "" {
+		_ = os.Remove(fp)
 	}
 	return nil
 }

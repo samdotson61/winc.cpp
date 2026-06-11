@@ -127,6 +127,14 @@ func rungWorthTrying(cfg *config.Config, hw platform.Hardware, modelPath string,
 	if mb <= 0 || engine.WillOffloadExperts(cfg, hw, modelPath) {
 		return true
 	}
+	// The oracle's verdict is "can this stay FULLY on GPU" -- only meaningful for
+	// loads winc will pin there. A partial fit (tiny card, model near the card's
+	// size) is SUPPOSED to spill layers; vetoing its rungs for not being fully
+	// resident drove 4 GB cards down to unusable windows. The attempt itself is
+	// the ground truth, and a failed small-model load costs seconds, not minutes.
+	if !engine.ForcedFullGPU(cfg, hw, modelPath) {
+		return true
+	}
 	ct := engine.EffectiveCacheType(cfg, hw, modelPath, mb, false)
 	probeCtx := ctx
 	if engine.MTPActive(cfg, modelPath) {

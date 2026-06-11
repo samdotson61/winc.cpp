@@ -31,13 +31,21 @@ const minKVHeadroomMB = 1024
 
 // gpuReserveMB is the VRAM held back from sizing math for compute buffers, driver
 // overhead, and desktop use -- per device, since each GPU in a multi-GPU split
-// allocates its own compute buffer.
-func gpuReserveMB(hw platform.Hardware) int {
+// allocates its own compute buffer. Compute buffers scale with the MODEL, not the
+// card: the flat 1536 MB calibrated on 20+ GB models ate a 4 GB card's entire
+// non-model VRAM and collapsed its sizing to the floor (a 4B's real compute
+// buffer is ~300 MB). Small models reserve proportionally less; >=8 GB models
+// keep the calibrated 1536 exactly. Unknown size stays conservative.
+func gpuReserveMB(hw platform.Hardware, modelMB int) int {
 	n := len(hw.GPUs)
 	if n < 1 {
 		n = 1
 	}
-	return 1536 + 768*(n-1)
+	base := 1536
+	if modelMB > 0 && 512+modelMB/8 < base {
+		base = 512 + modelMB/8
+	}
+	return base + 768*(n-1)
 }
 
 // resolveCPUMoE decides MoE expert offload: "" (none), "all" (--cpu-moe), or an
@@ -63,7 +71,7 @@ func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, m
 	if ngl == 0 || hw.VRAMMB <= 0 || modelMB <= 0 || !isMoEFile(modelPath) {
 		return ""
 	}
-	if hw.VRAMMB-modelMB-gpuReserveMB(hw) < minKVHeadroomMB {
+	if hw.VRAMMB-modelMB-gpuReserveMB(hw, modelMB) < minKVHeadroomMB {
 		return "all"
 	}
 	return ""
@@ -136,7 +144,7 @@ func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string
 	if mb <= 0 {
 		return false
 	}
-	return hw.VRAMMB-mb-gpuReserveMB(hw) >= mainEscalationHeadroomMB
+	return hw.VRAMMB-mb-gpuReserveMB(hw, mb) >= mainEscalationHeadroomMB
 }
 
 // isMTPFile reports whether a GGUF is a Multi-Token-Prediction variant (winc saves
@@ -365,6 +373,15 @@ const (
 	ctxFloor = 32768  // enough for Claude Code's system prompt + tools + headroom
 	ctxCeil  = 262144 // every 2026 catalog model is natively >=256K; the load ladder protects the rest
 
+	// usableCtxTokens is the smallest auto-sized window worth launching an agent
+	// into: Claude Code's fixed overhead (system prompt + tools) is ~24k tokens
+	// and the compaction reserve is 8k, so anything under ~48k leaves no real
+	// room to work -- a 4 GB card's formula result of "the floor" produced
+	// sessions that rejected every request. Below this, sizing switches intent
+	// from "largest fully-resident window" to "usable window, engine places the
+	// layers" (partial offload).
+	usableCtxTokens = 49152
+
 	// baselineCtxTokens is the automatic context target PER AGENT SLOT: ~64K of
 	// effective working context plus Claude Code's system prompt and the
 	// auto-compaction buffer (~128K total). Hardware that could hold more keeps
@@ -466,7 +483,7 @@ func fullyFitsGPU(cfg *config.Config, hw platform.Hardware, modelPath string, mo
 	if hw.Unified || hw.VRAMMB <= 0 || modelMB <= 0 {
 		return false
 	}
-	return hw.VRAMMB-modelMB-gpuReserveMB(hw)-mtpReserveMB(cfg, modelPath) >= minKVHeadroomMB
+	return hw.VRAMMB-modelMB-gpuReserveMB(hw, modelMB)-mtpReserveMB(cfg, modelPath) >= minKVHeadroomMB
 }
 
 // EffectiveCacheType resolves cache_type = "auto": q8_0 normally, downshifted to
@@ -538,16 +555,25 @@ func resolveContextFor(cfg *config.Config, hw platform.Hardware, cacheType, mode
 		return ctxFloor
 	}
 	// Reserve compute buffer(s), the MTP draft context when one will load, + safety.
-	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw) - mtpReserveMB(cfg, modelPath)
-	if free <= 0 {
-		return ctxFloor
-	}
+	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw, modelFileMB) - mtpReserveMB(cfg, modelPath)
 	// Bytes/token depends on the KV cache type, so a smaller cache (q4) fits a
 	// proportionally larger window. Default q8_0 keeps the original factor (64).
-	toks := free * kvCtxFactor(cacheType, cfg.Performance.FlashAttn)
-	toks = (toks / 8192) * 8192
-	if toks < ctxFloor {
-		return ctxFloor
+	toks := 0
+	if free > 0 {
+		toks = free * kvCtxFactor(cacheType, cfg.Performance.FlashAttn)
+		toks = (toks / 8192) * 8192
+	}
+	if toks < usableCtxTokens {
+		// Full-GPU sizing can't reach a window an agent can work in (a tiny card,
+		// or a model near the card's size). Aim at the usable floor instead and
+		// let the engine's device fit spill layers to RAM: a partially offloaded
+		// usable window beats a fully resident useless one -- the ladder still
+		// steps down if even that won't load, and the loud <49k warning plus the
+		// decode report tell the user exactly what they got.
+		if limit < usableCtxTokens {
+			return limit
+		}
+		return usableCtxTokens
 	}
 	if toks > limit {
 		return limit
