@@ -3,6 +3,15 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.14.4 — 2026-06-11
+
+### Fixed
+- CI: the new placement-gate test sized its model fixtures as multi-GB
+  truncated files. POSIX filesystems keep those sparse; NTFS allocates them for
+  real, which exhausted the Windows runner's disk and blocked the v1.14.3
+  release build (binaries for v1.14.3 ship with this tag). The test now feeds
+  sizes to the sizing logic directly -- no fixture files at all.
+
 ## v1.14.3 — 2026-06-11
 
 A model that should be fully in VRAM now provably IS -- or the launcher steps

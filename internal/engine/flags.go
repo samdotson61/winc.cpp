@@ -82,10 +82,17 @@ func WillOffloadExperts(cfg *config.Config, hw platform.Hardware, modelPath stri
 // of failing. Explicit gpu_layers, unified memory, expert offload, and partial
 // fits run as written and are never gated.
 func ForcedFullGPU(cfg *config.Config, hw platform.Hardware, modelPath string) bool {
+	return forcedFullGPUAt(cfg, hw, modelPath, FileMB(modelPath))
+}
+
+// forcedFullGPUAt is ForcedFullGPU with the model size supplied directly --
+// testable without multi-GB fixture files (POSIX filesystems keep truncated
+// fixtures sparse, but NTFS allocates them for real, which exhausted the
+// Windows CI runner's disk).
+func forcedFullGPUAt(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB int) bool {
 	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
 		return false
 	}
-	modelMB := FileMB(modelPath)
 	if resolveCPUMoE(cfg, hw, modelPath, modelMB, GpuLayers(cfg, hw)) != "" {
 		return false
 	}

@@ -541,42 +541,32 @@ func TestResolveMaxOutput(t *testing.T) {
 
 // ForcedFullGPU marks exactly the loads the launcher's placement gate verifies:
 // auto gpu_layers + a comfortable full-VRAM fit. Explicit settings, unified
-// memory, oversized models, and expert-offloaded MoEs are never gated.
+// memory, oversized models, and expert-offloaded MoEs are never gated. Sizes
+// are supplied directly (forcedFullGPUAt): fixture files at real model sizes
+// stay sparse on POSIX but are fully allocated on NTFS, which exhausted the
+// Windows CI runner's disk.
 func TestForcedFullGPU(t *testing.T) {
-	mk := func(name string, mb int64) string {
-		p := filepath.Join(t.TempDir(), name)
-		f, err := os.Create(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Truncate(mb << 20); err != nil {
-			t.Fatal(err)
-		}
-		f.Close()
-		return p
-	}
 	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
 
 	cfg := config.Defaults()
-	fits := mk("Dense-9B-Q5_K_M.gguf", 8000)
-	if !ForcedFullGPU(&cfg, hw, fits) {
+	if !forcedFullGPUAt(&cfg, hw, "Dense-9B-Q5_K_M.gguf", 8000) {
 		t.Error("a comfortably fitting dense model on auto must be force-pinned (and gated)")
 	}
-	if ForcedFullGPU(&cfg, hw, mk("Dense-30B-Q5_K_M.gguf", 15500)) {
+	if forcedFullGPUAt(&cfg, hw, "Dense-30B-Q5_K_M.gguf", 15500) {
 		t.Error("a model that leaves no KV headroom is not a forced full fit")
 	}
-	if ForcedFullGPU(&cfg, hw, mk("Moe-30B-A3B-Q4_K_M.gguf", 15500)) {
+	if forcedFullGPUAt(&cfg, hw, "Moe-30B-A3B-Q4_K_M.gguf", 15500) {
 		t.Error("a MoE that auto-offloads its experts is not gated")
 	}
-	if !ForcedFullGPU(&cfg, hw, mk("Moe-9B-A3B-Q4_K_M.gguf", 8000)) {
+	if !forcedFullGPUAt(&cfg, hw, "Moe-9B-A3B-Q4_K_M.gguf", 8000) {
 		t.Error("a comfortably fitting MoE stays fully on GPU and is gated")
 	}
 	uni := platform.Hardware{OS: "darwin", GPUVendor: "apple", VRAMMB: 24000, Unified: true}
-	if ForcedFullGPU(&cfg, uni, fits) {
+	if forcedFullGPUAt(&cfg, uni, "Dense-9B-Q5_K_M.gguf", 8000) {
 		t.Error("unified memory keeps the engine's own placement and is never gated")
 	}
 	cfg.Performance.GpuLayers = "99"
-	if ForcedFullGPU(&cfg, hw, fits) {
+	if forcedFullGPUAt(&cfg, hw, "Dense-9B-Q5_K_M.gguf", 8000) {
 		t.Error("explicit gpu_layers runs as written and is never gated")
 	}
 }
