@@ -3,6 +3,17 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.18.1 — 2026-06-11
+
+### Fixed
+- `winc setup` gated its PATH step on the RECORDED rc entries, so an install
+  that wrote .bashrc before fish support existed "looked recorded" forever and
+  setup never repaired it -- the exact installs that needed the fish fix.
+  Setup now gates on the LIVE PATH (same as `winc update`) and re-applies the
+  idempotent AddToPath, which fills precisely the gaps: the fish conf.d
+  drop-in, the ~/.local/bin symlink, any missing rc lines. install.sh's final
+  hint no longer assumes bash.
+
 ## v1.18.0 — 2026-06-11
 
 Prebuilt installs stop going stale, and 4 GB cards get the 4B.

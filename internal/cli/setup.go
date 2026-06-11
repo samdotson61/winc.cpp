@@ -62,12 +62,16 @@ func cmdSetup() int {
 
 	ui.Step(6, 6, "PATH")
 	dir := paths.InstallDir()
-	if platform.OnPath(dir) {
+	// Gate on the LIVE PATH, not the recorded rc entries: an install that wrote
+	// .bashrc before fish support existed "looks recorded" forever while fish
+	// users still can't run winc. AddToPath is idempotent and fills exactly the
+	// gaps (fish conf.d, ~/.local/bin symlink, missing rc lines).
+	if liveOnPath(dir) {
 		ui.Good("PATH already includes %s", dir)
 	} else if err := platform.AddToPath(dir); err != nil {
 		ui.Warn("could not add to PATH: %v", err)
 	} else {
-		ui.Good("added to user PATH: %s (open a new terminal to use 'winc' globally)", dir)
+		ui.Good("added to PATH (bash/zsh/profile, fish, ~/.local/bin): %s - open a NEW terminal to use 'winc' globally", dir)
 	}
 
 	ui.Say("")

@@ -39,4 +39,4 @@ fi
 
 ./winc setup
 echo
-echo "Done. Open a new terminal (or 'source ~/.bashrc') and run:  winc ls"
+echo "Done. Open a NEW terminal (any shell - bash, zsh, or fish) and run:  winc ls"
