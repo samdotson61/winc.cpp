@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"winc/internal/config"
 	"winc/internal/paths"
@@ -76,6 +77,9 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 				// body passes through untouched.
 				if p := parseReq(body); p != nil {
 					p.trimCompaction(ctxWindow)
+					if r.blockIfNoGenRoom(w, p, ctxWindow) {
+						return // answered with the compaction signal; nothing to forward
+					}
 					p.compact(nil) // lossless minify only (no tool stripping in single mode)
 					// Thinking is rewritten only in adaptive mode; on/off/fixed are set by the
 					// server's own flags, so pass those through untouched. The router still runs
@@ -353,6 +357,52 @@ func rewriteContextOverflowError(resp *http.Response) (bool, error) {
 	return true, nil
 }
 
+// genFloorTokens is the minimum generation room a chat request must leave in
+// its slot. A request that FITS the window but leaves less than this does not
+// error -- llama-server just stops generating at the wall (truncated=1, status
+// 200), which reaches the agent as a silently mangled response. Observed live:
+// with the agent believing a 100k window on a real 32k slot, every multi-KB
+// Write tool call arrived with EMPTY arguments for 20+ consecutive turns while
+// the agent retried, blind, until compaction destroyed the session. Rejecting
+// up front with the exact wording Claude Code recognizes turns that dead end
+// into an ordinary compaction.
+const genFloorTokens = 2048
+
+// blockIfNoGenRoom answers a head-bound request whose estimated size leaves the
+// slot no generation room, without forwarding it. window <= 0 disables (size
+// unknown). Reports whether the request was answered. The estimate is the same
+// ~4 chars/token used everywhere; only requests already hard against the wall
+// trip the floor, and a false trip just compacts the session a little early.
+func (r *Router) blockIfNoGenRoom(w http.ResponseWriter, p *preq, window int) bool {
+	if window <= 0 || p == nil {
+		return false
+	}
+	limit := window - genFloorTokens
+	est := p.estTokens()
+	if est <= limit {
+		return false
+	}
+	msg := fmt.Sprintf("prompt is too long: %d tokens > %d maximum", est, limit)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "invalid_request_error", "message": msg},
+	}) != nil {
+		return false
+	}
+	nb := bytes.TrimRight(buf.Bytes(), "\n")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(nb)))
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write(nb)
+	r.mu.Lock()
+	r.overflows++
+	r.mu.Unlock()
+	return true
+}
+
 // Route maps an exact on-the-wire model string to a backend, with a per-route
 // thinking policy: "" = adaptive (default), "low" = a small fixed budget (small
 // models orchestrate tools best with a LITTLE thinking), "off" = disabled.
@@ -472,6 +522,12 @@ func StartTeam(cfg *config.Config, routes []Route, ladder []Tier, ladderTag, fal
 					} else {
 						target, name, think, allow, maxTok = rt.Upstream, nameOr(rt.Name, rt.Upstream), rt.Think, rt.Tools, rt.MaxTokens
 					}
+				}
+				// The head's slots are the only window the router knows; ladder
+				// escalations to the Head rung share the same server, so they're
+				// covered by the same check (target == fallback covers both).
+				if p != nil && target == fallback && r.blockIfNoGenRoom(w, p, headCtx) {
+					return // answered with the compaction signal; nothing to forward
 				}
 				nb := body
 				toolsBefore, toolsAfter := 0, 0
@@ -747,6 +803,7 @@ func (p *preq) trimCompaction(window int) {
 	if drop == 0 {
 		return
 	}
+	archiveTrimmed(msgs[:drop])
 	dropped := 0
 	for _, m := range msgs[:drop] {
 		dropped += len(m)
@@ -759,6 +816,53 @@ func (p *preq) trimCompaction(window int) {
 	p.msgs = msgs[drop:]
 	p.estBytes -= dropped
 	p.changed = true
+}
+
+// archiveLimitBytes rotates trimmed-context.md when it outgrows this: the file
+// is an agent-greppable safety net, not an unbounded transcript mirror.
+const archiveLimitBytes = 5 << 20
+
+// archiveTrimmed appends the messages a compaction trim is about to drop to
+// .claude-local/trimmed-context.md, BEFORE they vanish. These messages are
+// exactly the ones the compaction summary will not cover -- and the summary
+// itself can fail the session outright (observed live: a 26k-token transcript
+// compacted into a 154-token summary; the dropped messages held the only
+// record of the session's plan and progress). The agent recovers by grepping
+// the archive. Best-effort by design: every failure is swallowed silently --
+// preservation must never block, slow, or log into the request path.
+func archiveTrimmed(msgs []json.RawMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+	dir := paths.ClaudeLocalDir()
+	if _, err := os.Stat(dir); err != nil {
+		return // no agent config dir -> nothing to preserve for
+	}
+	p := filepath.Join(dir, "trimmed-context.md")
+	if fi, err := os.Stat(p); err == nil && fi.Size() > archiveLimitBytes {
+		_ = os.Remove(p + ".1")
+		_ = os.Rename(p, p+".1")
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## trimmed %s (%d messages)\n\n", time.Now().Format(time.RFC3339), len(msgs))
+	for _, raw := range msgs {
+		var m struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &m) != nil {
+			continue
+		}
+		if txt := strings.TrimSpace(reasoning.ContentText(m.Content)); txt != "" {
+			fmt.Fprintf(&b, "%s: %s\n\n", m.Role, txt)
+		}
+	}
+	_, _ = f.WriteString(b.String())
 }
 
 // plainUserMessage reports whether a message is role=user carrying no tool_result

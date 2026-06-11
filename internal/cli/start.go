@@ -117,6 +117,13 @@ func cmdStart(args []string) int {
 
 	maxOut := engine.ResolveMaxOutput(cfg, loadedCtx)
 	ui.Good("server ready at %s (context %d, max output %d)", serverURL, loadedCtx, maxOut)
+	// Provision the agent-side notes: the REAL window (the agent's own UI cannot
+	// show local windows below 100k), measured speeds, and small-window practices.
+	// Single mode runs llama's auto-parallel with a UNIFIED KV pool, so every
+	// request can use the full window (verified on the shipped engine).
+	if err := config.WriteAgentNotes(loadedCtx, loadedCtx, lastBench.gen, lastBench.pp); err != nil {
+		ui.Warn("could not write agent notes: %v", err)
+	}
 	if loadedCtx < 49152 {
 		ui.Warn("context is small (%d tokens) - Claude Code may compact often.", loadedCtx)
 		if engine.IsMoEFile(modelPath) && !engine.WillOffloadExperts(cfg, hw, modelPath) {

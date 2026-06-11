@@ -44,6 +44,11 @@ var (
 	toolUse    = []byte("tool_use")
 )
 
+// ContentText flattens an Anthropic content field (a plain string or an array of
+// {type,text} blocks) into one string. Exported for the router's compaction-trim
+// archive, which flattens the messages it is about to drop.
+func ContentText(raw json.RawMessage) string { return contentText(raw) }
+
 // contentText flattens an Anthropic content field (a plain string or an array of
 // {type,text} blocks) into one string.
 func contentText(raw json.RawMessage) string {

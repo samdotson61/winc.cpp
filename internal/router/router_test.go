@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -676,6 +678,97 @@ func TestTrimCompaction(t *testing.T) {
 	}
 	if got := trimCompaction(body, 0); len(got) != len(body) {
 		t.Error("window 0 must disable trimming")
+	}
+}
+
+// The messages a compaction trim drops are archived to .claude-local/
+// trimmed-context.md BEFORE they vanish -- they're exactly what the summary
+// won't cover, and a failed summary otherwise erases the session's only record.
+func TestTrimCompactionArchives(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WINC_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude-local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const window = 8192
+	chunk := strings.Repeat("ancient history the summary will not cover. ", 200)
+	instruction := `{"role":"user","content":"Your task is to create a detailed summary of the conversation so far. Wrap your summary in <summary></summary>."}`
+	var sb strings.Builder
+	sb.WriteString(`{"model":"main","messages":[`)
+	for i := 0; i < 10; i++ {
+		sb.WriteString(`{"role":"user","content":"` + chunk + `"},`)
+		sb.WriteString(`{"role":"assistant","content":"` + chunk + `"},`)
+	}
+	sb.WriteString(`{"role":"user","content":"recent question"},`)
+	sb.WriteString(instruction)
+	sb.WriteString(`]}`)
+	body := []byte(sb.String())
+
+	if out := trimCompaction(body, window); len(out) >= len(body) {
+		t.Fatal("oversized compaction should have been trimmed")
+	}
+	archive := filepath.Join(home, ".claude-local", "trimmed-context.md")
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatalf("archive missing: %v", err)
+	}
+	if !strings.Contains(string(data), "ancient history") {
+		t.Error("archive must hold the dropped text")
+	}
+	if !strings.Contains(string(data), "## trimmed ") {
+		t.Error("archive entries carry a timestamp header")
+	}
+	// A fitting compaction trims nothing and writes nothing.
+	before, _ := os.Stat(archive)
+	small := []byte(`{"model":"main","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},` + instruction + `]}`)
+	_ = trimCompaction(small, window)
+	if after, _ := os.Stat(archive); after.Size() != before.Size() {
+		t.Error("fitting compaction must not write to the archive")
+	}
+}
+
+// The preflight backstop: a head-bound request that leaves the slot no
+// generation room is answered with the compaction signal up front. The server
+// would ACCEPT such a request and then stop generating at the wall with no
+// error -- the agent receives silently mangled tool calls (observed live for
+// 20+ consecutive turns).
+func TestRouterBlocksWallRequests(t *testing.T) {
+	cfg := config.Defaults()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer up.Close()
+	rt, err := Start(&cfg, up.URL, 8192) // tiny real window
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	big := `{"messages":[{"role":"user","content":"` + strings.Repeat("x", 40000) + `"}]}` // ~10k est tokens
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json", bytes.NewReader([]byte(big)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wall request: want 400, got %d (%s)", resp.StatusCode, b)
+	}
+	if ccPromptTooLong.FindStringSubmatch(string(b)) == nil {
+		t.Fatalf("the rejection must carry Claude Code's compaction signal, got %s", b)
+	}
+	if n := rt.Stats().Overflows; n != 1 {
+		t.Errorf("preflight block counts as an overflow event, got %d", n)
+	}
+	// A small request passes through untouched.
+	resp2, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		bytes.NewReader([]byte(`{"messages":[{"role":"user","content":"hi"}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("small request must pass, got %d", resp2.StatusCode)
 	}
 }
 

@@ -3,6 +3,55 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.15.0 — 2026-06-11
+
+The agent now knows its real window -- and what it forgets is recoverable.
+Driven by a forensic post-mortem of an overnight session that died blind: the
+agent believed a 100k window on a real 32k slot, filled it in 26 minutes,
+burned 20+ turns on tool calls whose arguments were silently truncated at the
+wall (no error -- llama-server just stops generating), and the recovery
+compaction summarized the garbage tail of the transcript into 154 tokens.
+Total amnesia by morning.
+
+### Fixed
+- Window truth: Claude Code 2.1.x validates CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  against a 100,000-token MINIMUM (verified against the 2.1.173 binary) -- the
+  real window winc passed was rejected as invalid and the agent silently
+  believed the 100k default, so its preemptive compaction could never fire
+  before the real wall. winc now reports a window Claude Code will accept and
+  places the compaction trigger ABSOLUTELY via the percentage override (an
+  unclamped parseFloat): pct of the believed window == the real window minus
+  the max(8k, window/8) reserve. Windows >= 100k keep the original behavior
+  exactly.
+- Team escalation no longer creates unworkable heads: --parallel 2 halves the
+  per-slot window, and Claude Code's fixed overhead (system prompt + tools) is
+  ~24k tokens on its own -- a 32k slot starves. Escalation now engages only
+  when the expected half (launch memo, else sizing target) stays >= 48k, and a
+  post-launch guard relaunches unsplit if the ladder lands lower. Single/serve
+  mode was verified unaffected: without --parallel the engine runs a unified
+  KV pool and every request can use the full window.
+- Router preflight: a head-bound request whose estimated size leaves less than
+  2k tokens of generation room is answered with the exact "prompt is too long"
+  signal Claude Code recognizes, BEFORE the server can accept it and truncate
+  generation silently (status 200, truncated=1, tool-call arguments lost).
+  Counts into the session's overflow stats. Defense in depth against any
+  future upstream window-handling drift.
+
+### Added (memory layer, §0 M1+M2 of the spec)
+- Compaction-trim archive: the oldest messages the router drops from an
+  oversized compaction request are flattened into
+  .claude-local/trimmed-context.md (timestamped, grep-friendly, 5 MB rotation)
+  BEFORE they vanish -- they are exactly what the summary won't cover, and
+  this session proved the summary can be 154 tokens of nothing. Best-effort:
+  archive failures never touch the request path.
+- Agent scaffolding: every launch writes .claude-local/CLAUDE.md (the
+  sandboxed session's user-memory file) with the REAL window, the per-slot
+  share, the launch's measured decode/prompt speeds, and small-window working
+  practices -- persist state to a notes file early, grep the trim archive
+  after compaction, check the task list before asking the user what to do.
+  Rewritten only while the winc marker leads the file; user edits own it
+  forever after.
+
 ## v1.14.4 — 2026-06-11
 
 ### Fixed

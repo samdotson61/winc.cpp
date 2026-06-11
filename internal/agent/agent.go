@@ -16,6 +16,13 @@ import (
 // Slots holds the model names mapped onto Claude Code's claude-* tiers.
 type Slots struct{ Sonnet, Opus, Haiku string }
 
+// claudeMinWindow is the smallest CLAUDE_CODE_AUTO_COMPACT_WINDOW value Claude
+// Code accepts (2.1.x validates the env var against [100000, 1000000]; an
+// out-of-range value is treated as unset). Real windows below it are reported
+// AS this floor, with the compaction trigger repositioned via the percentage
+// override so it still fires at the real window's safe point.
+const claudeMinWindow = 100000
+
 // Env returns the full environment for the agent process. maxOutputTokens, when
 // > 0, raises Claude Code's response-length cap. contextWindow, when > 0, tells
 // Claude Code the local model's REAL context size so its auto-compaction fires
@@ -71,13 +78,27 @@ func Env(baseURL string, slots Slots, maxOutputTokens, contextWindow int, mainMo
 		if reserve < 8192 {
 			reserve = 8192
 		}
-		pct := (contextWindow - reserve) * 100 / contextWindow
-		if pct < 50 {
-			pct = 50
+		// Claude Code 2.1.x validates CLAUDE_CODE_AUTO_COMPACT_WINDOW against a
+		// 100,000-token MINIMUM (verified against the 2.1.173 binary): a smaller
+		// real window is rejected as invalid and silently replaced by the 100k
+		// default -- the agent then believes it has room it doesn't (observed
+		// live: a real 32k slot, the agent at "26%", generation truncating at
+		// the wall for 20+ turns). So tell it a window it will ACCEPT, and place
+		// the compaction trigger absolutely via the percentage override, which
+		// is an unclamped parseFloat: pct of the believed window == the real
+		// window minus the reserve. For real windows >= 100k this reduces to
+		// exactly the old behavior.
+		believed := contextWindow
+		if believed < claudeMinWindow {
+			believed = claudeMinWindow
+		}
+		pct := (contextWindow - reserve) * 100 / believed
+		if pct < 10 {
+			pct = 10
 		} else if pct > 90 {
 			pct = 90
 		}
-		add("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.Itoa(contextWindow))
+		add("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.Itoa(believed))
 		add("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", strconv.Itoa(pct))
 	}
 	// Local models are far slower than the cloud -- a long prefill / time-to-first-token

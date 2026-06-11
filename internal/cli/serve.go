@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"winc/internal/catalog"
+	"winc/internal/config"
 	"winc/internal/engine"
 	"winc/internal/paths"
 	"winc/internal/platform"
@@ -74,6 +75,14 @@ func cmdServe(args []string) int {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
+
+	// Provision the agent-side notes (real window, measured speeds) -- whatever
+	// client gets pointed at this server can read them. Single/serve mode runs
+	// llama's auto-parallel with a UNIFIED KV pool, so every request can use the
+	// full window (verified on the shipped engine).
+	if err := config.WriteAgentNotes(loadedCtx, loadedCtx, lastBench.gen, lastBench.pp); err != nil {
+		ui.Warn("could not write agent notes: %v", err)
+	}
 
 	baseURL := serverURL
 	if cfg.Reasoning.Mode == "adaptive" {

@@ -18,19 +18,28 @@ func envVal(env []string, key string) (string, bool) {
 	return val, ok
 }
 
-// The auto-compaction trigger must leave real headroom -- max(8k, window/8)
-// tokens -- so the compaction request (transcript + summary) always fits.
+// The auto-compaction trigger must fire at the REAL window minus max(8k,
+// window/8) of headroom. Claude Code 2.1.x refuses window values under 100k
+// (verified against the binary: an out-of-range value is treated as unset and
+// the agent believes the 100k default), so small real windows are reported AT
+// the floor and the trigger is placed absolutely via the pct of the BELIEVED
+// window. Windows >= 100k keep the original math exactly.
 func TestEnvCompactionTrigger(t *testing.T) {
-	cases := map[int]string{
-		49152:  "83", // 8k reserve at a 48k window
-		131072: "87", // window/8 dominates large windows
-		16384:  "50", // 8k reserve halves a 16k window
-		8192:   "50", // clamped floor
+	cases := map[int]struct{ window, pct string }{
+		65536:  {"100000", "57"}, // (65536-8192)/100000 -- the 27B's real window
+		49152:  {"100000", "40"}, // (49152-8192)/100000
+		131072: {"131072", "87"}, // >= floor: passed through, window/8 reserve
+		200000: {"200000", "87"},
+		16384:  {"100000", "10"}, // floor-rung window: pct clamps low, never high
+		8192:   {"100000", "10"},
 	}
 	for win, want := range cases {
 		env := Env("http://local", Slots{Sonnet: "m", Opus: "m", Haiku: "m"}, 0, win, "", "")
-		if v, _ := envVal(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"); v != want {
-			t.Errorf("window %d: trigger pct = %q, want %q", win, v, want)
+		if v, _ := envVal(env, "CLAUDE_CODE_AUTO_COMPACT_WINDOW"); v != want.window {
+			t.Errorf("window %d: believed window = %q, want %q", win, v, want.window)
+		}
+		if v, _ := envVal(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"); v != want.pct {
+			t.Errorf("window %d: trigger pct = %q, want %q", win, v, want.pct)
 		}
 	}
 }

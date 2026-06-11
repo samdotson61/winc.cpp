@@ -105,12 +105,27 @@ func forcedFullGPUAt(cfg *config.Config, hw platform.Hardware, modelPath string,
 // cache isn't starved by extra concurrent sequences.
 const mainEscalationHeadroomMB = 6000
 
+// MinEscalationHeadCtx is the smallest per-slot window worth splitting the head
+// for. Claude Code's fixed overhead (system prompt + tools) is ~24k tokens on
+// its own: a 32k slot leaves ~8k of working conversation, the agent fills it in
+// minutes, and generation then truncates silently at the wall (observed live --
+// an overnight session burned 20+ turns on tool calls whose arguments never
+// fit). Escalation costs half the window (--parallel 2), so it only engages
+// when each half is still a workable agent window.
+const MinEscalationHeadCtx = 49152
+
 // MainEscalationOK reports whether the main GPU model has enough spare VRAM to also
-// serve escalated subagents concurrently. False when there's no GPU, when experts are
-// offloaded to RAM (the main model is already compute-compromised), or when free VRAM
-// after the model is below the headroom threshold -- in those cases escalation stops at
-// the CPU worker.
-func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string) bool {
+// serve escalated subagents concurrently -- and a large enough expected window that
+// the --parallel 2 split leaves each slot workable. False when there's no GPU, when
+// experts are offloaded to RAM (the main model is already compute-compromised), or
+// when free VRAM after the model is below the headroom threshold -- in those cases
+// escalation stops at the CPU worker. expectedCtx is the window the head is expected
+// to load (the launch memo's remembered value, or the sizing target); <= 0 skips the
+// window check (the post-launch guard still applies).
+func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string, expectedCtx int) bool {
+	if expectedCtx > 0 && expectedCtx/2 < MinEscalationHeadCtx {
+		return false
+	}
 	if GpuLayers(cfg, hw) <= 0 || hw.VRAMMB <= 0 {
 		return false
 	}

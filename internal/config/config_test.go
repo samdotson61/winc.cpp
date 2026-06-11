@@ -245,3 +245,45 @@ func TestSyncMissingSections(t *testing.T) {
 		t.Errorf("second sync should be a no-op, got %v (err %v)", again, err)
 	}
 }
+
+// WriteAgentNotes provisions the sandboxed session's CLAUDE.md with the REAL
+// window + measured speeds; it rewrites only winc-owned files (marker first
+// line) and never clobbers user edits.
+func TestWriteAgentNotesMarkerPolicy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	p := filepath.Join(dir, ".claude-local", "CLAUDE.md")
+
+	if err := WriteAgentNotes(65536, 65536, 38, 877); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{wincMarker, "65536", "~38 tok/s", "trimmed-context.md"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("notes missing %q:\n%s", want, data)
+		}
+	}
+
+	// winc-owned -> rewritten with the new launch's numbers; unmeasured speeds omitted.
+	if err := WriteAgentNotes(65536, 32768, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(p)
+	if !strings.Contains(string(data), "32768") || strings.Contains(string(data), "tok/s") {
+		t.Errorf("winc-owned notes must be rewritten (per-slot window, no speeds when unmeasured):\n%s", data)
+	}
+
+	// User-owned -> never touched.
+	if err := os.WriteFile(p, []byte("my own notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAgentNotes(99999, 99999, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ = os.ReadFile(p); string(data) != "my own notes\n" {
+		t.Errorf("user-owned CLAUDE.md must never be clobbered, got:\n%s", data)
+	}
+}
