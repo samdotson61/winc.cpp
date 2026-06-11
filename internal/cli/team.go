@@ -414,7 +414,8 @@ func buildDispatch(cfg *config.Config, sub string, slots agent.Slots, sonnetURL,
 // against what actually loaded.
 func expectedHeadCtx(cfg *config.Config, hw platform.Hardware, modelPath string) int {
 	if autoSized(cfg) {
-		if ctx, _, _ := loadLaunchMemo(modelPath); ctx > 0 {
+		// Pre-decision, so the fingerprint is the unsplit (no --parallel) one.
+		if ctx, _, _ := loadLaunchMemo(modelPath, launchFingerprint(cfg, hw)); ctx > 0 {
 			return ctx
 		}
 	}
@@ -646,10 +647,32 @@ func gpuOrCPU(cfg *config.Config, hw platform.Hardware) string {
 	return "CPU"
 }
 
+// Auto team needs hardware that can absorb 1-3 extra model servers without
+// dragging the whole box: above the 16 GB discrete class (a 16 GB card reports
+// ~16.3 GB; the next class up is 20-24 GB) and above the 24 GB unified class
+// (a 24 GB Mac budgets ~17 GB for the GPU working set, and CPU workers then
+// fight the head for the same pool). Below these, the head model alone is the
+// right load. Explicit --team / [team] mode="on" always wins.
+const (
+	teamAutoMinVRAMMB    = 17408 // strictly above the 16 GB discrete class
+	teamAutoMinUnifiedMB = 25600 // strictly above the 24 GB unified class
+)
+
+// teamAutoHardwareOK reports whether this machine is in the class where team
+// mode auto-engages. CPU-only boxes (no VRAM) never auto-team: head + workers
+// all compete for the same cores and RAM bandwidth.
+func teamAutoHardwareOK(hw platform.Hardware) bool {
+	if hw.Unified {
+		return hw.RAMMB > teamAutoMinUnifiedMB
+	}
+	return hw.VRAMMB > teamAutoMinVRAMMB
+}
+
 // wantTeam decides whether to run team mode. Explicit flags win (--noteam off, --team on);
 // otherwise [team].mode governs: "off" never, "on" always, "auto" (default) engages when
-// the main model is big enough AND there's RAM for the workers. Team's tier env is Claude
-// Code-specific, so other apps stay single.
+// the hardware is above the 16 GB discrete / 24 GB unified class AND the main model is
+// big enough AND there's RAM for the workers. Team's tier env is Claude Code-specific,
+// so other apps stay single.
 func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, model string) bool {
 	if noteamFlag {
 		return false
@@ -666,7 +689,7 @@ func wantTeam(app string, teamFlag, noteamFlag bool, cfg *config.Config, cat *ca
 	case "on":
 		return true
 	default: // auto
-		return teamWorthwhile(cfg, cat, hw, model)
+		return teamAutoHardwareOK(hw) && teamWorthwhile(cfg, cat, hw, model)
 	}
 }
 

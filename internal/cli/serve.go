@@ -50,7 +50,7 @@ func cmdServe(args []string) int {
 	}
 
 	if multi {
-		return startMulti(cfg, cat, platform.DetectHardware(), "")
+		return startMulti(cfg, cat, platform.DetectHardwareCached(), "")
 	}
 
 	modelPath, alias := downloadedPath(cfg, cat, model)
@@ -59,7 +59,7 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
-	hw := platform.DetectHardware()
+	hw := platform.DetectHardwareCached()
 
 	port := cfg.General.Port
 	serverURL := fmt.Sprintf("http://%s:%d", cfg.General.Host, port)

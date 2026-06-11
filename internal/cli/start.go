@@ -67,7 +67,9 @@ func cmdStart(args []string) int {
 		return 1
 	}
 
-	hw := platform.DetectHardware()
+	// Launches use the cached hardware identity (live free-VRAM probe only);
+	// `winc detect` / doctor still run the full probe and refresh the cache.
+	hw := platform.DetectHardwareCached()
 
 	if app == "cli" {
 		modelPath, alias := downloadedPath(cfg, cat, model)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -175,10 +176,12 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		}
 		ui.Info("loading model + waiting for server (%s)...", backendLabel(backend))
 		wasAuto := autoSized(cfg)
+		fp := launchFingerprint(cfg, hw) // against the ORIGINAL config, before launch mutations
 		// Fast path: a previous session already measured this model's best window and
-		// KV cache -- load straight there (one load instead of re-walking the ladder).
+		// KV cache under these exact sizing inputs -- load straight there (one load
+		// instead of re-walking the ladder).
 		if wasAuto {
-			if mctx, mct, _ := loadLaunchMemo(modelPath); mctx > 0 {
+			if mctx, mct, _ := loadLaunchMemo(modelPath, fp); mctx > 0 {
 				lc := *cfg
 				lc.Performance.CacheType = mct
 				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false, false, true); proc != nil {
@@ -188,7 +191,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 					// report and the memo reuse its numbers.
 					pp, tps := launchBench(serverURL)
 					reportDecode(pp, tps, mctx)
-					saveLaunchMemo(modelPath, mctx, mct, tps)
+					saveLaunchMemo(modelPath, mctx, mct, tps, fp)
 					return proc, mctx
 				}
 				// Some boundary windows only load via the probe's staircase (the forced
@@ -207,7 +210,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 						pp, tps := launchBench(serverURL)
 						reportDecode(pp, tps, ctx)
 						ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-						saveLaunchMemo(modelPath, ctx, ct, tps)
+						saveLaunchMemo(modelPath, ctx, ct, tps, fp)
 					}
 					return proc, ctx
 				}
@@ -221,7 +224,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				reportDecode(pp, tps, ctx)
 				if wasAuto {
 					ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
-					saveLaunchMemo(modelPath, ctx, ct, tps)
+					saveLaunchMemo(modelPath, ctx, ct, tps, fp)
 				}
 			}
 			return proc, ctx
@@ -395,14 +398,38 @@ func residencyBroken(preFreeMB, postFreeMB, modelMB int) bool {
 
 // launchBench returns the launch's measured speeds: the placement gate's numbers
 // when it ran (gated rungs are benched as part of acceptance -- never bench
-// twice), one fresh measurement otherwise (explicit settings, unified memory,
-// expert-offload: configs the gate doesn't cover).
+// twice), one LIGHT decode-only measurement otherwise (explicit settings,
+// unified memory, expert-offload, CPU: configs the gate doesn't cover). The
+// gate's ~2.5k-token prompt is what makes its PP verdict meaningful -- but on a
+// CPU-class box that prompt alone is a minute of launch time, and with no gate
+// there's nothing to verify, only a decode speed to report.
 func launchBench(serverURL string) (pp, gen float64) {
 	if lastBench.tried {
 		return lastBench.pp, lastBench.gen
 	}
-	pp, gen, _, _ = benchServer(serverURL)
-	return pp, gen
+	return 0, benchDecodeSmall(serverURL)
+}
+
+// benchDecodeSmall measures decode speed with a tiny fixed completion (~25
+// prompt tokens + 48 generated). Returns 0 when the request fails -- this is
+// measurement for the launch report, never a gate.
+func benchDecodeSmall(serverURL string) float64 {
+	body := `{"messages":[{"role":"user","content":"Count from 1 to 30 as plain digits separated by spaces."}],"max_tokens":48,"temperature":0}`
+	cl := &http.Client{Timeout: 120 * time.Second}
+	resp, err := cl.Post(serverURL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Timings struct {
+			PredictedPerSecond float64 `json:"predicted_per_second"`
+		} `json:"timings"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return 0
+	}
+	return out.Timings.PredictedPerSecond
 }
 
 // reportDecode prints the measured speeds against the 40-80 tok/s decode
@@ -436,10 +463,34 @@ func launchMemoKey(modelPath string) string {
 	return fmt.Sprintf("%s|%d", filepath.Base(modelPath), engine.FileMB(modelPath))
 }
 
-// loadLaunchMemo returns the memoized (ctx, cacheType, decode tok/s) for a model,
-// or (0, "", 0). tps is 0 for entries written before the speed field existed --
-// the caller then measures once and rewrites the entry.
-func loadLaunchMemo(modelPath string) (int, string, float64) {
+// launchFingerprint condenses every sizing-relevant launch input. The memo's
+// remembered stepping is replayed only while ALL of them match -- a stepping
+// measured under different inputs is a different launch, not a cache hit:
+// context "optimal" vs "auto" change the target, a card appearing/vanishing
+// changes the budget, team escalation's --parallel changes the slot split,
+// and the KV/MoE/MTP knobs change what fits. Computed against the ORIGINAL
+// config before the launch mutates it.
+func launchFingerprint(cfg *config.Config, hw platform.Hardware) string {
+	h := fnv.New32a()
+	fmt.Fprintf(h, "%s|%s|%v|%s|%s|%s|%s|%d|%d|%v|%d",
+		strings.ToLower(strings.TrimSpace(cfg.Performance.Context)),
+		strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType)),
+		cfg.Performance.FlashAttn,
+		strings.ToLower(strings.TrimSpace(cfg.Performance.CpuMoe)),
+		strings.ToLower(strings.TrimSpace(cfg.Performance.GpuLayers)),
+		strings.ToLower(strings.TrimSpace(cfg.Performance.Mtp)),
+		strings.TrimSpace(cfg.Performance.DraftModel),
+		engine.ParallelSlots(cfg),
+		hw.VRAMMB, hw.Unified, len(hw.GPUs),
+	)
+	return fmt.Sprintf("%08x", h.Sum32())
+}
+
+// loadLaunchMemo returns the memoized (ctx, cacheType, decode tok/s) for a
+// model under the given launch fingerprint, or (0, "", 0). Entries written
+// under a different fingerprint -- or by versions before fingerprints -- miss,
+// re-measure once, and are rewritten in the current format.
+func loadLaunchMemo(modelPath, fp string) (int, string, float64) {
 	data, err := os.ReadFile(launchMemoPath())
 	if err != nil {
 		return 0, "", 0
@@ -447,12 +498,9 @@ func loadLaunchMemo(modelPath string) (int, string, float64) {
 	key := launchMemoKey(modelPath)
 	for _, line := range strings.Split(string(data), "\n") {
 		f := strings.Fields(strings.TrimSpace(line))
-		if (len(f) == 3 || len(f) == 4) && f[0] == key {
+		if len(f) == 5 && f[0] == key && f[4] == fp {
 			if ctx, err := strconv.Atoi(f[1]); err == nil && ctx > 0 {
-				tps := 0.0
-				if len(f) == 4 {
-					tps, _ = strconv.ParseFloat(f[3], 64)
-				}
+				tps, _ := strconv.ParseFloat(f[3], 64)
 				return ctx, f[2], tps
 			}
 		}
@@ -460,24 +508,30 @@ func loadLaunchMemo(modelPath string) (int, string, float64) {
 	return 0, "", 0
 }
 
-// saveLaunchMemo records a measured-good launch (and its measured decode speed),
-// replacing the model's prior line.
-func saveLaunchMemo(modelPath string, ctx int, cacheType string, tps float64) {
+// saveLaunchMemo records a measured-good launch (and its measured decode speed)
+// under its fingerprint. One line per (model, fingerprint): a model launched in
+// several geometries (single vs team --parallel) keeps one remembered stepping
+// per geometry instead of the modes evicting each other. Same-key lines from
+// pre-fingerprint versions can never match again and are purged.
+func saveLaunchMemo(modelPath string, ctx int, cacheType string, tps float64, fp string) {
 	key := launchMemoKey(modelPath)
 	var out []string
 	if data, err := os.ReadFile(launchMemoPath()); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			t := strings.TrimSpace(line)
-			if t == "" || strings.HasPrefix(t, key+" ") {
+			if t == "" {
 				continue
+			}
+			if f := strings.Fields(t); f[0] == key && (len(f) != 5 || f[4] == fp) {
+				continue // replaced below (same fingerprint) or unreadable legacy format
 			}
 			out = append(out, t)
 		}
 	}
 	if len(out) == 0 {
-		out = append(out, "# winc: last measured-good launch per model (ctx + KV cache + decode tok/s). Delete to re-measure.")
+		out = append(out, "# winc: last measured-good launch per model (ctx + KV cache + decode tok/s + config fingerprint). Delete to re-measure.")
 	}
-	out = append(out, fmt.Sprintf("%s %d %s %.1f", key, ctx, cacheType, tps))
+	out = append(out, fmt.Sprintf("%s %d %s %.1f %s", key, ctx, cacheType, tps, fp))
 	_ = os.WriteFile(launchMemoPath(), []byte(strings.Join(out, "\n")+"\n"), 0o644)
 }
 

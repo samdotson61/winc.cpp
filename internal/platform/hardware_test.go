@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"os"
 	"testing"
 
 	"winc/internal/catalog"
@@ -86,5 +87,26 @@ func TestParseNvidiaSmiSingleAndGarbage(t *testing.T) {
 	}
 	if g := parseNvidiaSmi(""); len(g) != 0 {
 		t.Errorf("empty should parse to no GPUs, got %+v", g)
+	}
+}
+
+// The hardware identity cache: round-trips, rejects garbage, and its loader
+// never invents a vendor (the cached-detection fast path falls back to a full
+// probe on any miss).
+func TestHWCacheRoundTrip(t *testing.T) {
+	t.Setenv("WINC_HOME", t.TempDir())
+	if _, ok := loadHWCache(); ok {
+		t.Fatal("missing cache must miss")
+	}
+	saveHWCache(Hardware{GPUVendor: "amd", GPUName: "Radeon X", VRAMMB: 12000, CudaMajor: 0})
+	c, ok := loadHWCache()
+	if !ok || c.Vendor != "amd" || c.Name != "Radeon X" || c.VRAMMB != 12000 {
+		t.Fatalf("cache round-trip failed: %+v ok=%v", c, ok)
+	}
+	if err := os.WriteFile(hwCachePath(), []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loadHWCache(); ok {
+		t.Fatal("corrupt cache must miss, not panic or half-load")
 	}
 }

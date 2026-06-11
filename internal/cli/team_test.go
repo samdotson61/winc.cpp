@@ -39,7 +39,7 @@ func TestWantTeam(t *testing.T) {
 		{Alias: "smallm", Tier: "small", Size: "6 GB"},
 		{Alias: "tiny", Tier: "nano", Size: "1 GB"},
 	}}
-	roomy := platform.Hardware{RAMMB: 32000, VRAMMB: 16000}
+	roomy := platform.Hardware{RAMMB: 32000, VRAMMB: 28000} // above the 16 GB discrete class
 
 	// Explicit flags win.
 	if wantTeam("claude", false, true, &cfg, cat, roomy, "big") {
@@ -60,13 +60,36 @@ func TestWantTeam(t *testing.T) {
 		t.Error("auto should not team-ify a nano main model")
 	}
 
+	// Hardware class gate: at or below 16 GB discrete (or 24 GB unified, or
+	// CPU-only) the head model alone is the right load -- auto never teams,
+	// no matter how much system RAM is free. Explicit --team still forces.
+	gpu16 := platform.Hardware{RAMMB: 64000, VRAMMB: 16303}
+	if wantTeam("claude", false, false, &cfg, cat, gpu16, "big") {
+		t.Error("auto must not team on a 16 GB card")
+	}
+	if !wantTeam("claude", true, false, &cfg, cat, gpu16, "big") {
+		t.Error("--team must still force team on a 16 GB card")
+	}
+	mac24 := platform.Hardware{RAMMB: 24576, Unified: true, GPUVendor: "apple", VRAMMB: 0}
+	if wantTeam("claude", false, false, &cfg, cat, mac24, "big") {
+		t.Error("auto must not team on a 24 GB unified Mac")
+	}
+	mac32 := platform.Hardware{RAMMB: 32768, Unified: true, GPUVendor: "apple", VRAMMB: 0}
+	if !wantTeam("claude", false, false, &cfg, cat, mac32, "big") {
+		t.Error("auto should team on a 32 GB unified Mac")
+	}
+	cpuOnly := platform.Hardware{RAMMB: 32000, VRAMMB: 0}
+	if wantTeam("claude", false, false, &cfg, cat, cpuOnly, "big") {
+		t.Error("auto must never team on a CPU-only box")
+	}
+
 	// Not even the smallest worker fits -> fall back to a single model.
-	tight := platform.Hardware{RAMMB: 4096, VRAMMB: 16000}
+	tight := platform.Hardware{RAMMB: 4096, VRAMMB: 28000}
 	if wantTeam("claude", false, false, &cfg, cat, tight, "big") {
 		t.Error("auto should fall back to single only when not even the smallest worker fits")
 	}
 	// Room for the smallest worker (even if not the whole set) -> still team.
-	moderate := platform.Hardware{RAMMB: 8000, VRAMMB: 16000}
+	moderate := platform.Hardware{RAMMB: 8000, VRAMMB: 28000}
 	if !wantTeam("claude", false, false, &cfg, cat, moderate, "big") {
 		t.Error("auto should team (with whatever workers fit) once the smallest worker fits")
 	}

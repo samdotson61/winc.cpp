@@ -3,10 +3,42 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"winc/internal/config"
+	"winc/internal/platform"
 )
+
+// Every sizing-relevant input must move the fingerprint; an unrelated knob
+// must not (the remembered stepping survives it).
+func TestLaunchFingerprint(t *testing.T) {
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28000, GPUs: []platform.GPUDevice{{TotalMB: 16000}, {TotalMB: 12000}}}
+	cfg := config.Defaults()
+	base := launchFingerprint(&cfg, hw)
+
+	mode := cfg
+	mode.Performance.Context = "auto" // default is "optimal"
+	if launchFingerprint(&mode, hw) == base {
+		t.Error("context optimal->auto must change the fingerprint")
+	}
+	par := cfg
+	par.Performance.ExtraServerArgs = []string{"--parallel", "2"}
+	if launchFingerprint(&par, hw) == base {
+		t.Error("--parallel must change the fingerprint (slot split changes sizing)")
+	}
+	lessVRAM := hw
+	lessVRAM.VRAMMB = 16000
+	lessVRAM.GPUs = hw.GPUs[:1]
+	if launchFingerprint(&cfg, lessVRAM) == base {
+		t.Error("a card vanishing must change the fingerprint")
+	}
+	unrelated := cfg
+	unrelated.General.Port = 9999
+	if launchFingerprint(&unrelated, hw) != base {
+		t.Error("a non-sizing knob must not invalidate the remembered stepping")
+	}
+}
 
 // The launch memo lets the second start of a model load ONCE at the measured-good
 // window instead of re-walking the ladder (minutes of failed jumbo loads).
@@ -25,33 +57,50 @@ func TestLaunchMemoRoundTrip(t *testing.T) {
 		f.Close()
 		return p
 	}
+	const fpA, fpB = "aaaa1111", "bbbb2222"
 	p := mk("Model-Q4_K_M.gguf", 50)
-	if ctx, _, _ := loadLaunchMemo(p); ctx != 0 {
+	if ctx, _, _ := loadLaunchMemo(p, fpA); ctx != 0 {
 		t.Fatalf("empty memo should miss, got %d", ctx)
 	}
-	saveLaunchMemo(p, 131072, "q4_0", 89.6)
-	ctx, ct, tps := loadLaunchMemo(p)
+	saveLaunchMemo(p, 131072, "q4_0", 89.6, fpA)
+	ctx, ct, tps := loadLaunchMemo(p, fpA)
 	if ctx != 131072 || ct != "q4_0" || tps != 89.6 {
 		t.Fatalf("memo round-trip failed: %d %q %v", ctx, ct, tps)
 	}
-	saveLaunchMemo(p, 98304, "q8_0", 72) // replaces, never appends duplicates
-	ctx, ct, tps = loadLaunchMemo(p)
+	// A different fingerprint (changed sizing inputs) must miss, not replay.
+	if ctx, _, _ := loadLaunchMemo(p, fpB); ctx != 0 {
+		t.Fatalf("changed fingerprint should miss, got %d", ctx)
+	}
+	saveLaunchMemo(p, 98304, "q8_0", 72, fpA) // same fingerprint replaces, never duplicates
+	ctx, ct, tps = loadLaunchMemo(p, fpA)
 	if ctx != 98304 || ct != "q8_0" || tps != 72 {
 		t.Fatalf("memo replace failed: %d %q %v", ctx, ct, tps)
 	}
+	// Two geometries of the same model coexist (e.g. single vs team --parallel).
+	saveLaunchMemo(p, 65536, "q8_0", 40, fpB)
+	if ctx, _, _ := loadLaunchMemo(p, fpA); ctx != 98304 {
+		t.Fatalf("fpA entry must survive an fpB save, got %d", ctx)
+	}
+	if ctx, _, _ := loadLaunchMemo(p, fpB); ctx != 65536 {
+		t.Fatalf("fpB entry should hit, got %d", ctx)
+	}
 	// A different file size means a different model -> miss (re-measure).
 	other := mk("Model2-Q4_K_M.gguf", 60)
-	if ctx, _, _ := loadLaunchMemo(other); ctx != 0 {
+	if ctx, _, _ := loadLaunchMemo(other, fpA); ctx != 0 {
 		t.Fatalf("different model should miss, got %d", ctx)
 	}
-	// An entry from before the speed field existed (3 fields) still resolves; its
-	// missing speed reads as 0 so the caller measures once and rewrites it.
-	if err := os.WriteFile(launchMemoPath(), []byte(launchMemoKey(other)+" 65536 q8_0\n"), 0o644); err != nil {
+	// Pre-fingerprint entries (3/4 fields) can never match again: they miss, and
+	// the next save purges them.
+	if err := os.WriteFile(launchMemoPath(), []byte(launchMemoKey(other)+" 65536 q8_0 37.5\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctx, ct, tps = loadLaunchMemo(other)
-	if ctx != 65536 || ct != "q8_0" || tps != 0 {
-		t.Fatalf("legacy 3-field memo should load with tps=0: %d %q %v", ctx, ct, tps)
+	if ctx, _, _ := loadLaunchMemo(other, fpA); ctx != 0 {
+		t.Fatalf("legacy 4-field memo must miss under fingerprints, got %d", ctx)
+	}
+	saveLaunchMemo(other, 49152, "q8_0", 30, fpA)
+	data, _ := os.ReadFile(launchMemoPath())
+	if strings.Count(string(data), launchMemoKey(other)) != 1 {
+		t.Fatalf("legacy line must be purged on save:\n%s", data)
 	}
 }
 

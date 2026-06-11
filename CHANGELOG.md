@@ -3,6 +3,37 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.16.0 — 2026-06-11
+
+Lighter on low-end hardware, faster on every relaunch.
+
+### Changed
+- Team mode no longer auto-engages at or below the 16 GB-discrete / 24 GB-unified
+  hardware class -- including CPU-only boxes, where the old RAM check could
+  seat 1-3 extra model servers next to the head on the same cores. The head
+  model alone is the right load there. `--team` / `[team] mode = "on"` still
+  force a team anywhere.
+- Hardware identity is detected once and cached (.winc-hw): launches re-probe
+  only what actually moves (per-GPU free memory -- one nvidia-smi call -- and
+  total RAM). On Windows non-NVIDIA boxes the identity probes are PowerShell
+  invocations costing seconds per launch, every launch, for facts that change
+  only on a hardware or driver swap. Self-healing: on NVIDIA the live probe's
+  totals must match the cache or a full re-detect runs; elsewhere the cache
+  expires after 7 days. `winc detect` / doctor / setup always probe fully and
+  refresh the cache.
+- The launch memo is now keyed by a config+hardware fingerprint (context mode,
+  KV/MoE/MTP knobs, gpu_layers, --parallel slots, VRAM/GPU count): the
+  remembered stepping replays only while every sizing input matches, and a
+  changed input re-measures ONCE instead of replaying a stale plan (previously
+  flipping context "optimal" <-> "auto" kept replaying the old window). One
+  entry per geometry, so single-mode and team-mode steppings of the same model
+  coexist instead of evicting each other.
+- Launches the placement gate doesn't cover (CPU, unified memory, expert
+  offload, explicit settings) report decode speed from a tiny completion again
+  instead of the gate's ~2.5k-token bench prompt -- that prompt is what makes
+  the gate's verdict meaningful, but on a CPU-class box it alone cost a minute
+  of startup with nothing to verify.
+
 ## v1.15.0 — 2026-06-11
 
 The agent now knows its real window -- and what it forgets is recoverable.

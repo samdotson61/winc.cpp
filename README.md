@@ -134,9 +134,12 @@ budget — those run with **zero proxy hop** (direct to llama-server).
 
 Normally every subagent Claude Code spawns — and every agent a multi-agent **Workflow**
 fans out — is a clone of the model you launched, so a deep-research fan-out runs N copies of
-your big model: slow and wasteful. **winc runs team mode by default for any main model above
-the nano tier when there's enough system RAM for the workers**: the launched model stays the
-**main orchestrator** while small workers run alongside it and handle the subagents. **The
+your big model: slow and wasteful. **winc runs team mode by default on hardware above the
+16 GB-discrete / 24 GB-unified class, for any main model above the nano tier when there's
+enough system RAM for the workers**: the launched model stays the **main orchestrator**
+while small workers run alongside it and handle the subagents. At or below that hardware
+class (including CPU-only boxes) the head model alone is the right load — auto mode stays
+single, and `--team` (or `[team] mode = "on"`) still forces a team when you want one. **The
 head takes VRAM precedence absolutely** — it loads first and takes everything it wants; the
 workers then claim only the **measured leftover VRAM** (largest worker first, with a CPU
 fallback if the load doesn't fit after all) and otherwise run on the **CPU**, so they can

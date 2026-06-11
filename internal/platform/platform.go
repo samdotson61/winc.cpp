@@ -4,12 +4,18 @@
 package platform
 
 import (
+	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"winc/internal/paths"
 )
 
 // Hardware describes the machine for model sizing + backend selection.
@@ -72,10 +78,85 @@ type AssetSpec struct {
 }
 
 // DetectHardware combines OS-specific probes with the shared nvidia-smi check.
+// Always a FULL probe; it also refreshes the identity cache that
+// DetectHardwareCached reads, so `winc detect` / doctor / setup are how a
+// hardware swap becomes visible to the fast path.
 func DetectHardware() Hardware {
 	hw := Hardware{OS: runtime.GOOS, Arch: runtime.GOARCH}
 	hw.RAMMB = detectRAMMB()
 	detectGPU(&hw)
+	saveHWCache(hw)
+	return hw
+}
+
+// hwCache is the persisted slow-to-detect hardware IDENTITY: vendor, name,
+// dedicated VRAM total, unified flag, CUDA version. On Windows the non-NVIDIA
+// probes are PowerShell invocations -- seconds per launch, every launch, for
+// facts that change only on a hardware or driver swap.
+type hwCache struct {
+	Vendor    string    `json:"vendor"`
+	Name      string    `json:"name"`
+	VRAMMB    int       `json:"vram_mb"`
+	Unified   bool      `json:"unified"`
+	CudaMajor int       `json:"cuda_major"`
+	CudaMinor int       `json:"cuda_minor"`
+	SavedAt   time.Time `json:"saved_at"`
+}
+
+func hwCachePath() string { return filepath.Join(paths.InstallDir(), ".winc-hw") }
+
+// hwCacheMaxAge bounds how long a non-verifiable identity (no live probe to
+// cross-check, i.e. non-NVIDIA) is trusted before a full re-detect.
+const hwCacheMaxAge = 7 * 24 * time.Hour
+
+func saveHWCache(hw Hardware) {
+	c := hwCache{Vendor: hw.GPUVendor, Name: hw.GPUName, VRAMMB: hw.VRAMMB,
+		Unified: hw.Unified, CudaMajor: hw.CudaMajor, CudaMinor: hw.CudaMinor, SavedAt: time.Now()}
+	if out, err := json.Marshal(c); err == nil {
+		_ = os.WriteFile(hwCachePath(), out, 0o644)
+	}
+}
+
+func loadHWCache() (hwCache, bool) {
+	var c hwCache
+	data, err := os.ReadFile(hwCachePath())
+	if err != nil || json.Unmarshal(data, &c) != nil || c.Vendor == "" {
+		return hwCache{}, false
+	}
+	return c, true
+}
+
+// DetectHardwareCached is DetectHardware for the launch hot path: the stable
+// identity comes from .winc-hw, and only the volatile parts are probed live --
+// per-GPU free memory (one nvidia-smi call, needed fresh anyway) and total RAM
+// (an in-process API call). Identity drift self-heals: on NVIDIA the live
+// memory probe's totals must match the cache (a swapped/removed card forces a
+// full re-detect); elsewhere the cache expires after hwCacheMaxAge. Delete
+// .winc-hw or run `winc detect` after a hardware change to refresh immediately.
+func DetectHardwareCached() Hardware {
+	c, ok := loadHWCache()
+	if !ok {
+		return DetectHardware()
+	}
+	hw := Hardware{OS: runtime.GOOS, Arch: runtime.GOARCH, RAMMB: detectRAMMB()}
+	if c.Vendor == "nvidia" {
+		gpus := ProbeGPUFree()
+		total := 0
+		for _, g := range gpus {
+			total += g.TotalMB
+		}
+		if len(gpus) == 0 || total != c.VRAMMB {
+			return DetectHardware() // cards/driver changed -> probe for real
+		}
+		hw.GPUVendor, hw.GPUs, hw.VRAMMB, hw.GPUName = "nvidia", gpus, total, c.Name
+		hw.CudaMajor, hw.CudaMinor = c.CudaMajor, c.CudaMinor
+		return hw
+	}
+	if time.Since(c.SavedAt) > hwCacheMaxAge {
+		return DetectHardware()
+	}
+	hw.GPUVendor, hw.GPUName, hw.VRAMMB, hw.Unified = c.Vendor, c.Name, c.VRAMMB, c.Unified
+	hw.CudaMajor, hw.CudaMinor = c.CudaMajor, c.CudaMinor
 	return hw
 }
 
