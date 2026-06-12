@@ -147,6 +147,14 @@ func wincAssetName() string {
 // rebuildFromSource, so the running process finishes normally and the NEXT
 // invocation is the new build.
 func selfUpdatePrebuilt() {
+	// winc-jobdar branch builds are NOT release builds: replacing one with the
+	// latest master release would silently drop the jobdar stability profile.
+	// Branch users update from the branch (git pull + rebuild, or a fresh
+	// branch binary); the engine + catalog refresh still applies.
+	if strings.Contains(Version, "jobdar") {
+		ui.Info("winc-jobdar branch build (%s) - self-update from master releases is disabled; update from the winc-jobdar branch", Version)
+		return
+	}
 	tag := engine.LatestWincTag()
 	if tag == "" {
 		ui.Warn("could not reach the winc releases API - keeping the current binary")

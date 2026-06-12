@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,36 @@ import (
 	"winc/internal/reasoning"
 )
 
+// A pinned listen address is honored exactly -- the jobdar eval profile's
+// contract is a STABLE /v1/messages surface on the winc.toml port.
+func TestStartPinnedAddr(t *testing.T) {
+	cfg := config.Defaults()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer up.Close()
+	// Reserve a concrete free port, release it, pin the router there.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+	rt, err := Start(&cfg, up.URL, 0, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	if rt.BaseURL() != "http://"+addr {
+		t.Fatalf("pinned router URL = %s, want http://%s", rt.BaseURL(), addr)
+	}
+	// A second router on the SAME address must fail loudly, not fall back.
+	if rt2, err2 := Start(&cfg, up.URL, 0, addr); err2 == nil {
+		rt2.Stop()
+		t.Fatal("second router on a pinned busy address must error")
+	}
+}
+
 // roundtrip sends body through a router fronting a capturing upstream and returns
 // what the upstream received.
 func roundtrip(t *testing.T, cfg *config.Config, path, body string) map[string]any {
@@ -26,7 +57,7 @@ func roundtrip(t *testing.T, cfg *config.Config, path, body string) map[string]a
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer up.Close()
-	rt, err := Start(cfg, up.URL, 0)
+	rt, err := Start(cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +85,7 @@ func TestRouterInjectsBudget(t *testing.T) {
 
 func TestRouterBadUpstreamReturns502(t *testing.T) {
 	cfg := config.Defaults()
-	rt, err := Start(&cfg, "http://127.0.0.1:1", 0) // nothing listening -> dial fails
+	rt, err := Start(&cfg, "http://127.0.0.1:1", 0, "") // nothing listening -> dial fails
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +374,7 @@ func errUpstream(t *testing.T, status int, body string) (*Router, func()) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		up.Close()
 		t.Fatal(err)
@@ -738,7 +769,7 @@ func TestRouterBlocksWallRequests(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 8192) // tiny real window
+	rt, err := Start(&cfg, up.URL, 8192, "") // tiny real window
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +881,7 @@ func TestRouterContinuesTruncatedStream(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,7 +940,7 @@ func TestRouterNoContinueOnToolUseCut(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -946,7 +977,7 @@ func TestRouterContinuesTruncatedJSON(t *testing.T) {
 		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"Started but"}],"stop_reason":"max_tokens","stop_sequence":null,"usage":{"input_tokens":9,"output_tokens":5}}`))
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

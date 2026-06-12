@@ -139,7 +139,7 @@ func cmdStart(args []string) int {
 	// into the wording Claude Code recognizes (so a big tool_result doesn't surface as
 	// "<model> is temporarily unavailable" and block the command in auto mode).
 	baseURL := serverURL
-	r, rerr := router.Start(cfg, serverURL, loadedCtx)
+	r, rerr := router.Start(cfg, serverURL, loadedCtx, "")
 	if rerr != nil {
 		ui.Warn("router failed (%v); using direct serving", rerr)
 	} else {

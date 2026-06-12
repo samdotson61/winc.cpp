@@ -106,7 +106,7 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 
 	baseURL := swapURL
 	if cfg.Reasoning.Mode == "adaptive" {
-		if r, rerr := router.Start(cfg, swapURL, 0); rerr == nil { // multi: per-model windows vary; trim disabled
+		if r, rerr := router.Start(cfg, swapURL, 0, ""); rerr == nil { // multi: per-model windows vary; trim disabled
 			defer r.Stop()
 			baseURL = r.BaseURL()
 		} else {

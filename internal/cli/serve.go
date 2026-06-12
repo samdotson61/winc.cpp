@@ -23,13 +23,15 @@ func cmdServe(args []string) int {
 	cat := catalog.Load(cfg.CustomModels)
 
 	var reasoning string
-	var multi bool
+	var multi, eval bool
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--multi":
 			multi = true
+		case a == "--eval":
+			eval = true
 		case a == "--reasoning":
 			if i+1 < len(args) {
 				reasoning = args[i+1]
@@ -40,6 +42,13 @@ func cmdServe(args []string) int {
 		default:
 			pos = append(pos, a)
 		}
+	}
+	if eval {
+		if multi {
+			ui.Err("--eval is a single-model profile; it can't combine with --multi")
+			return 1
+		}
+		return cmdServeEval(cfg, cat, pos)
 	}
 	model := cfg.General.DefaultModel
 	if len(pos) >= 1 {
@@ -87,7 +96,7 @@ func cmdServe(args []string) int {
 
 	baseURL := serverURL
 	if cfg.Reasoning.Mode == "adaptive" {
-		if r, rerr := router.Start(cfg, serverURL, loadedCtx); rerr == nil {
+		if r, rerr := router.Start(cfg, serverURL, loadedCtx, ""); rerr == nil {
 			defer r.Stop()
 			baseURL = r.BaseURL()
 		} else {

@@ -3,6 +3,45 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.1-jobdar.1 — 2026-06-12 (winc-jobdar branch)
+
+The jobdar evaluation profile. This branch carries jobdar-specific stability
+work on top of master releases; it is built from the branch, never tagged as
+a master release.
+
+### Added
+- `winc serve --eval [model]` — the jobdar inference profile. Every knob is a
+  measured choice for the eval shape (a 1-5k-token posting+resume prompt, a
+  few-hundred-token JSON verdict, many independent calls):
+  - the ROUTER binds the winc.toml port (default 8080): jobdar configures ONE
+    stable Anthropic `/v1/messages` URL (`inference_url`); llama-server moves
+    to an ephemeral port behind it. Agent flows keep their ephemeral router.
+  - reasoning OFF and speculative draft OFF: thinking returns EMPTY content
+    with the whole token budget spent, and the 0.8B draft measured a ~50%
+    decode LOSS at this shape on every tier (it is 20-40% of these targets'
+    size). No MTP, no team mode.
+  - 16384-token window, q8 KV: the whole 2B server fits a 2 GB card (~1.7 GB),
+    the 4B a 4 GB card (~3.4 GB).
+  - model auto-pick when none is named: >=6 GB-class VRAM prefers the 4B
+    (better judgment on requirement mismatches), smaller cards and CPU-only
+    prefer the 2B (143 tok/s on a 12 GB-class card, ~42 tok/s on a desktop
+    CPU); falls back to whichever is downloaded, else prints the exact
+    `winc -d` command.
+  - the engine's auto-parallel UNIFIED KV pool serves jobdar's scan-stage
+    concurrency as-is (measured: 3 concurrent evals at 118 tok/s aggregate
+    where a single stream runs ~98).
+
+### Fixed
+- `reasoning = off` (and the `--reasoning off` CLI flag) now emits the
+  engine's template-level `--reasoning off` instead of `--reasoning-budget 0`.
+  Measured on Qwen3.5 (2B and 4B): budget-0 still routes every generated
+  token into the thinking channel -- the client receives EMPTY content with
+  max_tokens fully spent. Template-level off answers in content at full speed.
+- `winc update` on a winc-jobdar branch build no longer offers the prebuilt
+  self-update: replacing the binary with a master release would silently drop
+  the jobdar profile. Engine + catalog refresh still run; branch users update
+  from the branch.
+
 ## v1.21.1 — 2026-06-12
 
 ### Fixed

@@ -9,7 +9,7 @@ import "winc/internal/ui"
 //
 // No "v" prefix -- the update check compares against tags with the "v"
 // stripped. A plain `go build` keeps this default.
-var Version = "1.21.1"
+var Version = "1.21.1-jobdar.1"
 
 func cmdVersion() int {
 	ui.Say("winc %s", Version)
