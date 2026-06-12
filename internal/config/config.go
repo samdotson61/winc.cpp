@@ -67,6 +67,13 @@ type Performance struct {
 	// engine's default placement -- the split is an optimization and must never
 	// cost a rung.
 	NoTensorSplit bool `toml:"-"`
+	// FFNSpill is winc-internal (never read from winc.toml): the dense FFN-spill
+	// placement -- park the LAST n blocks' feed-forward weights in system RAM
+	// (-ngl 99 plus a tensor override) so every attention/SSM tensor and the
+	// whole KV cache stay GPU-resident. Set by the bottom-target rescue when
+	// full residency can't afford the window; recorded in the launch memo as
+	// "ffn:n" so replays load the same way.
+	FFNSpill int `toml:"-"`
 }
 
 type Multi struct {

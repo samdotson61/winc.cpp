@@ -3,6 +3,52 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.21.0 — 2026-06-12
+
+Dense models that can't afford their window now spill ONLY feed-forward
+weights -- attention and the whole context stay on the GPU.
+
+### Added
+- FFN-only spill (dense models): when full residency can't reach the bottom
+  context target even with the MTP draft dropped, the launcher now parks the
+  FEWEST trailing blocks' feed-forward weights in system RAM (-ngl 99 plus a
+  tensor override) instead of jumping straight to whole-layer engine spill.
+  Everything that reads the context -- every attention/SSM tensor and the
+  entire KV cache -- stays GPU-resident. Measured against whole-layer spill:
+  more decode per spilled byte (a 27B with 8 blocks' FFN in RAM decodes 15.5
+  tok/s where -ngl 56 manages 10.5 with MORE VRAM still used), and -- the
+  property that matters in real agent sessions -- the rate holds FLAT as the
+  context fills (FFN-spilled 4B: 28.2 tok/s empty, 27.1 at a 32k-deep
+  context; whole-layer: 36.5 empty collapsing to 24.1 by 16k and still
+  falling). Feed-forward weights are 50-62% of these models' bytes (measured
+  exactly from the GGUF tensor table via offset deltas -- no quant-size
+  tables to maintain), so the relief per spilled block is large and the
+  spill count comes from the actual KV deficit, not a guess. One bumped
+  retry covers estimate misses; the placement gate verifies every attempt
+  against the REDUCED resident size; the launch memo records "ffn:n" so
+  replays load identically. MoE models never take this path -- expert
+  offload (--cpu-moe) is their cheaper version of the same trade.
+- Sub-bottom FFN descent (the 4 GB class): when even every FFN block in RAM
+  can't afford the ~100k bottom target, the launcher tries 65536/49152/32768
+  with the deficit-sized spill before surrendering to engine placement at the
+  bottom. A gate-VERIFIED window with resident attention that decodes at a
+  flat ~30-40 tok/s beats an unverifiable everything-through-RAM window that
+  starts slow and decays with depth -- on the hardware this targets, the
+  measured difference at working depths is 2-4x. The decode report and the
+  memo state exactly what was traded.
+- Live-verified on real hardware (12 GB card, 4B): a 262144-token window
+  with the full KV cache resident and all FFN in RAM -- 459 tok/s prompt on
+  a 10k-token prompt, 29.2 tok/s decode, both in the band the offline bench
+  matrix predicted.
+
+### Notes
+- The placement gate's prompt floor (150 tok/s) is unchanged: healthy
+  FFN-spilled loads measured 434-804 batched prompt speed across both test
+  models; the sick signature it exists to catch stays 50-125.
+- The engine suggests --no-mmap when tensor overrides target the CPU;
+  measured numbers above are WITH mmap (the default). A future knob may trade
+  commit-on-load for steadier CPU reads on RAM-rich boxes.
+
 ## v1.20.0 — 2026-06-11
 
 Multi-GPU decode packs the fast card first.

@@ -99,6 +99,14 @@ func ForcedFullGPU(cfg *config.Config, hw platform.Hardware, modelPath string) b
 // fixtures sparse, but NTFS allocates them for real, which exhausted the
 // Windows CI runner's disk).
 func forcedFullGPUAt(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB int) bool {
+	if cfg.Performance.FFNSpill > 0 {
+		// The FFN-spill placement pins -ngl 99 with the spilled blocks excused:
+		// it is set only by winc's own bottom-target stage, whose budget math
+		// already validated the resident set -- and exactly like any other pin,
+		// an over-budget load can silently land in shared system memory, so the
+		// gate must cover it (against the REDUCED resident size).
+		return true
+	}
 	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
 		return false
 	}
@@ -555,6 +563,89 @@ func fullyFitsGPU(cfg *config.Config, hw platform.Hardware, modelPath string, mo
 	return hw.VRAMMB-modelMB-gpuReserveMB(hw, modelMB)-mtpReserveMB(cfg, modelPath) >= minKVHeadroomMB
 }
 
+// mainBlocks is the transformer block count EXCLUDING an MTP head's extra block
+// (its tensors only load for speculative decoding, and the FFN-spill placement
+// always runs with the draft off).
+func mainBlocks(modelPath string) int {
+	b := BlockCount(modelPath)
+	if b > 1 && isMTPFile(modelPath) {
+		b--
+	}
+	return b
+}
+
+// FFNSpillArgs builds the tensor override that parks the LAST k blocks'
+// feed-forward weights in system RAM while -ngl 99 keeps everything else --
+// every attention/SSM tensor and the entire KV cache -- GPU-resident. Dense
+// decode cost is linear in the spilled bytes and (measured) DEPTH-STABLE,
+// where whole-layer spill also drags those layers' attention and KV through
+// RAM and decays as the context fills. Block indices are spelled out
+// explicitly: unambiguous to read in a process list and immune to regex
+// edge cases.
+func FFNSpillArgs(modelPath string, k int) []string {
+	main := mainBlocks(modelPath)
+	if k <= 0 || main <= 0 {
+		return nil
+	}
+	if k > main {
+		k = main
+	}
+	idx := make([]string, 0, k)
+	for b := main - k; b < main; b++ {
+		idx = append(idx, strconv.Itoa(b))
+	}
+	return []string{"-ot", `blk\.(` + strings.Join(idx, "|") + `)\.ffn_.*=CPU`}
+}
+
+// FFNSpillPlan answers "how many trailing blocks' FFN weights must move to RAM
+// for ctx tokens of KV to fit" from the same budget terms the auto sizing uses.
+// Returns (k, mainBlocks):
+//
+//	k == 0          -> spill can't help here (budget already fits, not a dense
+//	                   GPU launch, or the model's FFN layout is unreadable)
+//	0 < k <= blocks -> spill k blocks' FFN (includes a +1 block safety margin)
+//	k > blocks      -> even every FFN in RAM can't afford ctx; try smaller
+//
+// MoE models never plan an FFN spill -- expert offload (--cpu-moe) is their
+// (cheaper) version of exactly this trade. The caller supplies a config whose
+// MTP is already resolved (the spill stage runs with the draft off).
+func FFNSpillPlan(cfg *config.Config, hw platform.Hardware, modelPath string, ctx int) (k, blocks int) {
+	if hw.Unified || hw.VRAMMB <= 0 || len(hw.GPUs) == 0 {
+		return 0, 0
+	}
+	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
+		return 0, 0
+	}
+	if isMoEFile(modelPath) {
+		return 0, 0
+	}
+	modelMB := FileMB(modelPath)
+	layerMB := FFNLayerMB(modelPath)
+	main := mainBlocks(modelPath)
+	if modelMB <= 0 || layerMB <= 0 || main <= 0 {
+		return 0, 0
+	}
+	ct := EffectiveCacheType(cfg, hw, modelPath, modelMB, false)
+	needKVMB := ctx / kvCtxFactor(ct, cfg.Performance.FlashAttn)
+	haveMB := hw.VRAMMB - modelMB - gpuReserveMB(hw, modelMB) - mtpReserveMB(cfg, modelPath)
+	deficit := needKVMB - haveMB
+	if deficit <= 0 {
+		return 0, main
+	}
+	return (deficit+layerMB-1)/layerMB + 1, main
+}
+
+// FFNSpillMB is the weight bytes (MB) a k-block FFN spill moves off the GPU.
+func FFNSpillMB(modelPath string, k int) int {
+	if main := mainBlocks(modelPath); k > main {
+		k = main
+	}
+	if k <= 0 {
+		return 0
+	}
+	return k * FFNLayerMB(modelPath)
+}
+
 // EffectiveCacheType resolves cache_type = "auto": q8_0 normally, downshifted to
 // the ASYMMETRIC "q8_0/q4_0" (key cache / value cache) when the q8-sized window
 // would be starved (< StarvedCtxTokens). Keys are far more sensitive to
@@ -723,6 +814,13 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	//    own fit, and the free-ratio default leaves the fast card idle.
 	//  - Otherwise (partial fit, dense): omit -ngl and let the engine fit layers.
 	switch cpuMoe := resolveCPUMoE(cfg, hw, modelPath, modelMB, ngl); {
+	case cfg.Performance.FFNSpill > 0:
+		// Dense FFN spill (winc-internal): pin everything resident EXCEPT the
+		// chosen blocks' feed-forward weights. No tensor-split here -- the
+		// per-card budget math doesn't model the FFN holes; the engine's own
+		// balance places what remains.
+		args = append(args, "-ngl", "99")
+		args = append(args, FFNSpillArgs(modelPath, cfg.Performance.FFNSpill)...)
 	case cpuMoe == "all":
 		args = append(args, "-ngl", "99", "--cpu-moe")
 	case cpuMoe != "":

@@ -95,7 +95,10 @@ func tryContextOnce(cfg *config.Config, hw platform.Hardware, modelPath, serverB
 }
 
 func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, ctx int, noMTP, lastResort, gated bool) *server.Proc {
-	waitVRAMFree(engine.FileMB(modelPath)+2048, 20*time.Second)
+	// The expected RESIDENT weight set: the whole model, minus any FFN blocks
+	// the spill placement deliberately parks in RAM.
+	residentMB := engine.FileMB(modelPath) - engine.FFNSpillMB(modelPath, cfg.Performance.FFNSpill)
+	waitVRAMFree(residentMB+2048, 20*time.Second)
 	// The gate covers exactly the loads where winc pins -ngl 99 because the model
 	// SHOULD fit: those are the ones the driver can silently satisfy from shared
 	// system memory when the pin turns out to be over budget. Explicit user
@@ -122,7 +125,7 @@ func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serv
 		return nil
 	}
 	if gate {
-		ok := verifyOnGPU(serverURL, modelPath, ctx, preFree, lastResort)
+		ok := verifyOnGPU(serverURL, modelPath, ctx, preFree, residentMB, lastResort)
 		lastBench.tried = true
 		if !ok {
 			proc.Stop()
@@ -217,16 +220,20 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				lc.Performance.CacheType = mct
 				// Replay the remembered PLACEMENT, not just the window: a spill result
 				// must use engine placement (forcing residency would gate-reject it),
-				// and a no-MTP result only fits because the draft allowance is gone.
-				switch mpl {
-				case plSpill:
+				// a no-MTP result only fits because the draft allowance is gone, and
+				// an FFN-spill result needs its tensor override (and the draft off).
+				switch {
+				case mpl == plSpill:
 					lc.Performance.GpuLayers = engine.GpuLayersEngine
-				case plNoMTP:
+				case mpl == plNoMTP:
 					lc.Performance.Mtp = "off"
+				case ffnSpillOf(mpl) > 0:
+					lc.Performance.Mtp = "off"
+					lc.Performance.FFNSpill = ffnSpillOf(mpl)
 				}
 				if proc := tryContextOnce(&lc, hw, modelPath, bin, port, serverURL, logPath, mctx, false, false, true); proc != nil {
 					cfg.Performance.CacheType = mct
-					if mpl == plNoMTP {
+					if mpl == plNoMTP || ffnSpillOf(mpl) > 0 {
 						cfg.Performance.Mtp = "off"
 					}
 					// The placement gate already measured this server (a remembered rung
@@ -362,25 +369,49 @@ func soloDecodeTPS(bin, modelPath string, gpu int) float64 {
 
 // Launch placements, recorded in the memo so replays load the same way:
 // plGPU = fully resident (forced -ngl 99, gate-verified); plNoMTP = fully
-// resident with the MTP draft dropped to afford the window; plSpill = engine
-// device placement, layers spilled to RAM for the window.
+// resident with the MTP draft dropped to afford the window; "ffn:k" = the k
+// trailing blocks' FFN weights in RAM, attention + KV resident (gate-verified,
+// MTP off); plSpill = engine device placement, layers spilled to RAM for the
+// window.
 const (
-	plGPU   = "gpu"
-	plNoMTP = "nomtp"
-	plSpill = "spill"
+	plGPU       = "gpu"
+	plNoMTP     = "nomtp"
+	plSpill     = "spill"
+	plFFNPrefix = "ffn:"
 )
+
+// plFFN encodes a k-block FFN spill placement ("ffn:12").
+func plFFN(k int) string { return plFFNPrefix + strconv.Itoa(k) }
+
+// ffnSpillOf decodes an "ffn:k" placement, 0 for every other placement.
+func ffnSpillOf(pl string) int {
+	if !strings.HasPrefix(pl, plFFNPrefix) {
+		return 0
+	}
+	k, err := strconv.Atoi(pl[len(plFFNPrefix):])
+	if err != nil || k < 1 {
+		return 0
+	}
+	return k
+}
 
 // ensureBottomTarget upgrades a launch that settled below the universal bottom
 // target (~64k usable + the agent's fixed overhead, BottomCtxTokens total): the
 // fully-resident ladder maxed out under it, so trade for the window in cost
-// order. Stage 1, MTP models only: drop the speculative draft -- its context +
-// buffers cost 1-2 GB at big windows and the loss is ~25-35% decode, and the
-// result stays FULLY resident (gate-verified). Stage 2: the engine's device
-// placement -- layers spill to RAM, measured 2-4x decode, but every agent gets
-// a workable window; the decode report states the price. The resident server
-// is restored when neither attempt loads (RAM-tight boxes). Only for
-// winc-sized GPU launches; CPU-only and unified memory size their own way,
-// and explicit settings never reach here.
+// order. Stage 0, measured multi-GPU MTP models: the bottom WITH the draft
+// under the bandwidth split. Stage 1, MTP models: drop the speculative draft --
+// its context + buffers cost 1-2 GB at big windows and the loss is ~25-35%
+// decode, and the result stays FULLY resident (gate-verified). Stage 1.5,
+// dense models: FFN-only spill -- the fewest trailing blocks' feed-forward
+// weights move to RAM while attention and the whole KV cache stay resident
+// (gate-verified, decode cost linear in the spilled bytes and depth-STABLE);
+// when even every FFN in RAM can't afford the bottom, the largest FFN-resident
+// window below it wins over an everything-through-RAM spill. Stage 2: the
+// engine's device placement -- layers spill to RAM, measured 2-4x decode and
+// decaying with depth, but every agent gets a workable window; the decode
+// report states the price. The resident server is restored when no attempt
+// loads (RAM-tight boxes). Only for winc-sized GPU launches; CPU-only and
+// unified memory size their own way, and explicit settings never reach here.
 func ensureBottomTarget(cfg *config.Config, hw platform.Hardware, modelPath, bin string, port int, serverURL, logPath string, proc *server.Proc, ctx int) (*server.Proc, int, string) {
 	if proc == nil || ctx >= engine.BottomCtxTokens || hw.Unified || hw.VRAMMB <= 0 || len(hw.GPUs) == 0 {
 		return proc, ctx, plGPU
@@ -412,6 +443,69 @@ func ensureBottomTarget(cfg *config.Config, hw platform.Hardware, modelPath, bin
 			ui.Good("bottom target reached fully on GPU by dropping the MTP draft: %d tokens", engine.BottomCtxTokens)
 			cfg.Performance.Mtp = "off"
 			return p2, engine.BottomCtxTokens, plNoMTP
+		}
+	}
+	// Stage 1.5, dense models: FFN-only spill. Park the FEWEST trailing blocks'
+	// feed-forward weights in RAM (computed from the KV deficit) and pin
+	// everything else -- every attention/SSM tensor and the WHOLE KV cache stay
+	// GPU-resident, gate-verified. Measured against whole-layer spill at matched
+	// relief: more decode per spilled byte, healthy batched prompt speed, and --
+	// the property that matters at agent depths -- the rate holds FLAT as the
+	// context fills, where whole-layer decay compounds (its spilled layers read
+	// their KV through RAM too). MoE models never take this stage; expert
+	// offload is their cheaper version of the same trade.
+	nf := *cfg
+	nf.Performance.Mtp = "off"
+	if k, blocks := engine.FFNSpillPlan(&nf, hw, modelPath, engine.BottomCtxTokens); k > 0 && blocks > 0 {
+		ffnAttempt := func(c, k int, line string) *server.Proc {
+			if !stopped {
+				ui.Info("settled at %d - below the %d-token bottom target", ctx, engine.BottomCtxTokens)
+				proc.Stop()
+				stopped = true
+			}
+			ui.Info("%s", line)
+			nf.Performance.FFNSpill = k
+			return tryContextOnce(&nf, hw, modelPath, bin, port, serverURL, logPath, c, false, false, true)
+		}
+		if k <= blocks {
+			if p2 := ffnAttempt(engine.BottomCtxTokens, k, fmt.Sprintf("trying the bottom target with %d/%d layers' FFN weights in RAM (attention + context stay fully on GPU)...", k, blocks)); p2 != nil {
+				ui.Good("bottom target reached: %d tokens, attention + context fully on GPU (%d/%d FFN layers in RAM)", engine.BottomCtxTokens, k, blocks)
+				cfg.Performance.Mtp = "off"
+				return p2, engine.BottomCtxTokens, plFFN(k)
+			}
+			// One bumped retry: the deficit estimate can sit a hair under reality
+			// (fragmentation, per-card imbalance). More blocks = more relief.
+			if k2 := min(blocks, k+max(2, k/4)); k2 > k {
+				if p2 := ffnAttempt(engine.BottomCtxTokens, k2, fmt.Sprintf("FFN spill at %d layers didn't hold - retrying with %d...", k, k2)); p2 != nil {
+					ui.Good("bottom target reached: %d tokens, attention + context fully on GPU (%d/%d FFN layers in RAM)", engine.BottomCtxTokens, k2, blocks)
+					cfg.Performance.Mtp = "off"
+					return p2, engine.BottomCtxTokens, plFFN(k2)
+				}
+			}
+		}
+		// The bottom is out of the FFN budget's reach (k > blocks: the 4 GB
+		// class), or its attempts didn't hold. A gate-VERIFIED resident-attention
+		// window below the bottom still beats an everything-through-RAM spill AT
+		// the bottom: measured, the spill's decode decays with depth into single
+		// digits exactly where an agent lives, while the FFN placement holds its
+		// rate flat. Descend to the largest window the FFN budget holds -- but
+		// only through windows LARGER than what full residency already settled.
+		for _, c := range []int{65536, 49152, 32768} {
+			if c <= ctx {
+				break
+			}
+			k2, blocks2 := engine.FFNSpillPlan(&nf, hw, modelPath, c)
+			if k2 > blocks2 {
+				continue // this window doesn't fit the FFN budget either
+			}
+			if k2 <= 0 {
+				break // budget says resident should hold this window; the ladder already disagreed -- spill decides
+			}
+			if p2 := ffnAttempt(c, k2, fmt.Sprintf("trying %d tokens with %d/%d layers' FFN in RAM (attention + context on GPU)...", c, k2, blocks2)); p2 != nil {
+				ui.Good("%d tokens with attention + context fully on GPU (%d/%d FFN layers in RAM) - below the bottom target, but measured depth-stable", c, k2, blocks2)
+				cfg.Performance.Mtp = "off"
+				return p2, c, plFFN(k2)
+			}
 		}
 	}
 	if !stopped {
@@ -529,10 +623,14 @@ func benchServer(serverURL string) (pp, gen float64, measured, slow bool) {
 //
 // Rejecting returns false; the caller then steps the ladder down exactly as if
 // the load had failed. lastResort loads always accept, warning loudly instead.
-func verifyOnGPU(serverURL, modelPath string, ctx, preFreeMB int, lastResort bool) bool {
+// residentMB is the weight set the load is EXPECTED to place in dedicated VRAM
+// -- the full model normally, the model minus the spilled FFN bytes under the
+// FFN-spill placement (judging those loads against the full size would reject
+// every healthy one).
+func verifyOnGPU(serverURL, modelPath string, ctx, preFreeMB, residentMB int, lastResort bool) bool {
 	sick := ""
-	if mb := engine.FileMB(modelPath); residencyBroken(preFreeMB, postFreeMB(), mb) {
-		sick = fmt.Sprintf("dedicated VRAM use rose by less than half the model's %d MB", mb)
+	if residencyBroken(preFreeMB, postFreeMB(), residentMB) {
+		sick = fmt.Sprintf("dedicated VRAM use rose by less than half the expected %d MB resident set", residentMB)
 	} else {
 		pp, gen, measured, slow := benchServer(serverURL)
 		if !measured && !slow {
@@ -692,7 +790,7 @@ func loadLaunchMemo(modelPath, fp string) (int, string, float64, string) {
 			if ctx, err := strconv.Atoi(f[1]); err == nil && ctx > 0 {
 				tps, _ := strconv.ParseFloat(f[3], 64)
 				pl := f[5]
-				if pl != plSpill && pl != plNoMTP {
+				if pl != plSpill && pl != plNoMTP && ffnSpillOf(pl) == 0 {
 					pl = plGPU
 				}
 				return ctx, f[2], tps, pl

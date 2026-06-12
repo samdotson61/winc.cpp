@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -101,6 +102,157 @@ func readBlockCount(path string) (int, error) {
 		}
 	}
 	return 0, nil
+}
+
+var ffnBytesCache sync.Map // modelPath -> int64 (total bytes of all blk.*.ffn_* tensors)
+
+// FFNTotalBytes returns the EXACT on-disk bytes of every feed-forward weight
+// tensor (blk.N.ffn_*) in a GGUF, or 0 if unavailable. Sizes come from the
+// tensor table's offset deltas -- no per-quant type table to maintain, so any
+// current or future quantization reads correctly. This is the byte pool the
+// dense FFN-spill placement can move to RAM: for the qwen35 family it is
+// ~49-61% of the file, far more relief per layer than whole-layer offload and
+// it leaves every attention/SSM tensor (and so the whole KV cache) on the GPU.
+func FFNTotalBytes(path string) int64 {
+	if v, ok := ffnBytesCache.Load(path); ok {
+		return v.(int64)
+	}
+	n, err := readFFNTotalBytes(path)
+	if err != nil {
+		n = 0
+	}
+	ffnBytesCache.Store(path, n)
+	return n
+}
+
+// FFNLayerMB is the average per-block FFN weight size in MB (0 if unknown).
+func FFNLayerMB(path string) int {
+	blocks := BlockCount(path)
+	total := FFNTotalBytes(path)
+	if blocks <= 0 || total <= 0 {
+		return 0
+	}
+	return int(total / int64(blocks) >> 20)
+}
+
+func readFFNTotalBytes(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	cr := &countingReader{r: f}
+	r := bufio.NewReaderSize(cr, 1<<20)
+
+	var magic, version uint32
+	var nTensors, nKV uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return 0, err
+	}
+	if magic != ggufMagic {
+		return 0, fmt.Errorf("not a GGUF file")
+	}
+	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
+		return 0, err
+	}
+	alignment := int64(32) // GGUF default; overridden by general.alignment
+	for i := uint64(0); i < nKV; i++ {
+		key, err := ggufString(r)
+		if err != nil {
+			return 0, err
+		}
+		var vtype uint32
+		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
+			return 0, err
+		}
+		if key == "general.alignment" {
+			a, err := ggufUint(r, vtype)
+			if err != nil {
+				return 0, err
+			}
+			if a > 0 {
+				alignment = int64(a)
+			}
+			continue
+		}
+		if err := ggufSkipValue(r, vtype); err != nil {
+			return 0, err
+		}
+	}
+	if nTensors == 0 || nTensors > 1<<20 {
+		return 0, fmt.Errorf("absurd gguf tensor count %d", nTensors)
+	}
+	type tinfo struct {
+		offset int64
+		ffn    bool
+	}
+	infos := make([]tinfo, 0, nTensors)
+	for i := uint64(0); i < nTensors; i++ {
+		name, err := ggufString(r)
+		if err != nil {
+			return 0, err
+		}
+		var nDims uint32
+		if err := binary.Read(r, binary.LittleEndian, &nDims); err != nil {
+			return 0, err
+		}
+		if nDims > 8 {
+			return 0, fmt.Errorf("absurd tensor rank %d", nDims)
+		}
+		// dims (u64 each) + type (u32) are not needed for offset-delta sizing
+		if _, err := io.CopyN(io.Discard, r, int64(nDims)*8+4); err != nil {
+			return 0, err
+		}
+		var offset uint64
+		if err := binary.Read(r, binary.LittleEndian, &offset); err != nil {
+			return 0, err
+		}
+		infos = append(infos, tinfo{
+			offset: int64(offset),
+			ffn:    strings.HasPrefix(name, "blk.") && strings.Contains(name, ".ffn_"),
+		})
+	}
+	// Everything read so far is the header; tensor data starts at the next
+	// alignment boundary. Account for bytes buffered ahead by the bufio layers.
+	headerEnd := cr.n - int64(r.Buffered())
+	dataStart := (headerEnd + alignment - 1) / alignment * alignment
+	dataSize := st.Size() - dataStart
+	if dataSize <= 0 {
+		return 0, fmt.Errorf("gguf data section missing")
+	}
+	// Tensor size = gap to the next tensor's offset (offsets are relative to the
+	// data section). Sort by offset; the last tensor runs to the end of the file.
+	sort.Slice(infos, func(a, b int) bool { return infos[a].offset < infos[b].offset })
+	var total int64
+	for i, t := range infos {
+		if !t.ffn {
+			continue
+		}
+		end := dataSize
+		if i+1 < len(infos) {
+			end = infos[i+1].offset
+		}
+		if end > t.offset {
+			total += end - t.offset
+		}
+	}
+	return total, nil
+}
+
+// countingReader counts bytes consumed from the underlying reader.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // ggufUint reads an integer-typed GGUF scalar as an int.
