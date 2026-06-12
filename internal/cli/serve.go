@@ -60,6 +60,7 @@ func cmdServe(args []string) int {
 	}
 	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 	hw := platform.DetectHardwareCached()
+	ensureGPUSpeeds(cfg, cat, &hw) // multi-GPU bandwidth weights, measured once per machine
 
 	port := cfg.General.Port
 	serverURL := fmt.Sprintf("http://%s:%d", cfg.General.Host, port)

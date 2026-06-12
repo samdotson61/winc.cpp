@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -610,5 +611,59 @@ func TestResolveContextTinyCard(t *testing.T) {
 	roomy := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000, GPUs: []platform.GPUDevice{{TotalMB: 16000}}}
 	if got := ResolveContext(&cfg, roomy, "Dense-9B-Q5_K_M.gguf", 8000, false); got < BottomCtxTokens {
 		t.Errorf("a roomy fit must not shrink, got %d", got)
+	}
+}
+
+// The bandwidth-weighted tensor split packs the FASTEST card to its budget
+// (decode on a layer split is additive per card); it never applies without
+// measured speeds, on single GPUs, or when the footprint exceeds the budgets.
+func TestTensorSplitArgs(t *testing.T) {
+	cfg := config.Defaults()
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591, GPUs: []platform.GPUDevice{
+		{Name: "fast", TotalMB: 16303, FreeMB: 15120, SpeedTPS: 460},
+		{Name: "slow", TotalMB: 12288, FreeMB: 12113, SpeedTPS: 210},
+	}}
+	args := TensorSplitArgs(&cfg, hw, "Dense-27B-Q5_K_M.gguf", 18915, 98304, "q8_0")
+	if len(args) != 2 || args[0] != "--tensor-split" {
+		t.Fatalf("expected a tensor split, got %v", args)
+	}
+	var f0, f1 float64
+	if _, err := fmt.Sscanf(args[1], "%f,%f", &f0, &f1); err != nil {
+		t.Fatalf("unparseable split %q: %v", args[1], err)
+	}
+	if f0 <= f1 {
+		t.Errorf("the fast card must carry the larger share: %v", args[1])
+	}
+	// The fast card's share equals its full budget: (free - perCardReserve) /
+	// footprint -- it is packed to the brim, not balanced.
+	if f0 < 0.6 {
+		t.Errorf("fast card share %v should be its packed budget (>0.6)", f0)
+	}
+	if d := f0 + f1; d < 0.99 || d > 1.01 {
+		t.Errorf("fractions must cover the footprint, got %v", d)
+	}
+
+	// Slow card listed FIRST by index must still get the smaller share.
+	rev := hw
+	rev.GPUs = []platform.GPUDevice{hw.GPUs[1], hw.GPUs[0]}
+	args = TensorSplitArgs(&cfg, rev, "Dense-27B-Q5_K_M.gguf", 18915, 98304, "q8_0")
+	if _, err := fmt.Sscanf(args[1], "%f,%f", &f0, &f1); err != nil || f0 >= f1 {
+		t.Errorf("index order must be preserved with the fast card still dominant: %v", args)
+	}
+
+	// No measured speeds -> engine default (nil).
+	un := hw
+	un.GPUs = []platform.GPUDevice{{TotalMB: 16303, FreeMB: 15120}, {TotalMB: 12288, FreeMB: 12113}}
+	if got := TensorSplitArgs(&cfg, un, "m.gguf", 18915, 98304, "q8_0"); got != nil {
+		t.Errorf("unmeasured cards must keep the default split, got %v", got)
+	}
+	// Single GPU -> nil.
+	one := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16303, GPUs: []platform.GPUDevice{{TotalMB: 16303, FreeMB: 15120, SpeedTPS: 460}}}
+	if got := TensorSplitArgs(&cfg, one, "m.gguf", 8000, 65536, "q8_0"); got != nil {
+		t.Errorf("single GPU must not emit a split, got %v", got)
+	}
+	// Footprint over the combined budgets -> nil (the ladder handles it).
+	if got := TensorSplitArgs(&cfg, hw, "m.gguf", 30000, 98304, "q8_0"); got != nil {
+		t.Errorf("oversized footprint must not emit a split, got %v", got)
 	}
 }

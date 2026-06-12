@@ -62,6 +62,11 @@ type Performance struct {
 	Mtp             string   `toml:"mtp"`               // auto | off  (Multi-Token Prediction for *-MTP models)
 	MtpDraftMax     int      `toml:"mtp_draft_max"`     // --spec-draft-n-max for MTP (default 2)
 	ExtraServerArgs []string `toml:"extra_server_args"` // advanced: extra llama-server flags
+	// NoTensorSplit is winc-internal (never read from winc.toml): set on a retry
+	// config when a bandwidth-split load failed, so the attempt reruns under the
+	// engine's default placement -- the split is an optimization and must never
+	// cost a rung.
+	NoTensorSplit bool `toml:"-"`
 }
 
 type Multi struct {

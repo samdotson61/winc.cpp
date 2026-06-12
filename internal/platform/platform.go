@@ -33,11 +33,16 @@ type Hardware struct {
 }
 
 // GPUDevice is one detected GPU. FreeMB is a launch-time snapshot used to weight
-// the multi-GPU tensor split toward the emptier card; 0 means unknown.
+// the multi-GPU tensor split toward the emptier card; 0 means unknown. SpeedTPS
+// is the card's measured solo decode speed (a small dense model loaded entirely
+// on that card -- a near-pure memory-bandwidth probe), 0 until measured; it
+// weights the tensor split toward the FASTER card, since decode on a layer
+// split is additive per card.
 type GPUDevice struct {
-	Name    string
-	TotalMB int
-	FreeMB  int
+	Name     string
+	TotalMB  int
+	FreeMB   int
+	SpeedTPS float64
 }
 
 // MultiGPU reports whether more than one usable GPU was detected.
@@ -100,6 +105,7 @@ type hwCache struct {
 	Unified   bool      `json:"unified"`
 	CudaMajor int       `json:"cuda_major"`
 	CudaMinor int       `json:"cuda_minor"`
+	GPUSpeeds []float64 `json:"gpu_speeds,omitempty"` // per-index solo decode tok/s (see GPUDevice.SpeedTPS)
 	SavedAt   time.Time `json:"saved_at"`
 }
 
@@ -112,9 +118,32 @@ const hwCacheMaxAge = 7 * 24 * time.Hour
 func saveHWCache(hw Hardware) {
 	c := hwCache{Vendor: hw.GPUVendor, Name: hw.GPUName, VRAMMB: hw.VRAMMB,
 		Unified: hw.Unified, CudaMajor: hw.CudaMajor, CudaMinor: hw.CudaMinor, SavedAt: time.Now()}
+	if old, ok := loadHWCache(); ok {
+		c.GPUSpeeds = old.GPUSpeeds // measured speeds survive identity refreshes
+	}
+	for i, g := range hw.GPUs {
+		if g.SpeedTPS > 0 {
+			for len(c.GPUSpeeds) <= i {
+				c.GPUSpeeds = append(c.GPUSpeeds, 0)
+			}
+			c.GPUSpeeds[i] = g.SpeedTPS
+		}
+	}
 	if out, err := json.Marshal(c); err == nil {
 		_ = os.WriteFile(hwCachePath(), out, 0o644)
 	}
+}
+
+// SaveGPUSpeeds records the measured per-card solo decode speeds into the
+// hardware cache (and the live struct), so the bandwidth-weighted tensor split
+// pays its ~30s probe once per machine, ever.
+func SaveGPUSpeeds(hw *Hardware, speeds []float64) {
+	for i := range hw.GPUs {
+		if i < len(speeds) && speeds[i] > 0 {
+			hw.GPUs[i].SpeedTPS = speeds[i]
+		}
+	}
+	saveHWCache(*hw)
 }
 
 func loadHWCache() (hwCache, bool) {
@@ -147,6 +176,11 @@ func DetectHardwareCached() Hardware {
 		}
 		if len(gpus) == 0 || total != c.VRAMMB {
 			return DetectHardware() // cards/driver changed -> probe for real
+		}
+		for i := range gpus {
+			if i < len(c.GPUSpeeds) {
+				gpus[i].SpeedTPS = c.GPUSpeeds[i]
+			}
 		}
 		hw.GPUVendor, hw.GPUs, hw.VRAMMB, hw.GPUName = "nvidia", gpus, total, c.Name
 		hw.CudaMajor, hw.CudaMinor = c.CudaMajor, c.CudaMinor

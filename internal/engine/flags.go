@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -280,6 +281,86 @@ func MTPArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin stri
 		}
 	}
 	return args
+}
+
+// SplitMeasured reports whether every detected GPU carries a measured solo
+// decode speed -- the precondition for the bandwidth-weighted tensor split.
+func SplitMeasured(hw platform.Hardware) bool {
+	if len(hw.GPUs) < 2 {
+		return false
+	}
+	for _, g := range hw.GPUs {
+		if g.SpeedTPS <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// TensorSplitArgs returns an explicit --tensor-split for a forced-full-GPU
+// multi-GPU load -- nil when it doesn't apply (single GPU, unmeasured or
+// unprobed cards, or budgets that can't hold the footprint; the engine default
+// then stands). The pinned -ngl aborts the engine's own device fit, so
+// placement falls to the free-VRAM-ratio default, which BALANCES the cards --
+// but decode on a layer split is ADDITIVE (t = sum of bytes_i / bandwidth_i),
+// so the optimum packs the FASTEST card to its budget and hands the slow card
+// only the remainder. Measured on a 5070Ti+3060 pair (460 vs 210 tok/s solo):
+// the balanced default left ~2.5 GB of the fast card idle while the slow card
+// gated every token. The placement gate still verifies the result; a bad
+// split steps down exactly like any failed rung.
+func TensorSplitArgs(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB, ctx int, cacheType string) []string {
+	n := len(hw.GPUs)
+	if n < 2 || modelMB <= 0 || ctx <= 0 || cfg.Performance.NoTensorSplit || !SplitMeasured(hw) {
+		return nil
+	}
+	totalFree := 0
+	for _, g := range hw.GPUs {
+		if g.FreeMB <= 0 {
+			return nil
+		}
+		totalFree += g.FreeMB
+	}
+	kvMB := 0
+	if f := kvCtxFactor(cacheType, cfg.Performance.FlashAttn); f > 0 {
+		kvMB = ctx / f
+	}
+	footprint := float64(modelMB + kvMB + mtpReserveMB(cfg, modelPath))
+	totalReserve := gpuReserveMB(hw, modelMB)
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool { return hw.GPUs[order[a]].SpeedTPS > hw.GPUs[order[b]].SpeedTPS })
+	fracs := make([]float64, n)
+	left := footprint
+	for _, i := range order {
+		// Per-card margin: this card's share of the calibrated reserve (compute
+		// buffers grow with the layers it hosts) plus a hard 1 GB floor -- the
+		// first cut packed the fast card to ~300 MB of slack and a load that
+		// fit under the balanced default OOM'd under the "optimal" split.
+		reserve := totalReserve * hw.GPUs[i].FreeMB / totalFree
+		if reserve < 1024 {
+			reserve = 1024
+		}
+		b := float64(hw.GPUs[i].FreeMB - reserve)
+		if b < 0 {
+			b = 0
+		}
+		take := b
+		if take > left {
+			take = left
+		}
+		fracs[i] = take
+		left -= take
+	}
+	if left > 0.5 {
+		return nil // footprint exceeds the budgets -> ladder/default handles it
+	}
+	parts := make([]string, n)
+	for i, f := range fracs {
+		parts[i] = strconv.FormatFloat(f/footprint, 'f', 3, 64)
+	}
+	return []string{"--tensor-split", strings.Join(parts, ",")}
 }
 
 // NextLadderRung is the smallest standard context rung strictly above ctx, capped
@@ -625,6 +706,9 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	modelMB := FileMB(modelPath)
 	expertsOff := WillOffloadExperts(cfg, hw, modelPath)
 	ngl := GpuLayers(cfg, hw)
+	if ctx <= 0 {
+		ctx = ResolveContext(cfg, hw, modelPath, modelMB, expertsOff)
+	}
 	// GPU placement policy, head-first:
 	//  - MoE expert offload: all layers on the GPU (-ngl 99), expert weights in RAM,
 	//    so a MoE bigger than VRAM still runs fast (only activations cross PCIe).
@@ -633,7 +717,10 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	//    for a window the resident set can't hold.
 	//  - Explicit gpu_layers: the user's number wins.
 	//  - Model fully fits VRAM: force -ngl 99 so the engine's conservative device
-	//    fit can't spill a layer to the CPU (the CPU belongs to the team workers).
+	//    fit can't spill a layer to the CPU (the CPU belongs to the team workers) --
+	//    and on measured multi-GPU machines, place the layers by BANDWIDTH, not
+	//    balance (TensorSplitArgs): the pinned -ngl already forfeited the engine's
+	//    own fit, and the free-ratio default leaves the fast card idle.
 	//  - Otherwise (partial fit, dense): omit -ngl and let the engine fit layers.
 	switch cpuMoe := resolveCPUMoE(cfg, hw, modelPath, modelMB, ngl); {
 	case cpuMoe == "all":
@@ -646,10 +733,7 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		args = append(args, "-ngl", strconv.Itoa(ngl))
 	case fullyFitsGPU(cfg, hw, modelPath, modelMB):
 		args = append(args, "-ngl", "99")
-	}
-
-	if ctx <= 0 {
-		ctx = ResolveContext(cfg, hw, modelPath, modelMB, expertsOff)
+		args = append(args, TensorSplitArgs(cfg, hw, modelPath, modelMB, ctx, EffectiveCacheType(cfg, hw, modelPath, modelMB, expertsOff))...)
 	}
 	args = append(args, "-c", strconv.Itoa(ctx))
 

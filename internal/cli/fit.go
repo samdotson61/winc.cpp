@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"winc/internal/catalog"
 	"winc/internal/config"
 	"winc/internal/engine"
 	"winc/internal/paths"
@@ -71,7 +72,29 @@ func waitVRAMFree(neededMB int, timeout time.Duration) {
 // with the context or cache type PINNED for the attempt (those pins are still
 // winc-chosen sizing, not user settings, and skipping the gate for them is what
 // let a sysmem-paged 98304 probe rung get recorded as measured-good).
+//
+// A failure under the bandwidth-weighted tensor split is retried ONCE under the
+// engine's default placement before it counts: the split is an optimization and
+// must never cost a rung (observed live: a window that fit under the balanced
+// default OOM'd under the packed split, and the launch fell through to a spill
+// it didn't need).
 func tryContextOnce(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, ctx int, noMTP, lastResort, gated bool) *server.Proc {
+	proc := tryContextAttempt(cfg, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP, lastResort, gated)
+	if proc != nil || cfg.Performance.NoTensorSplit {
+		return proc
+	}
+	mb := engine.FileMB(modelPath)
+	ct := engine.EffectiveCacheType(cfg, hw, modelPath, mb, engine.WillOffloadExperts(cfg, hw, modelPath))
+	if !engine.ForcedFullGPU(cfg, hw, modelPath) || engine.TensorSplitArgs(cfg, hw, modelPath, mb, ctx, ct) == nil {
+		return nil // no split was in play -- the failure is real
+	}
+	ui.Dim("the %d-token window failed under the bandwidth split - retrying with the engine's default placement...", ctx)
+	ns := *cfg
+	ns.Performance.NoTensorSplit = true
+	return tryContextAttempt(&ns, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP, lastResort, gated)
+}
+
+func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, ctx int, noMTP, lastResort, gated bool) *server.Proc {
 	waitVRAMFree(engine.FileMB(modelPath)+2048, 20*time.Second)
 	// The gate covers exactly the loads where winc pins -ngl 99 because the model
 	// SHOULD fit: those are the ones the driver can silently satisfy from shared
@@ -284,6 +307,59 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 	}
 }
 
+// ensureGPUSpeeds measures each card's SOLO decode speed once per machine --
+// the bandwidth weights for the multi-GPU tensor split -- by loading the small
+// probe model entirely on one card at a time (a near-pure memory-bandwidth
+// measurement) and benching decode. Cached in .winc-hw forever after. Needs
+// the team's 0.8B default model and the engine; quietly skipped when either is
+// missing or on single-GPU machines -- the split then stays on the engine
+// default.
+func ensureGPUSpeeds(cfg *config.Config, cat *catalog.Catalog, hw *platform.Hardware) {
+	if len(hw.GPUs) < 2 || engine.SplitMeasured(*hw) {
+		return
+	}
+	bin := engine.LlamaServerPath()
+	if bin == "" {
+		return
+	}
+	probeModel, _ := downloadedPath(cfg, cat, "qwen3.5-0.8b")
+	if probeModel == "" {
+		return
+	}
+	ui.Info("measuring per-GPU decode speed (once per machine, ~15s per card)...")
+	speeds := make([]float64, len(hw.GPUs))
+	for i := range hw.GPUs {
+		speeds[i] = soloDecodeTPS(bin, probeModel, i)
+		if speeds[i] <= 0 {
+			ui.Dim("GPU %d probe failed - keeping the engine's default split", i)
+			return
+		}
+		ui.Dim("GPU %d (%s): ~%.0f tok/s solo", i, hw.GPUs[i].Name, speeds[i])
+	}
+	platform.SaveGPUSpeeds(hw, speeds)
+	ui.Good("per-GPU speeds measured - multi-GPU loads now pack the fastest card first")
+}
+
+// soloDecodeTPS loads the probe model entirely on one GPU and measures decode.
+func soloDecodeTPS(bin, modelPath string, gpu int) float64 {
+	port := freePort()
+	if port == 0 {
+		return 0
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+	args := []string{"-m", modelPath, "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+		"-c", "4096", "-ngl", "99", "-sm", "none", "-mg", strconv.Itoa(gpu), "--flash-attn", "on", "--jinja"}
+	proc, err := server.Start(bin, args, filepath.Join(paths.InstallDir(), "winc-gpuprobe.log"))
+	if err != nil {
+		return 0
+	}
+	defer proc.Stop()
+	if !server.WaitReady(url, "/health", 60*time.Second, proc.Dead) {
+		return 0
+	}
+	return benchDecodeSmall(url)
+}
+
 // Launch placements, recorded in the memo so replays load the same way:
 // plGPU = fully resident (forced -ngl 99, gate-verified); plNoMTP = fully
 // resident with the MTP draft dropped to afford the window; plSpill = engine
@@ -310,10 +386,26 @@ func ensureBottomTarget(cfg *config.Config, hw platform.Hardware, modelPath, bin
 		return proc, ctx, plGPU
 	}
 	stopped := false
-	if len(engine.MTPArgs(cfg, hw, modelPath, bin)) > 0 {
-		ui.Info("settled at %d - below the %d-token bottom target; trying the bottom without the MTP draft (frees its context + buffers, costs the speculative speedup)...", ctx, engine.BottomCtxTokens)
+	// Stage 0, measured multi-GPU only: the bottom may fit WITH the MTP draft
+	// under the bandwidth-weighted split -- the balanced default failed it by
+	// overflowing ONE card, not by total. One gated attempt settles it.
+	if engine.SplitMeasured(hw) && len(engine.MTPArgs(cfg, hw, modelPath, bin)) > 0 {
+		ui.Info("settled at %d - below the %d-token bottom target; trying the bottom WITH the MTP draft under the measured split...", ctx, engine.BottomCtxTokens)
 		proc.Stop()
 		stopped = true
+		if p2 := tryContextOnce(cfg, hw, modelPath, bin, port, serverURL, logPath, engine.BottomCtxTokens, false, false, true); p2 != nil {
+			ui.Good("bottom target reached fully on GPU, MTP kept: %d tokens", engine.BottomCtxTokens)
+			return p2, engine.BottomCtxTokens, plGPU
+		}
+	}
+	if len(engine.MTPArgs(cfg, hw, modelPath, bin)) > 0 {
+		if !stopped {
+			ui.Info("settled at %d - below the %d-token bottom target; trying the bottom without the MTP draft (frees its context + buffers, costs the speculative speedup)...", ctx, engine.BottomCtxTokens)
+			proc.Stop()
+			stopped = true
+		} else {
+			ui.Info("retrying the bottom target without the MTP draft (frees its context + buffers, costs the speculative speedup)...")
+		}
 		nm := *cfg
 		nm.Performance.Mtp = "off" // also zeroes the sizing allowance + the fit-oracle's draft margin
 		if p2 := tryContextOnce(&nm, hw, modelPath, bin, port, serverURL, logPath, engine.BottomCtxTokens, false, false, true); p2 != nil {
@@ -443,11 +535,20 @@ func verifyOnGPU(serverURL, modelPath string, ctx, preFreeMB int, lastResort boo
 		sick = fmt.Sprintf("dedicated VRAM use rose by less than half the model's %d MB", mb)
 	} else {
 		pp, gen, measured, slow := benchServer(serverURL)
+		if !measured && !slow {
+			// A fresh server occasionally drops the first request right after
+			// /health goes green (observed live as silent unverified accepts).
+			// One settled retry keeps the verification rate near 100%.
+			time.Sleep(2 * time.Second)
+			pp, gen, measured, slow = benchServer(serverURL)
+		}
 		lastBench = benchResult{pp: pp, gen: gen, measured: measured}
 		if slow || (measured && pp < ppHealthyFloor) {
 			sick = fmt.Sprintf("prompt processing measured ~%.0f tok/s (GPU-resident is %d+)", pp, ppHealthyFloor)
 		} else if measured {
 			ui.Dim("placement check: prompt ~%.0f tok/s at %d tokens - GPU-resident", pp, ctx)
+		} else {
+			ui.Dim("placement check at %d tokens: bench unavailable - accepted unverified", ctx)
 		}
 	}
 	if sick == "" {
@@ -714,22 +815,38 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		if !rungWorthTrying(&q4, hw, modelPath, next, 1, false) {
 			break
 		}
+		// Stop the current best BEFORE attempting the next rung: two near-full
+		// loads resident at once overcommit both (the doomed attempt "loads"
+		// into shared system memory instead of failing fast, measures sick, and
+		// the concurrent pressure can take the GOOD server down with it --
+		// observed live: the kept server died orphaned while the rejected rung
+		// owned its port). A failed attempt reloads the best rung below.
+		if bestProc != nil {
+			bestProc.Stop()
+			bestProc = nil
+		}
 		p2 := tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, next, false, false, gated)
 		if p2 == nil {
 			break
-		}
-		if bestProc != nil {
-			bestProc.Stop()
 		}
 		bestProc, best = p2, next
 		if best >= target {
 			break
 		}
 	}
-	if bestProc != nil {
+	if best > ctx {
 		memo[key] = best
 		saveKVProbe(memo)
 		cfg.Performance.CacheType = starvedKV
+		if bestProc == nil {
+			// The climb gained rungs but its last attempt failed after the best
+			// server was stopped -- reload the best rung (last resort: it passed
+			// the gate moments ago).
+			if bestProc = tryContextOnce(&q4, hw, modelPath, bin, port, serverURL, logPath, best, false, true, gated); bestProc == nil {
+				ui.Err("engine did not come back after the KV-cache probe; see %s", logPath)
+				return nil, 0
+			}
+		}
 		ui.Good("%s KV cache widened the context: %d -> %d tokens", starvedKV, ctx, best)
 		return bestProc, best
 	}

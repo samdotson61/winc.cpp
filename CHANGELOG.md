@@ -3,6 +3,56 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.20.0 — 2026-06-11
+
+Multi-GPU decode packs the fast card first.
+
+### Added
+- Bandwidth-weighted tensor split: on multi-GPU machines, forced-full-GPU
+  loads now pass an explicit --tensor-split that packs the FASTEST card to its
+  budget instead of balancing the cards. Decode on a layer split is ADDITIVE
+  per card (t = sum of bytes_i / bandwidth_i), and the engine's free-ratio
+  default -- which is all a pinned -ngl gets, since the pin aborts the
+  engine's own device fit -- left measured gigabytes of the fast card idle
+  while the slow card gated every token (a 5070Ti+3060 pair measures 460 vs
+  210 tok/s solo: 2.19x). Per-card speeds are MEASURED, not assumed: the small
+  probe model is loaded entirely on each card once (-sm none -mg N, ~15s per
+  card, a near-pure memory-bandwidth probe) and the result is cached in
+  .winc-hw forever. No probe model / single GPU / unmeasured cards -> the
+  engine default stands. The placement gate verifies every split load; a bad
+  split steps down like any failed rung. (This retires the v1.6.0 "never pass
+  --tensor-split" rule for pinned loads -- the engine fit it protected is
+  already aborted there, and the gate now catches what that rule guarded
+  against.)
+- Bottom-target stage 0: with a measured split, the launcher first retries the
+  bottom window WITH the MTP draft before sacrificing it -- the balanced
+  default failed those loads by overflowing ONE card, not by total.
+
+### Fixed
+- The KV-upgrade probe attempted the next rung while the current best server
+  was STILL RESIDENT, betting on a fast OOM to break the climb. The placement
+  gate turned that bet toxic: with both near-full loads resident, the doomed
+  attempt "loads" into shared system memory instead of failing, measures sick
+  -- and the concurrent pressure can take the GOOD server down with it
+  (observed live: the accepted rung died orphaned while the rejected one owned
+  its port, and the final report carried the dead attempt's numbers). The
+  climb now stops the best server BEFORE each attempt and reloads the best
+  rung when an attempt fails -- every rung gets a clean solo verdict, and the
+  report/memo numbers always belong to the server that actually serves.
+- The first split cut left only ~300 MB of slack on the packed card, and CUDA's
+  per-card compute buffers don't shrink with the split -- a no-MTP load that fit
+  UNSPLIT was OOM'd by the split itself, costing the resident rung and falling
+  through to engine spill (strictly worse). Each card now keeps a margin of
+  max(1 GB, its proportional share of the total reserve), and the split is
+  never load-bearing: any failed or gate-rejected split load is retried once
+  with the engine's default placement before the rung is declared dead, so the
+  split can only ever IMPROVE an outcome, not take one away.
+- The placement gate's bench probe occasionally came back empty on a healthy
+  just-ready server and the rung was "accepted unverified" -- skipping the very
+  residency check the gate exists for. An empty first bench (not a slow one)
+  now pauses 2s and retries once before giving up; a measured pass prints the
+  number it saw.
+
 ## v1.19.0 — 2026-06-11
 
 One universal sizing policy, a pooled KV cache, and no more half answers.
