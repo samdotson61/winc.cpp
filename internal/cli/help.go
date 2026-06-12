@@ -25,6 +25,7 @@ func usage() {
 	ui.Say("  winc -c | check                 check for updates")
 	ui.Say("  winc -u | update                update winc + engine + catalog; reconcile winc.toml")
 	ui.Say("  winc -n | uninstall [-y]        remove installed components")
+	ui.Say("  winc -v | version               show winc version")
 	ui.Say("  winc help                       this help")
 	ui.Say("")
 	ui.Say("  All settings live in one file: winc.toml")

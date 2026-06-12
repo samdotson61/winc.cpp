@@ -3,6 +3,13 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.21.1 — 2026-06-12
+
+### Fixed
+- `winc -v` / `--version` have dispatched to `winc version` since v1.0.0 but
+  were never listed in the help text, so the aliases were undiscoverable.
+  `winc help` now shows them.
+
 ## v1.21.0 — 2026-06-12
 
 Dense models that can't afford their window now spill ONLY feed-forward
