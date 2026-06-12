@@ -3,11 +3,13 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
-## 1.21.1-jobdar.1 — 2026-06-12 (winc-jobdar branch)
+## 1.21.2-jobdar.1 — 2026-06-12 (winc-jobdar branch)
 
 The jobdar evaluation profile. This branch carries jobdar-specific stability
 work on top of master releases; it is built from the branch, never tagged as
-a master release.
+a master release. First released as 1.21.1-jobdar.1; rebased onto v1.21.2,
+which upstreamed this branch's two fixes (template-level reasoning off, the
+branch self-update guard).
 
 ### Added
 - `winc serve --eval [model]` — the jobdar inference profile. Every knob is a
@@ -31,16 +33,18 @@ a master release.
     concurrency as-is (measured: 3 concurrent evals at 118 tok/s aggregate
     where a single stream runs ~98).
 
+## v1.21.2 — 2026-06-12
+
 ### Fixed
 - `reasoning = off` (and the `--reasoning off` CLI flag) now emits the
   engine's template-level `--reasoning off` instead of `--reasoning-budget 0`.
   Measured on Qwen3.5 (2B and 4B): budget-0 still routes every generated
   token into the thinking channel -- the client receives EMPTY content with
   max_tokens fully spent. Template-level off answers in content at full speed.
-- `winc update` on a winc-jobdar branch build no longer offers the prebuilt
-  self-update: replacing the binary with a master release would silently drop
-  the jobdar profile. Engine + catalog refresh still run; branch users update
-  from the branch.
+- `winc update` refuses the prebuilt self-update on winc-jobdar branch builds
+  (versions containing "jobdar"): replacing the binary with a master release
+  would silently drop the branch's stability profile. Engine + catalog refresh
+  still run; branch users update from the branch.
 
 ## v1.21.1 — 2026-06-12
 
