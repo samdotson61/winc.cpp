@@ -861,7 +861,12 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	// winc-router cap the budget per request.
 	switch cfg.Reasoning.Mode {
 	case "off":
-		args = append(args, "--reasoning-budget", "0")
+		// Template-level disable, NOT --reasoning-budget 0: measured on Qwen3.5
+		// (2B/4B), budget-0 still routes every generated token into the thinking
+		// channel -- the content comes back EMPTY with the whole max_tokens spent.
+		// --reasoning off renders the template without a thinking turn and the
+		// answer arrives in content, full speed.
+		args = append(args, "--reasoning", "off")
 	case "on":
 		args = append(args, "--reasoning", "on")
 	case "fixed":

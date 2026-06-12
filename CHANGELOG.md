@@ -3,6 +3,19 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.21.2 — 2026-06-12
+
+### Fixed
+- `reasoning = off` (and the `--reasoning off` CLI flag) now emits the
+  engine's template-level `--reasoning off` instead of `--reasoning-budget 0`.
+  Measured on Qwen3.5 (2B and 4B): budget-0 still routes every generated
+  token into the thinking channel -- the client receives EMPTY content with
+  max_tokens fully spent. Template-level off answers in content at full speed.
+- `winc update` refuses the prebuilt self-update on winc-jobdar branch builds
+  (versions containing "jobdar"): replacing the binary with a master release
+  would silently drop the branch's stability profile. Engine + catalog refresh
+  still run; branch users update from the branch.
+
 ## v1.21.1 — 2026-06-12
 
 ### Fixed

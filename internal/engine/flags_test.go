@@ -59,7 +59,9 @@ func TestServerArgsCPUNoOffload(t *testing.T) {
 func TestServerArgsReasoningModes(t *testing.T) {
 	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16000}
 	for mode, want := range map[string]string{
-		"off":   "--reasoning-budget 0",
+		// off = template-level disable; --reasoning-budget 0 measured BROKEN on
+		// Qwen3.5 (content empty, budget spent in the thinking channel).
+		"off":   "--reasoning off",
 		"on":    "--reasoning on",
 		"fixed": "--reasoning-budget 2048",
 	} {
