@@ -3,6 +3,34 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.3-jobdar.4 — 2026-06-13 (winc-jobdar branch)
+
+Structured-output enablement for jobdar evals (the winc.cpp side of the
+2026-06-13 eval-improvement study).
+
+### Added
+- The eval profile advertises a **guaranteed-JSON path**: jobdar can constrain
+  eval output to a schema by sending `response_format: {type: json_schema}` to
+  the OpenAI-compatible `/v1/chat/completions` endpoint. Measured: the shipped
+  llama-server honors it (valid, conformant JSON even from a prose-eliciting
+  prompt), which is the structural guarantee the study's grammar test called
+  for. Other jobdar calls stay on `/v1/messages`.
+
+### Fixed / hardened
+- **Locked the `response_format` pass-through with a regression test.** The
+  router parses every chat request into a map and re-encodes it on rewrite; the
+  test proves `response_format` survives BOTH paths (pass-through when reasoning
+  is off, and the full re-marshal when adaptive thinking is injected) on
+  `/v1/chat/completions`. Without this, a future router change could silently
+  strip the schema and break jobdar's guaranteed-JSON evals.
+
+### Notes
+- Eval-model escalation (study's "fast model, escalate borderline to the 4B")
+  is already supported: `winc serve --eval <model>` takes a named model, so a
+  second instance can serve Qwen-4B on another port. On a multi-GPU box both
+  instances currently pin the biggest card (the eval single-GPU pin); a future
+  per-instance GPU override would let them split across cards.
+
 ## 1.21.3-jobdar.3 — 2026-06-13 (winc-jobdar branch)
 
 ### Changed

@@ -83,6 +83,37 @@ func TestRouterInjectsBudget(t *testing.T) {
 	}
 }
 
+// The router must pass `response_format` (json_schema) through to the upstream
+// untouched -- the jobdar eval profile's structured-output contract: jobdar
+// constrains eval JSON to a schema on /v1/chat/completions, and that constraint
+// is meaningless if the router drops it. Covers BOTH router code paths: the
+// pass-through (reasoning off -> no rewrite) and the re-encode (adaptive ->
+// thinking injected -> the whole preq map is re-marshalled).
+func TestResponseFormatPassthrough(t *testing.T) {
+	const rf = `"response_format":{"type":"json_schema","json_schema":{"name":"eval","schema":{"type":"object","properties":{"verdict":{"type":"string"}}}}}`
+
+	// (a) eval-representative: reasoning off, a trivial body (no re-encode forced).
+	off := config.Defaults()
+	off.Reasoning.Mode = "off"
+	m := roundtrip(t, &off, "/v1/chat/completions",
+		`{"messages":[{"role":"user","content":"score this"}],`+rf+`}`)
+	if _, ok := m["response_format"]; !ok {
+		t.Fatalf("response_format stripped on the pass-through path: %v", m)
+	}
+
+	// (b) adaptive + a complex prompt forces the re-encode (thinking injected);
+	// the schema must survive the full re-marshal.
+	ad := config.Defaults()
+	m2 := roundtrip(t, &ad, "/v1/chat/completions",
+		`{"messages":[{"role":"user","content":"write a detailed multi-step analysis of distributed systems tradeoffs"}],`+rf+`}`)
+	if _, ok := m2["thinking"]; !ok {
+		t.Fatalf("expected the complex prompt to force a re-encode (thinking injected): %v", m2)
+	}
+	if _, ok := m2["response_format"]; !ok {
+		t.Fatalf("response_format dropped when the router re-encoded the request: %v", m2)
+	}
+}
+
 func TestRouterBadUpstreamReturns502(t *testing.T) {
 	cfg := config.Defaults()
 	rt, err := Start(&cfg, "http://127.0.0.1:1", 0, "") // nothing listening -> dial fails

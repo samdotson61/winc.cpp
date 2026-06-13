@@ -160,6 +160,10 @@ func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
 	signal.Notify(sig, os.Interrupt)
 	ui.Good("ready - jobdar inference_url: %s  (Anthropic /v1/messages)", r.BaseURL())
 	ui.Info("model %s at %d-token window - Ctrl-C to stop", alias, loadedCtx)
+	// Structured-output path: jobdar can guarantee valid eval JSON by sending
+	// response_format=json_schema to the OpenAI-compatible endpoint (verified to
+	// pass through the router to the engine). Other calls stay on /v1/messages.
+	ui.Dim("guaranteed-JSON evals: POST %s/v1/chat/completions with response_format=json_schema", r.BaseURL())
 	<-sig
 	ui.Say("stopping...")
 	return 0
