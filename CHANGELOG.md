@@ -3,6 +3,17 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.21.3 — 2026-06-13
+
+### Added
+- Catalog: `qwen3.5-2b-q8` (Qwen3.5-2B Q8_0, ~1.9 GB). The 2B previously had
+  only a Q4_K_M entry while the 4B carried both Q4 and Q8 rungs; this restores
+  the symmetry and gives the nano tier a finer low-end step -- near-lossless 2B
+  quality at ~1.9 GB, between the Q4 2B (1.2 GB) and the Q4 4B (2.6 GB), so a
+  3-4 GB card can trade up in quality without jumping model size. (`winc
+  update` refreshes the catalog for prebuilt installs; the runtime catalog is
+  fetched from master, so this is live for all branches' installs.)
+
 ## v1.21.2 — 2026-06-12
 
 ### Fixed
