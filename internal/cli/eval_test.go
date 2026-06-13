@@ -37,8 +37,9 @@ func TestApplyEvalProfileServerArgs(t *testing.T) {
 	}
 }
 
-// Tier auto-pick: >=6GB-class prefers the 4B (judgment), below prefers the 2B
-// (speed/fit); a missing preferred model falls back to the downloaded other.
+// Tier auto-pick: low end leads with gemma4-e2b (the measured-best sub-3GB eval
+// judge), 5GB+ leads with the Qwen 4B anchor; each falls back through its
+// tier-ordered preference to whatever is downloaded.
 func TestEvalPickModel(t *testing.T) {
 	t.Setenv("WINC_HOME", t.TempDir())
 	dir := t.TempDir()
@@ -68,20 +69,33 @@ func TestEvalPickModel(t *testing.T) {
 	if p, _ := evalPickModel(&cfg, cat, small); p != "" {
 		t.Fatalf("no models downloaded should pick nothing, got %s", p)
 	}
-	// Only the 4B downloaded -> small hardware still uses it (fallback).
+	// Only the 4B downloaded -> used at every tier (last-resort fallback).
 	p4 := mk("qwen3.5-4b")
 	if p, _ := evalPickModel(&cfg, cat, small); p != p4 {
 		t.Fatalf("small hw with only 4B downloaded should fall back to it, got %s", p)
 	}
-	// Both downloaded -> small picks 2B, big picks 4B.
+	if p, _ := evalPickModel(&cfg, cat, big); p != p4 {
+		t.Fatalf("big hw with only 4B should use it, got %s", p)
+	}
+	// Add the 2B -> low end now prefers the 2B over the 4B (gemma still absent);
+	// high end keeps the 4B anchor.
 	p2 := mk("qwen3.5-2b")
 	if p, _ := evalPickModel(&cfg, cat, small); p != p2 {
-		t.Fatalf("small hw should prefer the 2B, got %s", p)
+		t.Fatalf("small hw without gemma should fall back to the 2B, got %s", p)
 	}
 	if p, _ := evalPickModel(&cfg, cat, big); p != p4 {
-		t.Fatalf("big hw should prefer the 4B, got %s", p)
+		t.Fatalf("big hw should keep the 4B, got %s", p)
+	}
+	// Add gemma4-e2b -> it becomes the low-end default (12/12 head-to-head winner);
+	// 5 GB+ still takes the Qwen 4B anchor.
+	pg := mk("gemma4-e2b")
+	if p, _ := evalPickModel(&cfg, cat, small); p != pg {
+		t.Fatalf("small hw should now default to gemma4-e2b, got %s", p)
 	}
 	if p, _ := evalPickModel(&cfg, cat, fiveGB); p != p4 {
-		t.Fatalf("5 GB-class hw should now prefer the 4B (dropped threshold), got %s", p)
+		t.Fatalf("5 GB-class hw should take the 4B anchor, got %s", p)
+	}
+	if p, _ := evalPickModel(&cfg, cat, big); p != p4 {
+		t.Fatalf("big hw should take the 4B anchor, got %s", p)
 	}
 }

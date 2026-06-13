@@ -51,33 +51,43 @@ func applyEvalProfile(cfg *config.Config) {
 }
 
 // evalEvalThresholdMB is the VRAM at/above which the eval profile prefers the
-// 4B over the 2B. The 4B is the measured eval anchor (6/6 on the policy-boundary
-// set incl. both the senior and mid-level rejection traps, vs the 2B's 5/6) and
-// at the 16384 eval window it occupies a MEASURED 3.3 GB fully resident -- so a
-// 5 GB-class card hosts it with ~1 GB to spare. Set to 5 GB (not 6): the extra
-// GB of cards now get the better judge. Below it the 2B-Q4 stays (143 tok/s on a
-// 12 GB-class card, ~40 on a desktop CPU; ~1.6 GB resident) -- the right call for
-// 4 GB laptops where the 4B's 3.3 GB is too tight against desktop overhead.
+// Qwen 4B over the low-end default. The 4B is the measured eval anchor (12/12 on
+// the 12-posting policy-boundary set) and at the 16384 eval window it occupies a
+// MEASURED 3.3 GB fully resident -- so a 5 GB-class card hosts it with ~1 GB to
+// spare. Set to 5 GB so the extra GB of cards get it; below it the low-end
+// default leads, the right call for 4 GB laptops where the 4B's 3.3 GB is too
+// tight against desktop overhead.
 const evalEvalThresholdMB = 5120
 
-// evalPickModel chooses the measured-best eval model this hardware affords.
-// Prefers the downloaded one; falls back to the other; else prints the exact
-// download command. (Deliberately ignores qwen3.5-2b-q8: benchmarked SLOWER and
-// LESS accurate than the 2B-Q4 for evals -- it is a manual-only fidelity option.)
+// evalPickModel chooses the measured-best eval model this hardware affords, by
+// tier-ordered preference (first downloaded wins).
+//
+// LOW END (< threshold): gemma4-e2b leads. Head-to-head on the 12-posting policy
+// set (identical conditions), gemma4-e2b scored 12/12 -- the ONLY sub-3 GB model
+// that rejects every senior/mid/manager trap -- at 108 tok/s and 1.75 GB, beating
+// the Qwen 2B-Q4 (10/12: it over-ACCEPTS senior and manager roles as entry, the
+// dangerous failure). The eval profile runs the draft OFF, so gemma's different
+// model family costs nothing here (there is no shared speculative draft to keep).
+// Qwen 2B-Q4 is the fallback; qwen3.5-2b-q8 is deliberately absent (benchmarked
+// slower AND less accurate than the Q4 -- a manual-only fidelity option).
+//
+// 5 GB+: the Qwen 4B anchor leads (also 12/12, the quality ceiling here), then
+// gemma4-e2b, then the 2B.
 func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware) (path, alias string) {
-	prefer, alt := "qwen3.5-2b", "qwen3.5-4b"
+	prefs := []string{"gemma4-e2b", "qwen3.5-2b", "qwen3.5-4b"}
 	if hw.VRAMMB >= evalEvalThresholdMB {
-		prefer, alt = alt, prefer
+		prefs = []string{"qwen3.5-4b", "gemma4-e2b", "qwen3.5-2b"}
 	}
-	if p, a := downloadedPath(cfg, cat, prefer); p != "" {
-		return p, a
-	}
-	if p, a := downloadedPath(cfg, cat, alt); p != "" {
-		ui.Dim("preferred eval model %s isn't downloaded - using %s", prefer, a)
-		return p, a
+	for i, alias := range prefs {
+		if p, a := downloadedPath(cfg, cat, alias); p != "" {
+			if i > 0 {
+				ui.Dim("preferred eval model %s isn't downloaded - using %s", prefs[0], a)
+			}
+			return p, a
+		}
 	}
 	ui.Err("no eval model downloaded")
-	ui.Info("get one with: winc -d %s   (or: winc -d %s)", prefer, alt)
+	ui.Info("get one with: winc -d %s   (or: winc -d %s)", prefs[0], prefs[1])
 	return "", ""
 }
 
@@ -95,6 +105,29 @@ func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
 		}
 	} else if modelPath, alias = evalPickModel(cfg, cat, hw); modelPath == "" {
 		return 1
+	}
+
+	// Eval models are small (<= ~5 GB) and always fit ONE card; splitting one
+	// across devices gains nothing and some architectures (gemma4) ABORT under
+	// the engine's multi-device scheduler (GGML_SCHED_MAX_SPLIT_INPUTS) -- the
+	// CUDA backend also enumerates each card as a Vulkan device, so an unpinned
+	// -ngl 99 tries to spread the model across CUDA0 + Vulkan0 + Vulkan1 and
+	// blows the split-input limit. Pin to the single biggest GPU with
+	// `-sm none -mg N` (split-mode none = main device only, backend-agnostic,
+	// the same lever winc's own GPU-speed probe uses) -- correct AND faster (no
+	// cross-PCIe). The model was already chosen against the FULL VRAM budget
+	// above; only the placement narrows here.
+	if len(hw.GPUs) > 1 {
+		best := 0
+		for i := range hw.GPUs {
+			if hw.GPUs[i].TotalMB > hw.GPUs[best].TotalMB {
+				best = i
+			}
+		}
+		ui.Dim("pinning the eval load to GPU %d (%s) - small models don't benefit from a multi-GPU split", best, hw.GPUs[best].Name)
+		cfg.Performance.ExtraServerArgs = append(cfg.Performance.ExtraServerArgs, "-sm", "none", "-mg", strconv.Itoa(best))
+		hw.GPUs = []platform.GPUDevice{hw.GPUs[best]}
+		hw.VRAMMB = hw.GPUs[0].TotalMB
 	}
 
 	llamaPort := freePort()

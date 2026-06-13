@@ -3,6 +3,30 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.3-jobdar.3 — 2026-06-13 (winc-jobdar branch)
+
+### Changed
+- Eval profile LOW-END default is now gemma4-e2b (was Qwen 2B-Q4). Head-to-head
+  on an identical 12-posting policy set (7 entry-true, 5 reject; same tightened
+  rubric, temp 0): gemma4-e2b scored 12/12 -- the ONLY sub-3 GB model that
+  rejects every senior/mid/manager trap -- at 108 tok/s and 1.75 GB, beating
+  the Qwen 2B-Q4 (10/12: it wrongly ACCEPTS senior-designer and engineering-
+  manager roles as entry, the dangerous over-acceptance failure). gemma ties
+  the Qwen 4B (also 12/12) at 38% more speed and half the VRAM. Since the eval
+  profile runs the draft OFF, gemma's different family costs nothing here.
+  Preference is now tier-ordered: low end -> [gemma4-e2b, qwen3.5-2b,
+  qwen3.5-4b]; 5 GB+ -> [qwen3.5-4b, gemma4-e2b, qwen3.5-2b].
+
+### Fixed
+- The eval profile now pins the load to a single GPU (`-sm none -mg N`, the
+  biggest card) on multi-GPU machines. Eval models are small (<= ~5 GB) and fit
+  one card; the CUDA backend also enumerates each card as a Vulkan device, so an
+  unpinned -ngl 99 tried to spread a model across CUDA0 + Vulkan0 + Vulkan1 and
+  some architectures (gemma4) ABORT under the engine's split-input limit
+  (GGML_SCHED_MAX_SPLIT_INPUTS). Pinning is also faster (no cross-PCIe). The
+  model is still chosen against the full multi-GPU VRAM budget; only the
+  placement narrows.
+
 ## 1.21.3-jobdar.2 — 2026-06-13 (winc-jobdar branch)
 
 ### Changed
