@@ -50,15 +50,23 @@ func applyEvalProfile(cfg *config.Config) {
 	cfg.Reasoning.Mode = "off"
 }
 
+// evalEvalThresholdMB is the VRAM at/above which the eval profile prefers the
+// 4B over the 2B. The 4B is the measured eval anchor (6/6 on the policy-boundary
+// set incl. both the senior and mid-level rejection traps, vs the 2B's 5/6) and
+// at the 16384 eval window it occupies a MEASURED 3.3 GB fully resident -- so a
+// 5 GB-class card hosts it with ~1 GB to spare. Set to 5 GB (not 6): the extra
+// GB of cards now get the better judge. Below it the 2B-Q4 stays (143 tok/s on a
+// 12 GB-class card, ~40 on a desktop CPU; ~1.6 GB resident) -- the right call for
+// 4 GB laptops where the 4B's 3.3 GB is too tight against desktop overhead.
+const evalEvalThresholdMB = 5120
+
 // evalPickModel chooses the measured-best eval model this hardware affords.
-// >= 6 GB-class VRAM prefers the 4B (noticeably better judgment: it catches
-// requirement mismatches the 2B softens); everything below -- small cards,
-// CPU-only -- prefers the 2B (143 tok/s on a 12 GB-class card, ~42 tok/s on a
-// desktop CPU; ~1.7 GB total VRAM). Prefers the downloaded one; falls back to
-// the other; otherwise prints the exact download command.
+// Prefers the downloaded one; falls back to the other; else prints the exact
+// download command. (Deliberately ignores qwen3.5-2b-q8: benchmarked SLOWER and
+// LESS accurate than the 2B-Q4 for evals -- it is a manual-only fidelity option.)
 func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware) (path, alias string) {
 	prefer, alt := "qwen3.5-2b", "qwen3.5-4b"
-	if hw.VRAMMB >= 6144 {
+	if hw.VRAMMB >= evalEvalThresholdMB {
 		prefer, alt = alt, prefer
 	}
 	if p, a := downloadedPath(cfg, cat, prefer); p != "" {

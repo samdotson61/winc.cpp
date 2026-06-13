@@ -59,6 +59,10 @@ func TestEvalPickModel(t *testing.T) {
 
 	small := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 4096, GPUs: []platform.GPUDevice{{TotalMB: 4096}}}
 	big := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16303, GPUs: []platform.GPUDevice{{TotalMB: 16303}}}
+	// A 5 GB-class card is now ABOVE the threshold -> the 4B (the eval anchor
+	// fits resident at 3.3 GB); under the old 6 GB cutoff it would have settled
+	// for the 2B.
+	fiveGB := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 5200, GPUs: []platform.GPUDevice{{TotalMB: 5200}}}
 
 	// Nothing downloaded -> "", with advice printed.
 	if p, _ := evalPickModel(&cfg, cat, small); p != "" {
@@ -76,5 +80,8 @@ func TestEvalPickModel(t *testing.T) {
 	}
 	if p, _ := evalPickModel(&cfg, cat, big); p != p4 {
 		t.Fatalf("big hw should prefer the 4B, got %s", p)
+	}
+	if p, _ := evalPickModel(&cfg, cat, fiveGB); p != p4 {
+		t.Fatalf("5 GB-class hw should now prefer the 4B (dropped threshold), got %s", p)
 	}
 }

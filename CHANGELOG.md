@@ -3,6 +3,21 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.3-jobdar.2 — 2026-06-13 (winc-jobdar branch)
+
+### Changed
+- Eval profile model auto-pick: the 2B/4B threshold drops from 6 GB to 5 GB
+  (`evalEvalThresholdMB`). The 4B is the measured eval anchor -- 6/6 on the
+  policy-boundary set (it alone rejects both the true-senior and mid-level-4-6yr
+  traps; the 2B is 5/6) -- and at the 16384 eval window it occupies a MEASURED
+  3.3 GB fully resident, so a 5 GB-class card hosts it with ~1 GB to spare.
+  Cards from 5 GB up now get the better judge; 4 GB laptops stay on the 2B-Q4
+  (the 4B's 3.3 GB is too tight there against desktop overhead).
+- Documented in code that the eval picker deliberately ignores `qwen3.5-2b-q8`:
+  benchmarked SLOWER (113 vs 143 tok/s) AND less accurate (4/6 vs 5/6 -- it
+  flipped the senior rejection) than the 2B-Q4 for evals; it stays a manual
+  fidelity option, never an auto-pick.
+
 ## 1.21.3-jobdar.1 — 2026-06-13 (winc-jobdar branch)
 
 The jobdar evaluation profile. This branch carries jobdar-specific stability
