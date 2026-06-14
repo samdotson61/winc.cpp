@@ -3,6 +3,24 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.4-jobdar.2 — 2026-06-14 (winc-jobdar branch)
+
+`winc serve --eval` self-bootstraps its model.
+
+### Changed
+- When no eval model is downloaded, `winc serve --eval` now offers the **same
+  confirm-and-download prompt as `winc setup`** — `Download recommended model <alias>
+  (<size>) for tier '<tier>'?` — instead of erroring out. It recommends the
+  eval-preference-order model for the detected hardware (gemma4-e2b on the low end,
+  the Qwen 4B anchor at 5 GB+), downloads it on confirm, then serves. So a fresh
+  install can go straight to `winc serve --eval` and Jobdar's local backend comes up
+  with one keystroke.
+
+### Internal
+- Extracted `evalPrefs(hw)` (the tier-ordered eval preference) and added
+  `promptDownloadEvalModel` (mirrors `winc setup`: `ui.Confirm` → `download.HFDownloadAs`).
+- New `TestEvalPrefs`; existing eval tests unchanged and green.
+
 ## 1.21.4-jobdar.1 — 2026-06-13 (winc-jobdar branch)
 
 Merges master **v1.21.4** into the jobdar stability branch: context-compaction

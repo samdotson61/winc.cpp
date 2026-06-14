@@ -9,6 +9,7 @@ import (
 
 	"winc/internal/catalog"
 	"winc/internal/config"
+	"winc/internal/download"
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
@@ -73,11 +74,18 @@ const evalEvalThresholdMB = 5120
 //
 // 5 GB+: the Qwen 4B anchor leads (also 12/12, the quality ceiling here), then
 // gemma4-e2b, then the 2B.
-func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware) (path, alias string) {
-	prefs := []string{"gemma4-e2b", "qwen3.5-2b", "qwen3.5-4b"}
+// evalPrefs is the eval-model preference order for this hardware (first downloaded
+// wins). The order flips at evalEvalThresholdMB per the note above: low-end leads
+// with gemma4-e2b, 5 GB+ leads with the Qwen 4B anchor.
+func evalPrefs(hw platform.Hardware) []string {
 	if hw.VRAMMB >= evalEvalThresholdMB {
-		prefs = []string{"qwen3.5-4b", "gemma4-e2b", "qwen3.5-2b"}
+		return []string{"qwen3.5-4b", "gemma4-e2b", "qwen3.5-2b"}
 	}
+	return []string{"gemma4-e2b", "qwen3.5-2b", "qwen3.5-4b"}
+}
+
+func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware) (path, alias string) {
+	prefs := evalPrefs(hw)
 	for i, alias := range prefs {
 		if p, a := downloadedPath(cfg, cat, alias); p != "" {
 			if i > 0 {
@@ -86,9 +94,38 @@ func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardwar
 			return p, a
 		}
 	}
-	ui.Err("no eval model downloaded")
-	ui.Info("get one with: winc -d %s   (or: winc -d %s)", prefs[0], prefs[1])
-	return "", ""
+	return "", "" // none downloaded — caller offers the recommended-download prompt
+}
+
+// promptDownloadEvalModel offers to fetch the recommended eval model for this
+// hardware when none is downloaded — the SAME confirm-and-download prompt
+// `winc setup` shows (recommendModel → ui.Confirm → HFDownload), scoped to the
+// eval preference order so a fresh `winc serve --eval` bootstraps itself instead
+// of erroring out. Returns ("","") if the model is unknown, the user declines, or
+// the download fails.
+func promptDownloadEvalModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware) (path, alias string) {
+	want := evalPrefs(hw)[0]
+	m := cat.Find(want)
+	if m == nil {
+		ui.Err("no eval model downloaded")
+		ui.Info("get one with: winc -d %s", want)
+		return "", ""
+	}
+	tier := catalog.VramTier(hw.MemoryBudgetMB())
+	if !ui.Confirm(fmt.Sprintf("Download recommended model %s (%s) for tier '%s'?", m.Alias, m.Size, tier), true) {
+		ui.Info("get one later with: winc -d %s", want)
+		return "", ""
+	}
+	saveAs := m.File
+	if m.Save != "" {
+		saveAs = m.Save
+	}
+	if _, err := download.HFDownloadAs(m.Repo, m.File, modelsDir(cfg), saveAs, cfg.HuggingFace.Token); err != nil {
+		ui.Err("model download failed: %v", err)
+		return "", ""
+	}
+	ui.Good("downloaded %s", m.Alias)
+	return downloadedPath(cfg, cat, want)
 }
 
 // cmdServeEval runs the eval profile until Ctrl-C.
@@ -104,7 +141,12 @@ func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
 			return 1
 		}
 	} else if modelPath, alias = evalPickModel(cfg, cat, hw); modelPath == "" {
-		return 1
+		// No eval model downloaded — offer to fetch the recommended one, the same
+		// confirm-and-download prompt `winc setup` uses, so a fresh `winc serve
+		// --eval` is self-bootstrapping instead of erroring out.
+		if modelPath, alias = promptDownloadEvalModel(cfg, cat, hw); modelPath == "" {
+			return 1
+		}
 	}
 
 	// Eval models are small (<= ~5 GB) and always fit ONE card; splitting one

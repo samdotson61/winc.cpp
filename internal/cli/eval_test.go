@@ -65,7 +65,7 @@ func TestEvalPickModel(t *testing.T) {
 	// for the 2B.
 	fiveGB := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 5200, GPUs: []platform.GPUDevice{{TotalMB: 5200}}}
 
-	// Nothing downloaded -> "", with advice printed.
+	// Nothing downloaded -> "" (silent; cmdServeEval then offers the download prompt).
 	if p, _ := evalPickModel(&cfg, cat, small); p != "" {
 		t.Fatalf("no models downloaded should pick nothing, got %s", p)
 	}
@@ -97,5 +97,18 @@ func TestEvalPickModel(t *testing.T) {
 	}
 	if p, _ := evalPickModel(&cfg, cat, big); p != p4 {
 		t.Fatalf("big hw should take the 4B anchor, got %s", p)
+	}
+}
+
+// evalPrefs flips its order at the VRAM threshold: low-end leads with gemma4-e2b,
+// 5 GB+ leads with the Qwen 4B anchor. promptDownloadEvalModel recommends prefs[0].
+func TestEvalPrefs(t *testing.T) {
+	low := evalPrefs(platform.Hardware{VRAMMB: 4096})
+	if len(low) == 0 || low[0] != "gemma4-e2b" {
+		t.Fatalf("low-end should lead with gemma4-e2b, got %v", low)
+	}
+	high := evalPrefs(platform.Hardware{VRAMMB: 8192})
+	if len(high) == 0 || high[0] != "qwen3.5-4b" {
+		t.Fatalf(">=5GB should lead with qwen3.5-4b, got %v", high)
 	}
 }
