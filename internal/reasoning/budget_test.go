@@ -45,6 +45,20 @@ func TestDecideCompaction(t *testing.T) {
 		t.Fatalf("compaction request must run think-free, got %+v", d)
 	}
 
+	// Claude Code appends an ASSISTANT PREFILL after the summarize instruction, so the
+	// instruction is the last USER message but NOT messages[n-1]. Detection must scan
+	// back past the prefill -- otherwise (the bug) the summary request keeps an adaptive
+	// thinking budget and a deep reasoner exhausts it inside <think>, returning an empty
+	// summary ("summarization produced empty response").
+	prefill := `{"messages":[` +
+		`{"role":"user","content":"` + hist + `"},` +
+		`{"role":"user","content":"Your task is to create a detailed summary of the conversation so far. Your summary should include the following sections."},` +
+		`{"role":"assistant","content":"<summary>"}` +
+		`]}`
+	if d := Decide(&cfg, []byte(prefill)); d.EnableThinking || d.BudgetTokens != 0 {
+		t.Fatalf("compaction with a trailing assistant prefill must run think-free, got %+v", d)
+	}
+
 	// The compaction SUMMARY's section headers persist in history -> a normal later
 	// turn must NOT be flagged as compaction (it should think normally).
 	later := `{"messages":[` +

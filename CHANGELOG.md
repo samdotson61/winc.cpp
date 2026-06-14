@@ -3,6 +3,22 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.21.4 — 2026-06-13
+
+### Fixed
+- Context-compaction summaries no longer come back empty on default-thinking-on
+  models (e.g. Qwen3.6). winc forces thinking off for a compaction request so the
+  model writes the summary instead of reasoning into the context wall -- but the
+  detector only inspected the final message when its role was `user`. Claude Code
+  appends an assistant prefill after the summarize instruction, so the instruction
+  is the last USER message yet not the last message: detection missed it, the
+  request kept an adaptive thinking budget, and a deep reasoner spent the whole
+  cap inside `<think>`, returning empty content ("summarization produced empty
+  response"). Qwen3.5 masked it -- it finished the summary within the budget;
+  Qwen3.6 reasons deeper and did not. `isCompaction` now scans back to the last
+  USER message (past any trailing assistant/tool prefill), and the probe gains a
+  `your summary should include` anchor. Verified end-to-end on Qwen3.6-27B.
+
 ## v1.21.3 — 2026-06-13
 
 ### Added
