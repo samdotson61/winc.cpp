@@ -3,6 +3,27 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.4-jobdar.3 — 2026-06-14 (winc-jobdar branch)
+
+Doc corrections + a measured low-end finding (no behavior change).
+
+### Docs / comments
+- Corrected two stale claims in the eval-picker comment, both from a fuller on-device
+  nano-model re-measure (M4 Pro, 16384 eval window, N=3):
+  - **gemma4-e2b is NOT "half the VRAM" of the 4B.** ~1.75 GB is its *weights*; its
+    *resident* footprint at the eval window is ~3 GiB, ≈ the Qwen 4B (the Matformer
+    stores ~4B weights, activates ~2B). e2b's real edge is **~2× speed at tied
+    accuracy**, not memory; the 5 GB+ flip to the 4B is for headroom, not e2b savings.
+  - **qwen3.5-2b-q8 is NOT "less accurate" than the Q4** — the re-measure found it
+    *more* accurate (89.5% vs 65% on the 8-JD set). It stays a manual option because
+    it is **bigger + slower**, not on accuracy.
+- Documented the eval profile's sampling gap: it inherits AGENT sampling
+  (`FamilySamplingArgs`, Qwen temp 0.7 / Gemma temp 1.0), which adds run-to-run band
+  noise to deterministic scoring. Measured fix on qwen3.5-2b (half the e2b footprint):
+  **temp 0 + guaranteed-JSON → 100% acc / 0 parse-fails / 0 dangerous accepts**;
+  neither lever works alone. Shipping needs a temp-0 pin here + jobdar JSON-schema
+  routing — deferred to a coordinated change.
+
 ## 1.21.4-jobdar.2 — 2026-06-14 (winc-jobdar branch)
 
 `winc serve --eval` self-bootstraps its model.

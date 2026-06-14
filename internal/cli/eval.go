@@ -43,6 +43,17 @@ import (
 const evalCtxTokens = 16384
 
 // applyEvalProfile pins the measured eval-profile knobs onto cfg.
+//
+// NOTE (nano-sweep, 2026-06-14): the profile still inherits each model's AGENT
+// sampling via FamilySamplingArgs (Qwen temp 0.7 / Gemma temp 1.0). For deterministic
+// SCORING that injects real band noise -- a 2B swings 65%→100% accuracy across runs at
+// temp 0.7. Measured low-end win on qwen3.5-2b (1.6 GiB, half the e2b footprint):
+// temp 0 + guaranteed-JSON (response_format=json_schema on /v1/chat/completions) →
+// 100% acc / 0 parse-fails / 0 dangerous accepts. The levers DON'T work alone: temp-0
+// on /v1/messages WORSENS parse-fails (12/24, the model deterministically derails out
+// of JSON), and JSON-alone at temp 0.7 is only 79% with 2 dangerous accepts. Shipping
+// this needs BOTH a temp-0 pin here AND jobdar routing evals through the JSON-schema
+// endpoint -- deferred pending that coordinated change.
 func applyEvalProfile(cfg *config.Config) {
 	cfg.Performance.Context = strconv.Itoa(evalCtxTokens)
 	cfg.Performance.CacheType = "q8_0"
@@ -65,12 +76,20 @@ const evalEvalThresholdMB = 5120
 //
 // LOW END (< threshold): gemma4-e2b leads. Head-to-head on the 12-posting policy
 // set (identical conditions), gemma4-e2b scored 12/12 -- the ONLY sub-3 GB model
-// that rejects every senior/mid/manager trap -- at 108 tok/s and 1.75 GB, beating
-// the Qwen 2B-Q4 (10/12: it over-ACCEPTS senior and manager roles as entry, the
-// dangerous failure). The eval profile runs the draft OFF, so gemma's different
-// model family costs nothing here (there is no shared speculative draft to keep).
-// Qwen 2B-Q4 is the fallback; qwen3.5-2b-q8 is deliberately absent (benchmarked
-// slower AND less accurate than the Q4 -- a manual-only fidelity option).
+// that rejects every senior/mid/manager trap -- at 108 tok/s, beating the Qwen
+// 2B-Q4 (10/12: it over-ACCEPTS senior and manager roles as entry, the dangerous
+// failure). The eval profile runs the draft OFF, so gemma's different model family
+// costs nothing here (there is no shared speculative draft to keep).
+//   NOTE (nano-sweep re-measure, 2026-06-14): ~1.75 GB is e2b's WEIGHTS, not its
+//   footprint -- at the 16384 eval window its RESIDENT memory is ~3 GiB, ≈ the 4B's
+//   (the Matformer stores ~4B weights, activates ~2B). So e2b's real edge over the
+//   4B is ~2x SPEED at tied accuracy, NOT "half the VRAM"; resident footprints are
+//   ~equal. The reason to flip to the 4B at 5 GB+ is headroom/quality ceiling, not
+//   memory savings from e2b.
+// Qwen 2B-Q4 is the fallback; qwen3.5-2b-q8 is deliberately absent -- it is bigger
+// and slower than the Q4. (The nano-sweep re-measure found 2B-Q8 MORE accurate than
+// 2B-Q4, 89.5% vs 65% on the 8-JD set, so it is excluded on footprint/speed, NOT on
+// accuracy: a manual fidelity option.)
 //
 // 5 GB+: the Qwen 4B anchor leads (also 12/12, the quality ceiling here), then
 // gemma4-e2b, then the 2B.
