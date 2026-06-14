@@ -74,11 +74,14 @@ func contentText(raw json.RawMessage) string {
 }
 
 // isCompaction reports whether this looks like Claude Code's context-compaction
-// request: the instruction to summarize the whole conversation. It checks only the
-// FINAL user message + system prompt (where the instruction lives), not the history
-// -- the resulting summary keeps the section HEADERS in context, so matching those
-// would wrongly flag every later turn. Summaries need no reasoning, and even a genuine
-// "summarize our conversation" ask is fine to run think-free, so this is safe.
+// request: the instruction to summarize the whole conversation. It checks the LAST
+// USER message + system prompt (where the instruction lives) -- scanning BACK past any
+// trailing assistant/tool turn, because Claude Code appends an assistant prefill after
+// the summarize instruction, so messages[n-1] is not the user instruction. It does NOT
+// scan the whole history: the resulting summary keeps the section HEADERS in context,
+// so matching those would wrongly flag every later turn. Summaries need no reasoning,
+// and even a genuine "summarize our conversation" ask is fine to run think-free, so a
+// last-user-message match is safe.
 func isCompaction(body []byte) bool {
 	var req struct {
 		System   json.RawMessage `json:"system"`
@@ -91,16 +94,21 @@ func isCompaction(body []byte) bool {
 		return false
 	}
 	var last json.RawMessage
-	if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == "user" {
-		last = req.Messages[n-1].Content
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			last = req.Messages[i].Content
+			break
+		}
 	}
 	return CompactionProbe(req.System, last)
 }
 
 // CompactionProbe is the compaction check over already-extracted fields: the
-// system prompt plus the FINAL message's content when that message is a user
-// message (nil otherwise). Lets the router reuse its single parse of the body
-// instead of re-decoding the whole transcript here.
+// system prompt plus the LAST USER message's content (the caller scans back past any
+// trailing assistant prefill). Lets the router reuse its single parse of the body
+// instead of re-decoding the whole transcript here. The anchors are stable phrases from
+// Claude Code's summarize instruction; "your summary should include" guards against the
+// shorter probes drifting if Claude Code rewords the opening line.
 func CompactionProbe(system, lastUserContent json.RawMessage) bool {
 	probe := contentText(system)
 	if len(lastUserContent) > 0 {
@@ -109,7 +117,8 @@ func CompactionProbe(system, lastUserContent json.RawMessage) bool {
 	s := strings.ToLower(probe)
 	return strings.Contains(s, "summary of the conversation") ||
 		strings.Contains(s, "detailed summary of") ||
-		strings.Contains(s, "wrap your summary")
+		strings.Contains(s, "wrap your summary") ||
+		strings.Contains(s, "your summary should include")
 }
 
 // LooksComplex reports whether a request carries code blocks, tool activity, or a

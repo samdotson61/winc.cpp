@@ -764,13 +764,14 @@ func (p *preq) infoOnly() bool {
 func (p *preq) isCompaction() bool {
 	msgs := p.messages()
 	var last json.RawMessage
-	if n := len(msgs); n > 0 {
+	for i := len(msgs) - 1; i >= 0; i-- {
 		var msg struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		}
-		if json.Unmarshal(msgs[n-1], &msg) == nil && msg.Role == "user" {
+		if json.Unmarshal(msgs[i], &msg) == nil && msg.Role == "user" {
 			last = msg.Content
+			break
 		}
 	}
 	return reasoning.CompactionProbe(p.m["system"], last)
