@@ -60,6 +60,7 @@ func applyEvalProfile(cfg *config.Config) {
 	cfg.Performance.Mtp = "off"
 	cfg.Performance.DraftModel = ""
 	cfg.Reasoning.Mode = "off"
+	cfg.Performance.GreedySampling = true // deterministic scoring: argmax, not agent sampling
 }
 
 // evalEvalThresholdMB is the VRAM at/above which the eval profile prefers the

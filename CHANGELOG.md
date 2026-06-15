@@ -3,6 +3,23 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.4-jobdar.4 — 2026-06-14 (winc-jobdar branch)
+
+The eval profile now decodes GREEDY (half of the low-end tuning win; the Jobdar side
+ships JSON-schema routing in lockstep).
+
+### Changed
+- `winc serve --eval` now forces **greedy sampling** (`--temp 0 --top-k 1`) instead of
+  the model's agent sampling (`FamilySamplingArgs`, Qwen temp 0.7 / Gemma 1.0).
+  Deterministic scoring needs argmax — the inherited agent temperature was injecting
+  run-to-run band noise (a 2B swung 65%→100% across runs). New winc-internal
+  `Performance.GreedySampling` flag, set by `applyEvalProfile`; `ServerArgs` branches on
+  it. `TestApplyEvalProfileServerArgs` now asserts greedy + no agent temp.
+- Paired with Jobdar routing winc evals through the guaranteed-JSON endpoint, this took
+  qwen3.5-2b-Q4 to 100% / 0 parse-fails / 0 dangerous on the 8-JD policy-boundary set (24
+  deterministic evals; e2b + 4B held at 100%). Promising, NOT yet proof of production
+  reliability — a larger diverse JD set + human spot-check is the next validation step.
+
 ## 1.21.4-jobdar.3 — 2026-06-14 (winc-jobdar branch)
 
 Doc corrections + a measured low-end finding (no behavior change).

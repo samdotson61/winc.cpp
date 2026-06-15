@@ -67,6 +67,11 @@ type Performance struct {
 	// engine's default placement -- the split is an optimization and must never
 	// cost a rung.
 	NoTensorSplit bool `toml:"-"`
+	// GreedySampling is winc-internal (never read from winc.toml): the eval profile sets
+	// it so ServerArgs decodes GREEDY (--temp 0 --top-k 1) instead of the model's agent
+	// sampling. Deterministic scoring needs argmax; FamilySamplingArgs' temp 0.7/1.0 adds
+	// run-to-run band noise to evals.
+	GreedySampling bool `toml:"-"`
 	// FFNSpill is winc-internal (never read from winc.toml): the dense FFN-spill
 	// placement -- park the LAST n blocks' feed-forward weights in system RAM
 	// (-ngl 99 plus a tensor override) so every attention/SSM tensor and the

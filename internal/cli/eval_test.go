@@ -22,12 +22,13 @@ func TestApplyEvalProfileServerArgs(t *testing.T) {
 
 	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 12288, GPUs: []platform.GPUDevice{{TotalMB: 12288}}}
 	s := strings.Join(engine.ServerArgs(&cfg, hw, "Qwen3.5-2B-Q4_K_M.gguf", 8099, "", 0), " ")
-	for _, want := range []string{"--reasoning off", "-c 16384", "--cache-type-k q8_0", "--cache-type-v q8_0"} {
+	for _, want := range []string{"--reasoning off", "-c 16384", "--cache-type-k q8_0", "--cache-type-v q8_0", "--temp 0", "--top-k 1"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("eval args missing %q: %s", want, s)
 		}
 	}
-	for _, never := range []string{"--spec-", "--parallel", "--reasoning-budget", "draft"} {
+	// eval scoring must be GREEDY, not the model's agent sampling (Qwen temp 0.7)
+	for _, never := range []string{"--spec-", "--parallel", "--reasoning-budget", "draft", "--temp 0.7", "--presence-penalty"} {
 		if strings.Contains(s, never) {
 			t.Errorf("eval args must not contain %q: %s", never, s)
 		}

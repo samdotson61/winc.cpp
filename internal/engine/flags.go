@@ -887,10 +887,16 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		}
 	}
 
-	// Family-correct sampling (Qwen / Gemma published values) for tool-call reliability;
-	// no-op for unknown families. Applies to every model -- main, single, and workers --
-	// not just the small ones. Before ExtraServerArgs so a user's own flags win.
-	args = append(args, FamilySamplingArgs(modelPath)...)
+	// Sampling. The eval profile (GreedySampling) decodes ARGMAX -- deterministic scoring
+	// must not inherit the model's agent sampling (Qwen temp 0.7 / Gemma 1.0), which adds
+	// run-to-run band noise. Everyone else gets family-correct sampling (Qwen / Gemma
+	// published values) for tool-call reliability; no-op for unknown families. Before
+	// ExtraServerArgs so a user's own flags win.
+	if cfg.Performance.GreedySampling {
+		args = append(args, "--temp", "0", "--top-k", "1")
+	} else {
+		args = append(args, FamilySamplingArgs(modelPath)...)
+	}
 
 	// Advanced escape hatch: any extra llama-server flags, verbatim.
 	args = append(args, cfg.Performance.ExtraServerArgs...)
