@@ -3,6 +3,16 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.21.5 — 2026-06-15
+
+### Added
+- Catalog: `qwen3.6-27b-q4-mtp` (Qwen3.6-27B Q4_K_M with MTP heads, 17.1 GB). A
+  lighter rung below the `q5-mtp` (19.8 GB) for the dense 27B coder -- the same
+  built-in multi-token-prediction speedup at ~2.7 GB smaller, so it leaves more
+  room for context on a 24-28 GB GPU. (`winc update` refreshes the catalog for
+  prebuilt installs; the runtime catalog is fetched from master, so this is live
+  for all branches' installs.)
+
 ## v1.21.4 — 2026-06-13
 
 ### Fixed
