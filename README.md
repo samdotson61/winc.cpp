@@ -404,8 +404,13 @@ per backend, context-overflow rewrites, output caps applied, and dead-worker rer
 published release digests before extraction (a mismatch is discarded, never installed;
 offline installs proceed with a note). Model downloads get a **GGUF header check**, so an
 auth/error page saved as a `.gguf` is caught immediately instead of failing at engine
-load, and a connection that drops mid-download is detected by length and **resumed** on
-the next run. `winc.toml` is written **owner-only** (it can hold your HuggingFace token),
+load — then the file is **sha256-checked** against the digest HuggingFace publishes for
+it (skipped with a note if no digest is reachable). A connection that drops mid-download
+is detected by length and **resumed** on the next run; the resume is **ETag-validated**
+(`If-Range`), so if the repo re-uploaded the file in between, winc restarts cleanly
+instead of splicing two versions into one corrupt model. A transfer that goes **silent
+for 30s is aborted** with a resumable error rather than hanging forever.
+`winc.toml` is written **owner-only** (it can hold your HuggingFace token),
 and engine processes are tied to winc's lifetime (Job Objects on Windows, PDEATHSIG on
 Linux) so a hard kill can't leave a stray server holding your GPU.
 

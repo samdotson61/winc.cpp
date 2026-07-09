@@ -2,10 +2,14 @@ package download
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -54,7 +58,99 @@ func HFDownloadAs(repo, file, destDir, saveAs, token string) (string, error) {
 		_ = os.Remove(dest)
 		return "", fmt.Errorf("%s is not a valid GGUF file (bad header) - removed; check the repo/file name and your HF token", filepath.Base(dest))
 	}
+	// Engine archives and self-updates are sha256-verified against published
+	// digests; models get the same guarantee here. HF publishes every LFS file's
+	// digest in its git-lfs pointer (served at /raw/main/...): when the pointer is
+	// reachable, the downloaded bytes MUST match it. An unreachable pointer
+	// (offline mirror, non-LFS file) skips the check with a note rather than
+	// failing a download that already passed the GGUF header check.
+	if p, ok := hfPointer(endpoint, repo, file, headers); ok {
+		fmt.Printf("  verifying sha256 ... ")
+		if err := verifyFileSHA256(dest, p.sha256, p.size); err != nil {
+			fmt.Println("MISMATCH")
+			_ = os.Remove(dest)
+			return "", fmt.Errorf("%s failed verification (%v) - removed; re-run to download again", filepath.Base(dest), err)
+		}
+		fmt.Println("ok")
+	} else {
+		fmt.Println("  (no published sha256 available - skipping verification)")
+	}
 	return dest, nil
+}
+
+// lfsPointer is the parsed form of a git-lfs pointer -- the tiny text blob
+// HuggingFace serves at /raw/main/<file> for every LFS-tracked file, carrying
+// the sha256 and byte size of the real content.
+type lfsPointer struct {
+	sha256 string
+	size   int64
+}
+
+// parseLFSPointer extracts oid/size from a git-lfs pointer body, or ok=false
+// when the body is not a pointer (small non-LFS files come back verbatim).
+func parseLFSPointer(body []byte) (lfsPointer, bool) {
+	if !bytes.HasPrefix(body, []byte("version https://git-lfs")) {
+		return lfsPointer{}, false
+	}
+	var p lfsPointer
+	for _, line := range strings.Split(string(body), "\n") {
+		if rest, ok := strings.CutPrefix(line, "oid sha256:"); ok {
+			p.sha256 = strings.TrimSpace(rest)
+		} else if rest, ok := strings.CutPrefix(line, "size "); ok {
+			p.size, _ = strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+		}
+	}
+	return p, p.sha256 != ""
+}
+
+// hfPointer fetches the git-lfs pointer for repo/file, giving the published
+// sha256 + size to verify a download against. ok=false when no pointer is
+// available (offline mirror, non-LFS file, network error): the caller skips
+// verification rather than failing a download that already completed.
+func hfPointer(endpoint, repo, file string, headers map[string]string) (lfsPointer, bool) {
+	url := fmt.Sprintf("%s/%s/raw/main/%s", endpoint, repo, file)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return lfsPointer{}, false
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return lfsPointer{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return lfsPointer{}, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return lfsPointer{}, false
+	}
+	return parseLFSPointer(body)
+}
+
+// verifyFileSHA256 streams path through sha256 and compares against the
+// published digest (and size, when known). Multi-GB models hash in tens of
+// seconds; a mismatch means a corrupt or tampered download.
+func verifyFileSHA256(path, want string, size int64) error {
+	if fi, err := os.Stat(path); err == nil && size > 0 && fi.Size() != size {
+		return fmt.Errorf("size %d != published %d", fi.Size(), size)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
+		return fmt.Errorf("sha256 %s != published %s", got, want)
+	}
+	return nil
 }
 
 // ggufMagic is the 4-byte header every GGUF file starts with.
