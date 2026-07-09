@@ -3,6 +3,46 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.22.0 — 2026-07-09
+
+Per-push CI + the download path hardened end-to-end.
+
+### Added
+- CI on every push/PR to master and winc-jobdar (`ci.yml`): the same gofmt
+  gate, vet, and tests as the release workflow, plus a build, on all three
+  OSes. Until now that gate ran ONLY on `v*` tag pushes, so ordinary commits --
+  including master -> winc-jobdar merges, where breakage hides -- landed
+  unverified. (It would have caught a real one: the branch-only `eval.go`
+  carried a gofmt violation for weeks because the branch never gets tagged.)
+- Model downloads are **sha256-verified**: after the GGUF header check, the
+  file is hashed and compared against the digest HuggingFace publishes in the
+  file's git-lfs pointer (`/raw/main/...`) -- the same guarantee engine
+  archives and self-updates have had since v1.5.0. A mismatch removes the file
+  and fails loudly. When no pointer is reachable (offline mirror, non-LFS
+  file) the check is skipped with a note.
+- The download package -- the code with the riskiest I/O -- now has httptest
+  coverage: fresh download, truncation kept resumable, ETag-validated resume,
+  remote-changed restart, stall abort, pointer parse/verify/mismatch paths.
+  It was the only substantial package with no tests.
+
+### Changed
+- Resume is validated with **If-Range**: the response's ETag is saved beside
+  the `.part`, and a resumed request only APPENDS if the remote file is
+  unchanged. If the repo re-uploaded the file between attempts, the server
+  sends the whole file again and winc restarts cleanly -- previously the two
+  versions were spliced into one corrupt model that could even pass the GGUF
+  header check. A pre-1.22 `.part` (no saved ETag) resumes unvalidated, as
+  before.
+- A transfer whose connection goes silent for **30s is aborted** with a clear
+  "download stalled - re-run to resume" error instead of hanging forever (the
+  client had no timeouts at all). The `.part` survives, so the retry resumes.
+  TLS handshake (15s) and response headers (30s) are bounded too. Overall
+  transfer time stays unbounded on purpose -- multi-GB bodies on slow links.
+- **Go 1.26** (from 1.22, which has left the security-support window --
+  this binary does TLS downloads and runs a local HTTP server, so a current
+  stdlib matters): `go.mod` + both workflows. No code changes required;
+  builders on older toolchains auto-fetch 1.26 via GOTOOLCHAIN.
+
 ## v1.21.5 — 2026-06-15
 
 ### Added
