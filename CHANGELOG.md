@@ -3,6 +3,14 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.21.5-jobdar.2 — 2026-07-09 (winc-jobdar branch)
+
+Doc-only: the `applyEvalProfile` NOTE still described the temp-0 + JSON-schema
+combination as "deferred pending that coordinated change", but both halves
+shipped -- greedy decode landed here in 1.21.4-jobdar.4 (`GreedySampling`), and
+jobdar routes evals through the guaranteed-JSON endpoint. The comment now
+records the measured finding in past tense. No behavior change.
+
 ## 1.21.5-jobdar.1 — 2026-06-15 (winc-jobdar branch)
 
 Merges master **v1.21.5** into the jobdar stability branch: adds the
