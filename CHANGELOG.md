@@ -3,6 +3,30 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.23.0-jobdar.3 — 2026-07-10 (winc-jobdar branch)
+
+Live E2E of the low-tier preset (portable install, synthetic 2 GB hardware
+memo, real engine + model) caught two things the unit tests could not; both
+fixed. Verified after the fix: `--parallel 1 -c 16384` in the real
+llama-server args, healthy, guaranteed-JSON eval answered; a big-box run is
+byte-identical to the pre-preset profile.
+
+### Fixed
+- **The tiny tier's 8192 window did not survive the launch path** -- an
+  explicit sub-ladder pin is honored by `ResolveContext` but the launch
+  fitting path normalizes to its rungs, so the pin launched at `-c 16384`.
+  The original profile comment said exactly this; jobdar.2's "correction" of
+  it was wrong and is itself corrected. The low-tier preset is now
+  **slots-only** (<4 GB -> `--parallel 1`, 4-8 GB -> `--parallel 2`), which
+  was the load-bearing half anyway: at one slot, the 2B's 16384/q8 KV is a
+  few hundred MB -- fine even for the 2 GB class.
+- **The eval ready line printed the profile CONSTANT, not the effective
+  config** -- a tier-pinned serve announced "window 16384" from the const
+  while the tier ran underneath (and would have claimed 8192 had the pin
+  worked). It now prints the effective window from the config and adds a
+  "low-tier preset: N eval slot(s)" line when a slot pin is active, so the
+  status text always reflects what actually runs.
+
 ## 1.23.0-jobdar.2 — 2026-07-09 (winc-jobdar branch)
 
 The low-tier eval preset: phone/tablet-class serve defaults.

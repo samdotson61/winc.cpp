@@ -25,16 +25,19 @@ import (
 //
 //   - context 16384, q8 KV: an eval never needs an agent window; the whole
 //     server fits a 2 GB card with the 2B (~1.7 GB) and a 4 GB card with the
-//     4B (~3.4 GB). (Correction, 1.23.0-jobdar.2: an explicit Context pin
-//     passes through ResolveContext verbatim -- the old "rounds up to the
-//     ladder floor" claim here was wrong, and the ladder floor is 32768.)
-//   - low-tier preset (applyEvalTier): a <4 GB budget pins ONE slot and an
-//     8192 window (an eval is <=5k prompt + <=700 verdict; the halved window
-//     halves KV); a 4-8 GB budget pins TWO slots. REASONED defaults for
-//     phone/tablet-class hardware -- slot count and window headroom change
-//     throughput/thermals/footprint, never verdicts -- pending on-target
-//     sustained-batch measurement (bench 50-100 evals at steady state, not
-//     a burst: this class throttles after 2-5 minutes).
+//     4B (~3.4 GB). 16384 holds on EVERY tier: a smaller pin is honored by
+//     ResolveContext but the LAUNCH fitting path normalizes to its rungs --
+//     measured live (1.23.0-jobdar.3, synthetic 2 GB box): an 8192 eval pin
+//     launched at -c 16384. The original round-up note here was right.
+//   - low-tier preset (applyEvalTier): a <4 GB budget pins ONE eval slot, a
+//     4-8 GB budget pins TWO (vs the engine's default 4) -- concurrent evals
+//     on a thermally-limited box contend for the unified KV pool (evicting
+//     the prompt cache) and throttle sustained speed. REASONED defaults for
+//     phone/tablet-class hardware -- slot count changes throughput/thermals,
+//     never verdicts -- pending on-target sustained-batch measurement (bench
+//     50-100 evals at steady state, not a burst: this class throttles after
+//     2-5 minutes). Args verified live: --parallel 1 -c 16384, healthy, JSON
+//     eval answered.
 //   - reasoning OFF: thinking routes every generated token into the reasoning
 //     channel; jobdar would receive EMPTY content with the budget spent.
 //     With it off the same models answer in 91-172 tokens at full speed.
@@ -55,22 +58,21 @@ const evalCtxTokens = 16384
 // Low-tier preset thresholds (applyEvalTier). Budgets are MemoryBudgetMB:
 // dedicated VRAM on dGPU boxes, ~72% of RAM on unified, RAM-scaled CPU-only.
 const (
-	evalTinyBudgetMB  = 4096 // below: 1 slot + the 8192 window (2 GB-card class)
-	evalSmallBudgetMB = 8192 // below: 2 slots, window unchanged
-	evalTinyCtxTokens = 8192
+	evalTinyBudgetMB  = 4096 // below: 1 eval slot (2 GB-card class)
+	evalSmallBudgetMB = 8192 // below: 2 eval slots
 )
 
 // applyEvalTier pins the hardware-tiered eval knobs; applyEvalProfile holds the
-// hardware-independent ones. See the profile comment above for the reasoning
-// and the validation status (reasoned defaults, throughput-only, never
-// verdict-affecting). Unknown hardware (budget 0) changes nothing -- engine
-// defaults, no guess.
+// hardware-independent ones. Slots ONLY -- a smaller window was tried and
+// measured to round up through the launch ladder (see the profile comment).
+// See there too for the validation status (reasoned defaults, throughput-only,
+// never verdict-affecting). Unknown hardware (budget 0) changes nothing --
+// engine defaults, no guess.
 func applyEvalTier(cfg *config.Config, hw platform.Hardware) {
 	switch budget := hw.MemoryBudgetMB(); {
 	case budget <= 0:
 	case budget < evalTinyBudgetMB:
 		cfg.Performance.EvalSlots = 1
-		cfg.Performance.Context = strconv.Itoa(evalTinyCtxTokens)
 	case budget < evalSmallBudgetMB:
 		cfg.Performance.EvalSlots = 2
 	}
@@ -253,7 +255,13 @@ func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
 	serverURL := fmt.Sprintf("http://127.0.0.1:%d", llamaPort)
 	logPath := filepath.Join(paths.InstallDir(), "llama-server.log")
 	ui.Good("eval profile: %s (%s)", alias, filepath.Base(modelPath))
-	ui.Info("window %d - reasoning off - speculative draft off - q8 KV", evalCtxTokens)
+	// Print the EFFECTIVE config, not the profile constants -- the low-tier
+	// preset may have adjusted it, and status text must reflect what actually
+	// runs (the const was printed here while a tier pin ran underneath).
+	ui.Info("window %s - reasoning off - speculative draft off - q8 KV", cfg.Performance.Context)
+	if cfg.Performance.EvalSlots > 0 {
+		ui.Info("low-tier preset: %d eval slot(s) for this memory budget (engine default is 4)", cfg.Performance.EvalSlots)
+	}
 	proc, loadedCtx := startLlamaFitting(cfg, hw, modelPath, llamaPort, serverURL, logPath)
 	if proc == nil {
 		ui.Err("could not start the engine; see %s", logPath)

@@ -114,9 +114,11 @@ func TestEvalPrefs(t *testing.T) {
 	}
 }
 
-// The low-tier preset is throughput-only (slots/window), tiered by memory
-// budget: <4 GB pins one slot + the 8192 window, 4-8 GB pins two slots,
-// >=8 GB and unknown hardware leave the engine defaults untouched.
+// The low-tier preset is throughput-only and SLOTS-only, tiered by memory
+// budget: <4 GB pins one eval slot, 4-8 GB pins two, >=8 GB and unknown
+// hardware leave the engine defaults untouched. The window stays 16384 on
+// every tier -- a smaller pin was measured to round up through the launch
+// ladder (1.23.0-jobdar.3), so the args must never carry -c 8192.
 func TestApplyEvalTierServerArgs(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -125,7 +127,7 @@ func TestApplyEvalTierServerArgs(t *testing.T) {
 		never []string
 	}{
 		{"tiny 2GB card", platform.Hardware{OS: "linux", GPUVendor: "nvidia", VRAMMB: 2048, GPUs: []platform.GPUDevice{{TotalMB: 2048}}},
-			[]string{"--parallel 1", "-c 8192"}, []string{"-c 16384"}},
+			[]string{"--parallel 1", "-c 16384"}, []string{"-c 8192"}},
 		{"small 6GB card", platform.Hardware{OS: "linux", GPUVendor: "nvidia", VRAMMB: 6144, GPUs: []platform.GPUDevice{{TotalMB: 6144}}},
 			[]string{"--parallel 2", "-c 16384"}, []string{"-c 8192"}},
 		{"big 12GB card", platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 12288, GPUs: []platform.GPUDevice{{TotalMB: 12288}}},
