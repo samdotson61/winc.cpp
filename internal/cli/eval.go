@@ -10,6 +10,7 @@ import (
 	"winc/internal/catalog"
 	"winc/internal/config"
 	"winc/internal/download"
+	"winc/internal/engine"
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
@@ -24,8 +25,16 @@ import (
 //
 //   - context 16384, q8 KV: an eval never needs an agent window; the whole
 //     server fits a 2 GB card with the 2B (~1.7 GB) and a 4 GB card with the
-//     4B (~3.4 GB). 16384 is the context ladder's floor rung -- a smaller pin
-//     would silently round up to it anyway.
+//     4B (~3.4 GB). (Correction, 1.23.0-jobdar.2: an explicit Context pin
+//     passes through ResolveContext verbatim -- the old "rounds up to the
+//     ladder floor" claim here was wrong, and the ladder floor is 32768.)
+//   - low-tier preset (applyEvalTier): a <4 GB budget pins ONE slot and an
+//     8192 window (an eval is <=5k prompt + <=700 verdict; the halved window
+//     halves KV); a 4-8 GB budget pins TWO slots. REASONED defaults for
+//     phone/tablet-class hardware -- slot count and window headroom change
+//     throughput/thermals/footprint, never verdicts -- pending on-target
+//     sustained-batch measurement (bench 50-100 evals at steady state, not
+//     a burst: this class throttles after 2-5 minutes).
 //   - reasoning OFF: thinking routes every generated token into the reasoning
 //     channel; jobdar would receive EMPTY content with the budget spent.
 //     With it off the same models answer in 91-172 tokens at full speed.
@@ -37,10 +46,35 @@ import (
 //     get their router URL programmatically, jobdar configures it once.
 //     llama-server itself moves to an ephemeral port behind it.
 //
-// Engine auto-parallel stays untouched: serve mode runs a UNIFIED KV pool
-// (4 slots), so jobdar's scan-stage concurrency multiplies throughput without
-// any per-slot window split.
+// Engine auto-parallel stays untouched on >=8 GB budgets: serve mode runs a
+// UNIFIED KV pool (4 slots), so jobdar's scan-stage concurrency multiplies
+// throughput without any per-slot window split. Smaller budgets pin fewer
+// slots (applyEvalTier).
 const evalCtxTokens = 16384
+
+// Low-tier preset thresholds (applyEvalTier). Budgets are MemoryBudgetMB:
+// dedicated VRAM on dGPU boxes, ~72% of RAM on unified, RAM-scaled CPU-only.
+const (
+	evalTinyBudgetMB  = 4096 // below: 1 slot + the 8192 window (2 GB-card class)
+	evalSmallBudgetMB = 8192 // below: 2 slots, window unchanged
+	evalTinyCtxTokens = 8192
+)
+
+// applyEvalTier pins the hardware-tiered eval knobs; applyEvalProfile holds the
+// hardware-independent ones. See the profile comment above for the reasoning
+// and the validation status (reasoned defaults, throughput-only, never
+// verdict-affecting). Unknown hardware (budget 0) changes nothing -- engine
+// defaults, no guess.
+func applyEvalTier(cfg *config.Config, hw platform.Hardware) {
+	switch budget := hw.MemoryBudgetMB(); {
+	case budget <= 0:
+	case budget < evalTinyBudgetMB:
+		cfg.Performance.EvalSlots = 1
+		cfg.Performance.Context = strconv.Itoa(evalTinyCtxTokens)
+	case budget < evalSmallBudgetMB:
+		cfg.Performance.EvalSlots = 2
+	}
+}
 
 // applyEvalProfile pins the measured eval-profile knobs onto cfg.
 //
@@ -105,8 +139,25 @@ func evalPrefs(hw platform.Hardware) []string {
 	return []string{"gemma4-e2b", "qwen3.5-2b", "qwen3.5-4b"}
 }
 
+// evalArmCPUPrefs: on an arm64 CPU-only install, each preference expands to try
+// its -q40 ARM rung FIRST (Q4_0 is the format llama.cpp runtime-repacks to
+// dotprod/i8mm layouts -- the prompt-speed format on ARM CPUs). First-downloaded
+// still wins, so a rung engages only when the user deliberately pulled it, and
+// the recommended DOWNLOAD (promptDownloadEvalModel) stays the policy-set-
+// validated K-quant -- winc never auto-fetches the speed-first quant.
+func evalArmCPUPrefs(hw platform.Hardware, prefs []string) []string {
+	if hw.Arch != "arm64" || engine.CurrentBackend() != "cpu" {
+		return prefs
+	}
+	out := make([]string, 0, len(prefs)*2)
+	for _, a := range prefs {
+		out = append(out, a+"-q40", a)
+	}
+	return out
+}
+
 func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware) (path, alias string) {
-	prefs := evalPrefs(hw)
+	prefs := evalArmCPUPrefs(hw, evalPrefs(hw))
 	for i, alias := range prefs {
 		if p, a := downloadedPath(cfg, cat, alias); p != "" {
 			if i > 0 {
@@ -153,6 +204,7 @@ func promptDownloadEvalModel(cfg *config.Config, cat *catalog.Catalog, hw platfo
 func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
 	applyEvalProfile(cfg)
 	hw := platform.DetectHardwareCached()
+	applyEvalTier(cfg, hw)
 
 	var modelPath, alias string
 	if len(pos) >= 1 {

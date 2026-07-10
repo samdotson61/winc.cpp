@@ -3,6 +3,34 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.23.0-jobdar.2 — 2026-07-09 (winc-jobdar branch)
+
+The low-tier eval preset: phone/tablet-class serve defaults.
+
+### Added
+- `applyEvalTier` (new winc-internal `Performance.EvalSlots`): a **<4 GB**
+  memory budget pins **one slot + an 8192 window** (`--parallel 1 -c 8192` --
+  an eval is <=5k prompt + <=700 verdict, and the halved window halves KV, so
+  a 2 GB card hosts the 2B with room to breathe); a **4-8 GB** budget pins
+  **two slots**; >=8 GB and unknown hardware keep the engine defaults
+  untouched. REASONED defaults for thermally-limited small boxes -- four
+  concurrent evals contend for the unified KV pool (evicting the prompt
+  cache) and throttle sustained speed. Slot count and window headroom change
+  throughput/thermals/footprint, never verdicts; on-target validation is a
+  50-100-eval sustained batch (this hardware class throttles after 2-5
+  minutes -- burst numbers lie).
+- ARM-CPU eval preference: on an **arm64 + cpu-backend** install,
+  `evalPickModel` tries each preference's `-q40` ARM rung first (the v1.23.0
+  catalog rungs llama.cpp runtime-repacks on ARM CPUs). First-downloaded
+  still wins -- the rung engages only when the user deliberately pulled it --
+  and the recommended DOWNLOAD stays the policy-set-validated K-quant; winc
+  never auto-fetches the speed-first quant.
+
+### Fixed
+- eval profile comment: corrected the stale claim that a sub-16384 context
+  pin "silently rounds up to the ladder floor" -- explicit pins pass through
+  `ResolveContext` verbatim, and the ladder floor is 32768.
+
 ## 1.23.0-jobdar.1 — 2026-07-09 (winc-jobdar branch)
 
 Merges master **v1.23.0** into the jobdar stability branch: native arm64

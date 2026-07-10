@@ -898,6 +898,12 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		}
 	}
 
+	// Eval low-tier preset: pin the unified-KV slot count below the engine's
+	// default 4 (see config.Performance.EvalSlots). Only the eval profile sets it.
+	if cfg.Performance.EvalSlots > 0 {
+		args = append(args, "--parallel", strconv.Itoa(cfg.Performance.EvalSlots))
+	}
+
 	// Sampling. The eval profile (GreedySampling) decodes ARGMAX -- deterministic scoring
 	// must not inherit the model's agent sampling (Qwen temp 0.7 / Gemma 1.0), which adds
 	// run-to-run band noise. Everyone else gets family-correct sampling (Qwen / Gemma

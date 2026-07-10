@@ -72,6 +72,12 @@ type Performance struct {
 	// sampling. Deterministic scoring needs argmax; FamilySamplingArgs' temp 0.7/1.0 adds
 	// run-to-run band noise to evals.
 	GreedySampling bool `toml:"-"`
+	// EvalSlots is winc-internal (never read from winc.toml): the eval profile's
+	// low-tier preset pins the unified-KV slot count BELOW the engine's default 4
+	// on small memory budgets -- concurrent evals on a thermally-limited box
+	// contend for the pool (evicting the prompt cache) and throttle sustained
+	// speed. 0 = engine default.
+	EvalSlots int `toml:"-"`
 	// FFNSpill is winc-internal (never read from winc.toml): the dense FFN-spill
 	// placement -- park the LAST n blocks' feed-forward weights in system RAM
 	// (-ngl 99 plus a tensor override) so every attention/SSM tensor and the

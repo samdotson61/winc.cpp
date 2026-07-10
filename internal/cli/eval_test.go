@@ -113,3 +113,58 @@ func TestEvalPrefs(t *testing.T) {
 		t.Fatalf(">=5GB should lead with qwen3.5-4b, got %v", high)
 	}
 }
+
+// The low-tier preset is throughput-only (slots/window), tiered by memory
+// budget: <4 GB pins one slot + the 8192 window, 4-8 GB pins two slots,
+// >=8 GB and unknown hardware leave the engine defaults untouched.
+func TestApplyEvalTierServerArgs(t *testing.T) {
+	cases := []struct {
+		name  string
+		hw    platform.Hardware
+		want  []string
+		never []string
+	}{
+		{"tiny 2GB card", platform.Hardware{OS: "linux", GPUVendor: "nvidia", VRAMMB: 2048, GPUs: []platform.GPUDevice{{TotalMB: 2048}}},
+			[]string{"--parallel 1", "-c 8192"}, []string{"-c 16384"}},
+		{"small 6GB card", platform.Hardware{OS: "linux", GPUVendor: "nvidia", VRAMMB: 6144, GPUs: []platform.GPUDevice{{TotalMB: 6144}}},
+			[]string{"--parallel 2", "-c 16384"}, []string{"-c 8192"}},
+		{"big 12GB card", platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 12288, GPUs: []platform.GPUDevice{{TotalMB: 12288}}},
+			[]string{"-c 16384"}, []string{"--parallel"}},
+		{"unknown hardware", platform.Hardware{OS: "linux", GPUVendor: "none"},
+			[]string{"-c 16384"}, []string{"--parallel"}},
+	}
+	for _, c := range cases {
+		cfg := config.Defaults()
+		applyEvalProfile(&cfg)
+		applyEvalTier(&cfg, c.hw)
+		s := strings.Join(engine.ServerArgs(&cfg, c.hw, "Qwen3.5-2B-Q4_K_M.gguf", 8099, "", 0), " ")
+		for _, w := range c.want {
+			if !strings.Contains(s, w) {
+				t.Errorf("%s: missing %q: %s", c.name, w, s)
+			}
+		}
+		for _, n := range c.never {
+			if strings.Contains(s, n) {
+				t.Errorf("%s: must not contain %q: %s", c.name, n, s)
+			}
+		}
+	}
+}
+
+// On arm64 + cpu backend each eval preference tries its -q40 ARM rung first
+// (first-downloaded-wins keeps it opt-in); every other install is unchanged.
+// CurrentBackend() reads the install marker -- absent in tests -> "", so the
+// non-ARM identity path is what's directly exercised here; the expansion shape
+// is asserted via the exported pieces it composes from.
+func TestEvalArmCPUPrefs(t *testing.T) {
+	base := []string{"qwen3.5-4b", "gemma4-e2b"}
+	x86 := evalArmCPUPrefs(platform.Hardware{Arch: "amd64"}, base)
+	if strings.Join(x86, ",") != "qwen3.5-4b,gemma4-e2b" {
+		t.Errorf("x86 prefs changed: %v", x86)
+	}
+	// arm64 without a cpu-backend marker is also unchanged (GPU installs).
+	arm := evalArmCPUPrefs(platform.Hardware{Arch: "arm64"}, base)
+	if strings.Join(arm, ",") != "qwen3.5-4b,gemma4-e2b" {
+		t.Errorf("arm64 non-cpu prefs changed: %v", arm)
+	}
+}
