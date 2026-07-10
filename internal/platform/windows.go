@@ -178,3 +178,8 @@ func EnsureBuildEnv() error {
 	}
 	return nil
 }
+
+// performanceCores: Windows hides the P/E split behind
+// GetSystemCpuSetInformation; that plumbing isn't worth carrying until a
+// measured need shows up. 0 = let the engine default stand, never guess.
+func performanceCores() int { return 0 }

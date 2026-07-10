@@ -887,6 +887,17 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		}
 	}
 
+	// CPU-only inference: pin threads to the PERFORMANCE cores when the OS
+	// exposes a P/E split. llama-server's default spans efficiency cores too,
+	// and on big.LITTLE parts the E cores gate every token (each layer waits
+	// for the slowest worker). Unknown split (0) -> engine default, no guess.
+	// GPU backends skip this: prompt+decode run on the GPU there.
+	if CurrentBackend() == "cpu" {
+		if p := platform.PerformanceCores(); p > 0 {
+			args = append(args, "--threads", strconv.Itoa(p))
+		}
+	}
+
 	// Family-correct sampling (Qwen / Gemma published values) for tool-call reliability;
 	// no-op for unknown families. Applies to every model -- main, single, and workers --
 	// not just the small ones. Before ExtraServerArgs so a user's own flags win.

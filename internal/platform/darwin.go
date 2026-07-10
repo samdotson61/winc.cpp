@@ -66,3 +66,18 @@ func EnsureBuildEnv() error {
 	}
 	return nil
 }
+
+// performanceCores: Apple Silicon publishes the P cluster as perflevel0;
+// Intel Macs lack the key entirely -> 0 (uniform cores, engine default is
+// right). A perflevel0 that covers every core is not a P/E split either.
+func performanceCores() int {
+	out, err := exec.Command("sysctl", "-n", "hw.perflevel0.logicalcpu").Output()
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || n <= 0 || n >= runtime.NumCPU() {
+		return 0
+	}
+	return n
+}

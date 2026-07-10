@@ -36,7 +36,13 @@ func TestCatalogQuantFloor(t *testing.T) {
 			continue
 		}
 		b, _ := strconv.ParseFloat(pm[1], 64)
-		if b < 14 && !okUnder14B.MatchString(q) {
+		// Deliberate exception: "-q40" aliases are ARM-CPU speed rungs -- Q4_0 is
+		// the format llama.cpp runtime-repacks to dotprod/i8mm layouts on ARM,
+		// a large prompt-speed win on CPU-only ARM (WoA tablets, SBCs). They sit
+		// BESIDE their K-quant sibling, are never the recommended default, and
+		// their note must say so; the quality floor stands for everything else.
+		armRung := strings.HasSuffix(m.Alias, "-q40") && strings.Contains(m.Note, "ARM")
+		if b < 14 && !okUnder14B.MatchString(q) && !armRung {
 			t.Errorf("%s (%sB): quant %s is below Q4_K_M -- too destructive under 14B", m.Alias, pm[1], q)
 		}
 	}
