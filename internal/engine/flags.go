@@ -887,6 +887,17 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		}
 	}
 
+	// CPU-only inference: pin threads to the PERFORMANCE cores when the OS
+	// exposes a P/E split. llama-server's default spans efficiency cores too,
+	// and on big.LITTLE parts the E cores gate every token (each layer waits
+	// for the slowest worker). Unknown split (0) -> engine default, no guess.
+	// GPU backends skip this: prompt+decode run on the GPU there.
+	if CurrentBackend() == "cpu" {
+		if p := platform.PerformanceCores(); p > 0 {
+			args = append(args, "--threads", strconv.Itoa(p))
+		}
+	}
+
 	// Sampling. The eval profile (GreedySampling) decodes ARGMAX -- deterministic scoring
 	// must not inherit the model's agent sampling (Qwen temp 0.7 / Gemma 1.0), which adds
 	// run-to-run band noise. Everyone else gets family-correct sampling (Qwen / Gemma

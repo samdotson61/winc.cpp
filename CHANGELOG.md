@@ -3,6 +3,14 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.23.0-jobdar.1 — 2026-07-09 (winc-jobdar branch)
+
+Merges master **v1.23.0** into the jobdar stability branch: native arm64
+engine assets (WoA Adreno OpenCL + cpu, ARM Linux vulkan + cpu), P-core
+thread pinning for cpu-backend inference, and the ARM-CPU Q4_0 catalog rungs
+-- see the v1.23.0 entry below. The eval profile is unchanged in this merge;
+the branch-side low-tier eval preset ships separately as 1.23.0-jobdar.2.
+
 ## 1.22.0-jobdar.1 — 2026-07-09 (winc-jobdar branch)
 
 Merges master **v1.22.0** into the jobdar stability branch: per-push CI (which
@@ -12,6 +20,40 @@ branch-only gofmt violation live for weeks), If-Range-validated resume, the
 see the v1.22.0 entry below. The jobdar eval profile (`winc serve --eval`) is
 unchanged; its model bootstrap (`promptDownloadEvalModel` -> `HFDownloadAs`)
 inherits the verified-download path automatically.
+## v1.23.0 — 2026-07-09
+
+Low-end + ARM hardware pass: native ARM engines, P-core thread pinning,
+ARM-CPU model rungs.
+
+### Added
+- **Native ARM engine assets.** Windows-on-ARM (Snapdragon) now fetches
+  `win-opencl-adreno-arm64` first and `win-cpu-arm64` as fallback; ARM Linux
+  fetches `ubuntu-vulkan-arm64` / `ubuntu-arm64`. Previously both platforms
+  were mapped to x64 archives only -- a WoA tablet ran the engine under
+  emulation. x64 archives are never offered on arm64. The llama.cpp fallback
+  tag moves b9542 -> b9945, the first pinned release verified to carry the
+  full arm64 asset set (needed so the offline/API-down path can still name
+  them).
+- **P-core thread pinning for CPU inference.** When the installed backend is
+  `cpu` and the OS exposes a performance/efficiency split, `ServerArgs` emits
+  `--threads <P-cores>`: Apple via `sysctl hw.perflevel0.logicalcpu`, Linux by
+  cpufreq max-frequency classes -- everything ABOVE the slowest class counts,
+  so a Snapdragon's prime+gold cores are all used (picking only the single
+  top-frequency prime would be worse than the default). Unknown split (Intel
+  Macs, uniform cores, Windows -- its API plumbing isn't worth carrying until
+  a measured need) emits nothing: the engine default stands, never a guess.
+  llama-server's own default spans E cores, which gate every token on
+  big.LITTLE parts. Parser unit-tested (4P+4E, prime/gold/silver, uniform).
+- **ARM-CPU model rungs**: `qwen3.5-2b-q40`, `qwen3.5-4b-q40`,
+  `gemma4-e2b-q40` -- Q4_0 builds of the nano tier, the format llama.cpp
+  runtime-repacks to dotprod/i8mm layouts on ARM CPUs (typically 1.5-2.5x
+  faster prompt processing than the K-quant on CPU-only ARM: WoA tablets,
+  SBCs, phones). They sit beside their K-quant siblings, are never the
+  recommended default, and each note says when NOT to pick them (x86 or any
+  GPU -> K-quant). The catalog quality-floor test gains a narrow, documented
+  exception for `-q40`-suffixed ARM rungs; the floor stands for everything
+  else. NOTE: eval policy-set accuracy is validated for the K-quants; the
+  gemma4-e2b-q40 note marks its rung speed-first until validated.
 
 ## v1.22.0 — 2026-07-09
 
@@ -52,6 +94,7 @@ Per-push CI + the download path hardened end-to-end.
   this binary does TLS downloads and runs a local HTTP server, so a current
   stdlib matters): `go.mod` + both workflows. No code changes required;
   builders on older toolchains auto-fetch 1.26 via GOTOOLCHAIN.
+
 ## 1.21.5-jobdar.2 — 2026-07-09 (winc-jobdar branch)
 
 Doc-only: the `applyEvalProfile` NOTE still described the temp-0 + JSON-schema

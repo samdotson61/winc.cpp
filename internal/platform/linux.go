@@ -125,3 +125,51 @@ func EnsureBuildEnv() error {
 	}
 	return nil
 }
+
+// performanceCores: infer the non-efficiency core count from cpufreq --
+// heterogeneous parts (big.LITTLE, prime/gold/silver) expose distinct
+// per-policy max frequencies. Everything ABOVE the slowest class counts as
+// performance (a Snapdragon's 1 prime + 4 gold are all better than its
+// silvers; picking only the single top-frequency prime would be worse than
+// the default). Uniform boxes -> 0 (engine default).
+func performanceCores() int { return perfCoresFromSysfs("/sys/devices/system/cpu/cpufreq") }
+
+func perfCoresFromSysfs(dir string) int {
+	pols, err := filepath.Glob(filepath.Join(dir, "policy*"))
+	if err != nil || len(pols) == 0 {
+		return 0
+	}
+	total, slow := 0, 0
+	minF, maxF := 0, 0
+	type pol struct{ freq, cpus int }
+	var ps []pol
+	for _, p := range pols {
+		fb, ferr := os.ReadFile(filepath.Join(p, "cpuinfo_max_freq"))
+		rb, rerr := os.ReadFile(filepath.Join(p, "related_cpus"))
+		if ferr != nil || rerr != nil {
+			return 0
+		}
+		f, _ := strconv.Atoi(strings.TrimSpace(string(fb)))
+		n := len(strings.Fields(string(rb)))
+		if f <= 0 || n == 0 {
+			return 0
+		}
+		ps = append(ps, pol{f, n})
+		if minF == 0 || f < minF {
+			minF = f
+		}
+		if f > maxF {
+			maxF = f
+		}
+	}
+	if minF == maxF {
+		return 0 // uniform cores: no split to exploit
+	}
+	for _, p := range ps {
+		total += p.cpus
+		if p.freq == minF {
+			slow += p.cpus
+		}
+	}
+	return total - slow
+}

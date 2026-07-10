@@ -36,7 +36,7 @@ const (
 	llamaRepo        = "ggml-org/llama.cpp"
 	swapRepo         = "mostlygeek/llama-swap"
 	wincRepo         = "samdotson61/winc.cpp"
-	llamaFallbackTag = "b9542" // verified 2026-06-06
+	llamaFallbackTag = "b9945" // verified 2026-07-09 (first fallback with the arm64 asset set)
 	swapFallbackTag  = "223"   // verified 2026-06-06 (release tag v223)
 )
 
@@ -144,6 +144,14 @@ func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
 	var out []LlamaAsset
 	switch hw.OS {
 	case "windows":
+		if hw.Arch == "arm64" {
+			// Windows-on-ARM is Snapdragon: the Adreno OpenCL build first (the
+			// only GPU path upstream ships for it), native-ARM CPU as fallback.
+			// Never offer x64 archives here -- they run, but under emulation.
+			out = append(out, mk("opencl-adreno", "zip", "llama-"+tag+"-bin-win-opencl-adreno-arm64.zip"))
+			out = append(out, mk("cpu", "zip", "llama-"+tag+"-bin-win-cpu-arm64.zip"))
+			return out
+		}
 		if hw.GPUVendor == "nvidia" {
 			// Pick the CUDA build matching the driver. cuda-13.3 needs a newer
 			// driver; older drivers (CUDA 12.x) must use cuda-12.4 or its PTX
@@ -161,6 +169,15 @@ func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
 		}
 		out = append(out, mk("cpu", "zip", "llama-"+tag+"-bin-win-cpu-x64.zip"))
 	case "linux":
+		if hw.Arch == "arm64" {
+			// ARM Linux (Snapdragon X laptops, SBCs): vulkan when a GPU is
+			// present, native-ARM CPU always. No ROCm arm64 archive upstream.
+			if hw.GPUVendor != "none" && hw.GPUVendor != "" {
+				out = append(out, mk("vulkan", "tar.gz", "llama-"+tag+"-bin-ubuntu-vulkan-arm64.tar.gz"))
+			}
+			out = append(out, mk("cpu", "tar.gz", "llama-"+tag+"-bin-ubuntu-arm64.tar.gz"))
+			return out
+		}
 		if hw.GPUVendor == "amd" {
 			out = append(out, mk("rocm", "tar.gz", "llama-"+tag+"-bin-ubuntu-rocm-7.2-x64.tar.gz"))
 		}

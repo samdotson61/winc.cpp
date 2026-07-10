@@ -32,9 +32,10 @@ cd winc.cpp
 repo's **Releases**, put it in a folder, and run `winc setup` — no build, no Go.
 
 Either way, `winc setup` detects your hardware, downloads the right prebuilt llama.cpp backend
-(CUDA / Metal / Vulkan / ROCm / CPU) + llama-swap, picks a model for your memory tier, and adds
-`winc` to your PATH. It's idempotent and fully portable — move the folder anywhere and it still
-works (no baked paths).
+(CUDA / Metal / Vulkan / ROCm / CPU — with **native ARM builds** on Windows-on-ARM and ARM
+Linux, Adreno OpenCL included, never x64-under-emulation) + llama-swap, picks a model for your
+memory tier, and adds `winc` to your PATH. It's idempotent and fully portable — move the folder
+anywhere and it still works (no baked paths).
 
 Then start coding on a local model:
 
@@ -279,7 +280,9 @@ end of this section only exist if you want to override a decision.
 
 | Optimization | What it does | Why it's faster |
 |---|---|---|
-| **Driver-aware backend** | Picks the right prebuilt llama.cpp build — CUDA 13.x vs 12.x by your **driver** version, else Metal / Vulkan / ROCm / CPU — and **falls back at runtime** (cuda → vulkan → cpu) if a backend won't actually run | A CUDA build that matches your driver runs on the GPU instead of silently dropping to CPU |
+| **Driver-aware backend** | Picks the right prebuilt llama.cpp build — CUDA 13.x vs 12.x by your **driver** version, else Metal / Vulkan / ROCm / CPU; **ARM machines get native arm64 builds** (Snapdragon: Adreno OpenCL first), never x64 emulation — and **falls back at runtime** (cuda → vulkan → cpu) if a backend won't actually run | A CUDA build that matches your driver runs on the GPU instead of silently dropping to CPU; native ARM prompt speed is a multiple of emulated x64 |
+| **P-core thread pinning (CPU inference)** | On a CPU-only install with a known P/E core split (Apple via `sysctl`, ARM/hybrid Linux via cpufreq classes), `--threads` pins to the **performance cores**; unknown split → engine default, never a guess | llama-server's default spans efficiency cores, and on big.LITTLE parts the E cores gate **every** token — each layer waits for the slowest worker |
+| **ARM-CPU model rungs** | `-q40` catalogue rungs (`qwen3.5-2b-q40` / `-4b-q40` / `gemma4-e2b-q40`) ship **Q4_0**, which llama.cpp runtime-repacks to dotprod/i8mm layouts on ARM CPUs; they sit beside their K-quant siblings and are never the default | Typically **1.5–2.5× faster prompt processing** on CPU-only ARM (WoA tablets, SBCs) than the K-quant, at a small quality cost the note discloses |
 | **GPU layer auto-fit, head-first** | A model that **fully fits** VRAM (after buffers + the MTP draft context) is **forced** fully onto the GPU (`-ngl 99`) — the engine's own fit is conservative and could spill a layer to the CPU on a tight fit. A model that doesn't fit keeps the engine's partial offload | Every layer on the GPU is ~5-10x faster — and one CPU-spilled MoE layer drags **every** token through a CPU expert pass, stealing CPU from the team's workers |
 | **Multi-GPU** | Detects **every** GPU (not just the first); the memory budget is the **combined** VRAM, and the engine spreads layers across all cards by each one's free VRAM at load | A 16 GB + 12 GB pair is sized as 28 GB — a 22 GB MoE that needed expert-offload on one card runs **fully on GPU** across two, at a much larger context |
 | **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU but parks the **expert weights in RAM** (`--cpu-moe`), freeing VRAM for a much larger context | A 35B-A3B runs near GPU speed on 12 GB; on a tight 16 GB fit it trades a little speed for a ~32k→~100k+ context |

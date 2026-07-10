@@ -294,3 +294,10 @@ func DefaultBackend(hw Hardware) string {
 		return "cpu"
 	}
 }
+
+// PerformanceCores returns the machine's performance-core count when the OS
+// exposes a P/E split, else 0 ("unknown -- let the engine default stand").
+// CPU inference that spans efficiency cores measurably slows decode -- every
+// layer waits for the slowest worker -- so a KNOWN P count is worth pinning
+// and an unknown one is never guessed.
+func PerformanceCores() int { return performanceCores() }
