@@ -26,7 +26,7 @@ func cmdStart(args []string) int {
 	var multi bool
 	var team bool
 	var noteam bool
-	var reasoning string
+	var reasoning, journalFlag string
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -37,6 +37,10 @@ func cmdStart(args []string) int {
 			team = true
 		case a == "--noteam":
 			noteam = true
+		case a == "--journal" || a == "--journal=on":
+			journalFlag = "on"
+		case a == "--journal=off" || a == "--no-journal":
+			journalFlag = "off"
 		case a == "--reasoning":
 			if i+1 < len(args) {
 				reasoning = args[i+1]
@@ -60,6 +64,7 @@ func cmdStart(args []string) int {
 	if reasoning != "" {
 		cfg.Reasoning.Mode = reasoning
 	}
+	applyJournalFlag(cfg, journalFlag)
 	switch app {
 	case "claude", "opencode", "openclaw", "cli":
 	default:
@@ -82,9 +87,15 @@ func cmdStart(args []string) int {
 	}
 
 	if wantTeam(app, team, noteam, cfg, cat, hw, model) {
+		if cfg.Journal.Enabled {
+			ui.Dim("journal: single-model mode only for now; team mode runs without it")
+		}
 		return startTeam(cfg, cat, hw, app, model)
 	}
 	if multi {
+		if cfg.Journal.Enabled {
+			ui.Dim("journal: single-model mode only for now; --multi runs without it")
+		}
 		return startMulti(cfg, cat, hw, app)
 	}
 
@@ -148,6 +159,7 @@ func cmdStart(args []string) int {
 		if cfg.Reasoning.Mode == "adaptive" {
 			ui.Info("adaptive reasoning router: %s -> %s", baseURL, serverURL)
 		}
+		reportJournal(cfg, r)
 	}
 
 	if !agent.Available(app) {

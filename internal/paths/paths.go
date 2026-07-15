@@ -38,6 +38,10 @@ func BinDir() string { return filepath.Join(InstallDir(), "bin") }
 // ClaudeLocalDir is the isolated Claude Code config for the local instance.
 func ClaudeLocalDir() string { return filepath.Join(InstallDir(), ".claude-local") }
 
+// JournalDir is the per-conversation journal store (context virtualization):
+// <install>/journal, one subdirectory per conversation.
+func JournalDir() string { return filepath.Join(InstallDir(), "journal") }
+
 // LlamaSwapYAML is the generated llama-swap config (multi-model mode).
 func LlamaSwapYAML() string { return filepath.Join(InstallDir(), "llama-swap.yaml") }
 

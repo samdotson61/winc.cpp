@@ -22,7 +22,7 @@ func cmdServe(args []string) int {
 	cfg := loadConfig()
 	cat := catalog.Load(cfg.CustomModels)
 
-	var reasoning string
+	var reasoning, journalFlag string
 	var multi bool
 	var pos []string
 	for i := 0; i < len(args); i++ {
@@ -30,6 +30,10 @@ func cmdServe(args []string) int {
 		switch {
 		case a == "--multi":
 			multi = true
+		case a == "--journal" || a == "--journal=on":
+			journalFlag = "on"
+		case a == "--journal=off" || a == "--no-journal":
+			journalFlag = "off"
 		case a == "--reasoning":
 			if i+1 < len(args) {
 				reasoning = args[i+1]
@@ -48,8 +52,12 @@ func cmdServe(args []string) int {
 	if reasoning != "" {
 		cfg.Reasoning.Mode = reasoning
 	}
+	applyJournalFlag(cfg, journalFlag)
 
 	if multi {
+		if cfg.Journal.Enabled {
+			ui.Dim("journal: single-model mode only for now; --multi runs without it")
+		}
 		return startMulti(cfg, cat, platform.DetectHardwareCached(), "")
 	}
 
@@ -85,11 +93,14 @@ func cmdServe(args []string) int {
 		ui.Warn("could not write agent notes: %v", err)
 	}
 
+	// The router carries the journal stage, so it must front the server
+	// whenever the journal is on -- not only in adaptive reasoning mode.
 	baseURL := serverURL
-	if cfg.Reasoning.Mode == "adaptive" {
+	if cfg.Reasoning.Mode == "adaptive" || cfg.Journal.Enabled {
 		if r, rerr := router.Start(cfg, serverURL, loadedCtx); rerr == nil {
 			defer r.Stop()
 			baseURL = r.BaseURL()
+			reportJournal(cfg, r)
 		} else {
 			ui.Warn("router failed (%v); serving direct", rerr)
 		}

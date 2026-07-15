@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"winc/internal/config"
+	"winc/internal/journal"
 	"winc/internal/paths"
 	"winc/internal/reasoning"
 )
@@ -37,6 +38,12 @@ type Router struct {
 	logf    *os.File // team-mode routing log (nil otherwise)
 	logPath string   // "" when the routing log could not be created
 
+	jstore   *journal.Store // context-virtualization store (nil = journal off)
+	jopts    journalOpts
+	jlogf    *os.File // journal observability log (nil when off/uncreatable)
+	jlog     *log.Logger
+	jDormant int // non-zero: journal requested but window this big needs no virtualization
+
 	mu         sync.Mutex
 	rlog       *log.Logger
 	requests   map[string]int  // chat requests routed, by backend name
@@ -47,6 +54,8 @@ type Router struct {
 	deadSkips  int             // requests re-routed past a dead backend
 	infoPinned int             // information-only requests held on a worker instead of the head model
 	continued  int             // truncated answers auto-continued to completion
+	jEvicted   int             // journal: turns evicted out of live prompts
+	jRecalled  int             // journal: evicted turns recalled back into prompts
 }
 
 // fallbackName is the stats/log name for the fallback backend (the main model).
@@ -61,6 +70,7 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 		return nil, err
 	}
 	r := &Router{requests: map[string]int{}, dead: map[string]bool{}}
+	r.openJournal(cfg, upstream, ctxWindow)
 	rp := httputil.NewSingleHostReverseProxy(u)
 	rp.ErrorHandler = swallowClientCancel
 	rp.ModifyResponse = r.rewriteOverflow
@@ -77,6 +87,12 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 				// One parse for the whole rewrite pipeline (see preq); an unparseable
 				// body passes through untouched.
 				if p := parseReq(body); p != nil {
+					if ji := p.applyJournal(r.jstore, r.jopts); ji != nil {
+						// Response metadata + a log line, never text injected into
+						// the assistant's reply: what was recalled must be checkable.
+						w.Header().Set("X-Winc-Journal", ji.header())
+						r.noteJournal(ji)
+					}
 					p.trimCompaction(ctxWindow)
 					if r.blockIfNoGenRoom(w, p, ctxWindow) {
 						return // answered with the compaction signal; nothing to forward
@@ -139,18 +155,21 @@ func (r *Router) Stop() {
 	if logf != nil {
 		_ = logf.Close()
 	}
+	r.closeJournal()
 }
 
 // Stats is a snapshot of the router's session counters. Team mode fills Requests
 // per backend name; in single mode only Overflows is meaningful.
 type Stats struct {
-	Requests    map[string]int // chat requests routed, by backend name
-	Dead        []string       // backends the watchdog marked dead (sorted)
-	Overflows   int            // context-overflow errors rewritten for the agent
-	CapsLowered int            // requests whose max_tokens was lowered to a tier cap
-	DeadSkips   int            // requests re-routed past a dead backend
-	InfoPinned  int            // information-only requests held on a worker instead of the head model
-	Continued   int            // truncated answers auto-continued to completion
+	Requests        map[string]int // chat requests routed, by backend name
+	Dead            []string       // backends the watchdog marked dead (sorted)
+	Overflows       int            // context-overflow errors rewritten for the agent
+	CapsLowered     int            // requests whose max_tokens was lowered to a tier cap
+	DeadSkips       int            // requests re-routed past a dead backend
+	InfoPinned      int            // information-only requests held on a worker instead of the head model
+	Continued       int            // truncated answers auto-continued to completion
+	JournalEvicted  int            // journal: turns evicted out of live prompts
+	JournalRecalled int            // journal: evicted turns recalled back into prompts
 }
 
 // String renders a compact one-line summary, backends sorted by name.
@@ -183,6 +202,9 @@ func (s Stats) String() string {
 	if s.DeadSkips > 0 {
 		fmt.Fprintf(&b, "  dead-skips=%d", s.DeadSkips)
 	}
+	if s.JournalEvicted > 0 || s.JournalRecalled > 0 {
+		fmt.Fprintf(&b, "  journal: evicted=%d recalled=%d", s.JournalEvicted, s.JournalRecalled)
+	}
 	if len(s.Dead) > 0 {
 		fmt.Fprintf(&b, "  dead: %s", strings.Join(s.Dead, ","))
 	}
@@ -203,6 +225,7 @@ func (r *Router) Stats() Stats {
 	s.Dead = append(s.Dead, r.deadNames...)
 	sort.Strings(s.Dead)
 	s.Overflows, s.CapsLowered, s.DeadSkips, s.InfoPinned, s.Continued = r.overflows, r.capsLow, r.deadSkips, r.infoPinned, r.continued
+	s.JournalEvicted, s.JournalRecalled = r.jEvicted, r.jRecalled
 	return s
 }
 

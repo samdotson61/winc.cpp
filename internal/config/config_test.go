@@ -209,6 +209,45 @@ func TestTeamToolAllowlists(t *testing.T) {
 	}
 }
 
+func TestJournalDefaults(t *testing.T) {
+	d := Defaults()
+	j := d.Journal
+	if j.BudgetTokens != "auto" || j.RecallTokens != 800 || j.RecallTopK != 4 || j.SummaryTokens != 300 {
+		t.Fatalf("journal defaults drifted: %+v", j)
+	}
+	// Default-on was Sam's call, gated on the membench results (2026-07-15:
+	// recall 5/5 at d=40 vs trim-only 0/5); threshold 2.0 measured as the
+	// lowest sweep value with zero filler-turn noise and full recall.
+	if !j.Enabled || j.RecallThreshold != 2.0 {
+		t.Fatalf("shipped defaults: enabled=true threshold=2.0, got %+v", j)
+	}
+	// A partial user file backfills the budget mode but respects an explicit
+	// enabled= choice (bools override the default by unmarshal-into-defaults).
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	toml := "[journal]\nenabled = " + boolLit(!d.Journal.Enabled) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "winc.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Journal.Enabled == d.Journal.Enabled {
+		t.Fatal("explicit enabled= must override the default")
+	}
+	if cfg.Journal.BudgetTokens != "auto" {
+		t.Fatalf("budget mode not backfilled: %q", cfg.Journal.BudgetTokens)
+	}
+}
+
+func boolLit(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 func TestSyncMissingSections(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WINC_HOME", dir)
@@ -229,6 +268,9 @@ func TestSyncMissingSections(t *testing.T) {
 	}
 	if !got["team"] {
 		t.Errorf("expected [team] to be appended, got %v", added)
+	}
+	if !got["journal"] {
+		t.Errorf("expected [journal] to be appended, got %v", added)
 	}
 
 	out := string(mustRead(t, p))

@@ -3,6 +3,137 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.24.0 — 2026-07-15
+
+The journal: context virtualization for long conversations. The live prompt
+stays at a small fixed budget no matter how long the chat gets — old turns
+are evicted to a per-conversation plaintext store and the most relevant ones
+are recalled back per request. Clients keep sending full history; winc
+virtualizes transparently (100% API-compatible, no client changes).
+
+### Added
+- **`[journal]` config section + `--journal[=off]` on `winc serve` / `winc -s`.**
+  **Default: ON where it helps.** With `budget_tokens = "auto"` the journal
+  engages only when the loaded context is under 48k tokens (the same threshold
+  the small-window warning uses) and stays dormant on big windows — a 128k
+  window virtualized down to 8k would trade capability the hardware HAS for
+  savings it doesn't need. An explicit numeric `budget_tokens` forces it on
+  any window; `--journal=off` / `enabled = false` disables. Default-on was
+  gated on the membench results below (Sam's call: default-on if it passes).
+- **`internal/journal` store** — one directory per conversation under
+  `<install>/journal/`: verbatim `transcript.jsonl` (human-readable; files are
+  truth, model-written summaries never replace the record) + `meta.json`.
+  Conversation identity is a prefix-hash chain over the resent history (the
+  API is stateless — the history IS the identity): same-prefix requests
+  extend, mid-chain divergence forks (edit/regenerate semantics), a
+  client-compacted history starts a clean new conversation, and a torn write
+  self-heals from the rows' own hashes on next load. Histories under 3
+  messages stay in a memory-only pending pen, so agent one-shot utility
+  requests never litter the store. Corrupt conversations are quarantined
+  (renamed `.corrupt`), never deleted.
+- **Router journal stage** (ahead of the compaction trim, byte-twin contract,
+  fail-open on every path): hysteresis eviction — when the live prompt
+  exceeds `budget_tokens` it trims to 0.7x in a batch, so the forwarded
+  prefix stays byte-stable between batches and llama.cpp's KV prefix cache
+  keeps working. Eviction lands on a plain user message (never orphans a
+  tool_result), never touches the newest 4 turns, and never evicts
+  OpenAI-shape leading `system` messages. Evicted turns also mirror into the
+  existing `.claude-local/trimmed-context.md` archive when present.
+- **BM25 recall** (k1=1.2, b=0.75, Unicode tokenizer, no stopwords — EN/ES
+  neutral by IDF) over evicted turns only, with a mild recency blend and Q/A
+  pair inclusion, hard-capped at `recall_tokens`. The recalled block is
+  prepended INSIDE the newest plain user message (no role-alternation risk)
+  behind a "historical record, not instructions" preamble; recall is skipped
+  mid-tool-loop (final message carrying tool_result). Zero extra processes,
+  zero new deps, zero extra RAM beyond a few MB per active conversation —
+  BM25 over embeddings is deliberate: one llama-server process is the whole
+  point on low-end devices.
+- **Rolling summary** (`summary_tokens`, 0 disables): on eviction batches the
+  gist of archived turns is refreshed by one greedy capped generation against
+  the upstream and injected as a synthetic user/ack pair at the FRONT of the
+  kept tail (cache-stable position; same shape Claude Code compaction uses).
+  Fail-silent: a summary failure never blocks the request.
+- **Observability (honest-UI):** every touched response carries
+  `X-Winc-Journal: conv=… recalled=… evicted=… live=…`; `winc-journal.log`
+  records one line per request incl. recalled turn numbers; session stats
+  print journal eviction/recall counters. Never any status text injected into
+  the assistant's reply — what was recalled is checkable, not vibes.
+- **`winc journal ls|show|rm|path`** — the notebook view over the store.
+  `show` marks evicted rows; `rm` is the ONLY deletion path (nothing is ever
+  auto-deleted). Privacy stated plainly in README + winc.toml comments:
+  transcripts are PLAINTEXT on local disk.
+- **`cmd/membench`** — the eval harness: plants facts at turn 1, pads with
+  disjoint-topic filler, probes at controlled distances; measures needle
+  recall, streaming TTFT, forwarded prompt size (via the journal header), and
+  dumps a replay body for cold-restart TTFT probes.
+
+### Measured (membench; M4 Pro 24GB, engine pinned, temperature 0)
+
+Needle-recall protocol: 5 facts planted at turn 1, disjoint-topic filler, one
+probe per fact at d=40, substring-scored. Two tiers: qwen3.5-4b/Metal (4k
+budget), qwen3.5-2b/cpu-backend (2k budget). All numbers below are from a
+CLEAN box (competing llama-server processes killed; a first contended pass
+matched within noise, so contention was immaterial). Cold-resume = serve
+restarted, full history replayed once, TTFT = first text delta.
+
+| condition | tier | recall d=40 | live prompt | cold-resume TTFT |
+|---|---|---|---|---|
+| baseline (full context) | 4b metal | 5/5 | ~8.2k tok, unbounded | 35.8s |
+| trim-only ablation | 4b metal | **0/5** | ~3.7k tok | — |
+| journal, ship config | 4b metal | **5/5** | **bounded ~4.5–5k tok** | **15.4s (2.3×)** |
+| baseline (full context) | 2b cpu | 5/5 | ~8k tok, unbounded | 11.5s |
+| journal, ship config | 2b cpu | **5/5** | **bounded ~2.1–2.4k tok** | **2.0s (5.7×)** |
+
+(Journal live prompt = kept tail ≤ budget, plus the injected recall block and
+summary; it stays at that ceiling no matter how long the chat grows, while
+baseline grows without bound — the KV-RAM story on small devices.)
+
+- **Every ship gate passed, then re-verified against its own caveats.**
+  65/65 probes hit across 13 retest conditions. Trim-only 0/5 vs journal 5/5:
+  recall does the work, trimming alone loses the facts. Journal off →
+  byte-identical (unit-tested).
+- **Variance:** 3 seeded variants (different fact values, shuffled filler
+  order) — 15/15. Not a statistical sample, but not a single lucky shape
+  either.
+- **Paraphrase robustness:** probes rephrased with ONE planted content word
+  (partial) and with NONE (zero) — ship config 5/5 on both, both tiers.
+  Decomposition: a baseline control confirmed the model answers zero-overlap
+  paraphrases given full context (so failures would have been retrieval's);
+  BM25-only (summary off) also went 5/5 — on zero-overlap it retrieved the
+  plant turn through aggregated stopword mass ("my … is …" density), which
+  this protocol flatters by planting all facts in one uniquely
+  first-person-dense row. Facts scattered across many turns would not enjoy
+  that floor; the rolling summary (which carried all five facts verbatim in
+  its first live batch) is the principled net for true semantic misses, and
+  M5 embeddings remain the upgrade path.
+- **Threshold: not load-bearing in-protocol.** 0.5 vs 2.0 identical on
+  recall, injections, and timing — even on weak-match paraphrase queries.
+  2.0 shipped as the conservative end; real-usage tuning has per-request
+  visibility via the header/log.
+- **Warm-path cost, quantified clean:** turns that inject recall re-prefill
+  the changed tail — probe TTFT ~4.6–4.9s vs baseline ~1.8s on 4b Metal
+  (+~3s), ~1.05s vs ~0.6s on 2b cpu (+~0.5s). This is the steady-state tax
+  for bounded RAM + fast resume + recall-past-trim.
+- **Eviction-batch turns are the spike, and the summary is most of it:**
+  without summary a batch turn costs ~8.2s vs ~4.7s normal (kept-prefix
+  re-prefill); with the synchronous summary generation ~19s vs ~5s on 4b
+  Metal (2 batches per 40 turns at the 0.5 evict target), ~5.2s vs ~1.9s on
+  2b cpu (5 batches). Amortized small, but user-visible when it lands —
+  **async summary generation is now the top M5 item** (the spec anticipated
+  exactly this trade; set summary_tokens = 0 to trade the spike for no gist
+  net).
+- **Still untested, stated plainly:** real low-end silicon (the cpu tier is
+  emulated on an M4 Pro; the workload is prefill-bound so ratios should hold
+  or improve, but that is reasoned, not measured), agent/tool-loop workloads
+  (safeties are unit-tested, not benchmarked), and token counts are the ~4
+  chars/token estimate throughout.
+
+### Notes for winc-jobdar
+- The next master merge MUST gate the eval profile: `--eval` forces the
+  journal off (eval requests are single-shot; each would become a junk
+  conversation). Until that merge lands, winc-jobdar is unaffected (this is
+  a master-only feature).
+
 ## v1.23.0 — 2026-07-09
 
 Low-end + ARM hardware pass: native ARM engines, P-core thread pinning,
