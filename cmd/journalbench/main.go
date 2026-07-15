@@ -1,4 +1,4 @@
-// membench drives a running winc serve with synthetic conversations to measure
+// journalbench drives a running winc serve with synthetic conversations to measure
 // the journal (context virtualization) against its ship gates:
 //
 //   - needle recall: facts planted at turn 1, probed at controlled distances
@@ -13,7 +13,7 @@
 //
 // Usage:
 //
-//	membench -url http://127.0.0.1:8199 -condition journal -distances 10,20,40 -out results.jsonl
+//	journalbench -url http://127.0.0.1:8199 -condition journal -distances 10,20,40 -out results.jsonl
 package main
 
 import (
@@ -322,7 +322,7 @@ func runConversation(url, condition string, distance, maxAnswer, seed int, set f
 		replay := append(append([]msg{}, history...),
 			msg{Role: "user", Content: probes[1] + " Answer in one short sentence."})
 		body, err := json.Marshal(map[string]any{
-			"model": "membench", "max_tokens": 60, "temperature": 0, "stream": true, "messages": replay,
+			"model": "journalbench", "max_tokens": 60, "temperature": 0, "stream": true, "messages": replay,
 		})
 		if err == nil {
 			err = os.WriteFile(dumpPath, body, 0o644)
@@ -355,7 +355,7 @@ func headerField(h, key string) string {
 // returning the assistant text plus timing.
 func send(url string, history []msg, maxAnswer int) (string, turnMetric, error) {
 	body, err := json.Marshal(map[string]any{
-		"model":       "membench",
+		"model":       "journalbench",
 		"max_tokens":  maxAnswer,
 		"temperature": 0,
 		"stream":      true,

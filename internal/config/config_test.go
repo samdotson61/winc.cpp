@@ -212,10 +212,10 @@ func TestTeamToolAllowlists(t *testing.T) {
 func TestJournalDefaults(t *testing.T) {
 	d := Defaults()
 	j := d.Journal
-	if j.BudgetTokens != "auto" || j.RecallTokens != 800 || j.RecallTopK != 4 || j.SummaryTokens != 300 {
+	if j.BudgetTokens != "auto" || j.RecallTokens != 400 || j.RecallTopK != 4 || j.SummaryTokens != 300 {
 		t.Fatalf("journal defaults drifted: %+v", j)
 	}
-	// Default-on was Sam's call, gated on the membench results (2026-07-15:
+	// Default-on was Sam's call, gated on the journalbench results (2026-07-15:
 	// recall 5/5 at d=40 vs trim-only 0/5); threshold 2.0 measured as the
 	// lowest sweep value with zero filler-turn noise and full recall.
 	if !j.Enabled || j.RecallThreshold != 2.0 {

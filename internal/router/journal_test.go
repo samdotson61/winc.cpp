@@ -2,13 +2,16 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"winc/internal/config"
 	"winc/internal/journal"
@@ -409,5 +412,143 @@ func TestJournalFollowsConfigDefault(t *testing.T) {
 	resp.Body.Close()
 	if h := resp.Header.Get("X-Winc-Journal"); h != "" {
 		t.Fatalf("journal-off responses must not carry the header, got %q", h)
+	}
+}
+
+func TestJournalSummaryGeneratesAsync(t *testing.T) {
+	const fixedSummary = "Marisol's locker code is 48213; she likes burnt sienna."
+	var summaryCalls, chatCalls int
+	var lastChat []byte
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/v1/chat/completions") && bytes.Contains(body, []byte("winc-journal-summary")) {
+			summaryCalls++
+			w.Write([]byte(`{"choices":[{"message":{"content":"` + fixedSummary + `"}}]}`))
+			return
+		}
+		chatCalls++
+		lastChat = body
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer up.Close()
+
+	cfg := journalTestConfig(t)
+	cfg.Journal.SummaryTokens = 300
+	rt, err := Start(cfg, up.URL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	// The batch-triggering request must return WITHOUT waiting on the summary.
+	resp, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json",
+		strings.NewReader(longConv("what was my locker code again?")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// The summary lands in the store shortly after, off the request path.
+	deadline := time.Now().Add(5 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		js, jerr := journal.Open(cfg.Journal.Dir)
+		if jerr == nil {
+			for _, c := range js.List() {
+				if m := c.Meta(); m.Summary != "" {
+					got = m.Summary
+				}
+			}
+		}
+		if got != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got != fixedSummary {
+		t.Fatalf("async summary never landed: %q", got)
+	}
+	mu.Lock()
+	sc := summaryCalls
+	mu.Unlock()
+	if sc != 1 {
+		t.Fatalf("want exactly 1 summary generation, got %d", sc)
+	}
+
+	// The NEXT request carries the summary block (previous turn stayed stale).
+	var req map[string]json.RawMessage
+	json.Unmarshal([]byte(longConv("what was my locker code again?")), &req)
+	var msgs []json.RawMessage
+	json.Unmarshal(req["messages"], &msgs)
+	a, _ := json.Marshal(map[string]string{"role": "assistant", "content": "it is 48213"})
+	u, _ := json.Marshal(map[string]string{"role": "user", "content": "thanks, tell me about sailing"})
+	msgs = append(msgs, a, u)
+	mb, _ := json.Marshal(msgs)
+	req["messages"] = mb
+	body2, _ := json.Marshal(req)
+	resp2, err := http.Post(rt.BaseURL()+"/v1/messages", "application/json", bytes.NewReader(body2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	mu.Lock()
+	forwarded := string(lastChat)
+	mu.Unlock()
+	if !strings.Contains(forwarded, "Conversation journal") || !strings.Contains(forwarded, "48213;") {
+		t.Fatal("follow-up request must carry the async-generated summary block")
+	}
+}
+
+func TestJournalSummaryInFlightDedup(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		time.Sleep(300 * time.Millisecond)
+		w.Write([]byte(`{"choices":[{"message":{"content":"gist"}}]}`))
+	}))
+	defer slow.Close()
+
+	js := openTestStore(t)
+	res, err := js.Observe([]journal.Msg{
+		{Role: "user", Text: "alpha one"}, {Role: "assistant", Text: "beta two"},
+		{Role: "user", Text: "gamma three"}, {Role: "assistant", Text: "delta four"},
+	})
+	if err != nil || res.Conv == nil {
+		t.Fatalf("conv setup: %v %+v", err, res)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &Router{jctx: ctx, jsumming: map[string]bool{}, jopts: journalOpts{upstream: slow.URL, summaryTokens: 50}}
+	ji := &journalInfo{summarizeConv: res.Conv, summarizeThrough: 2}
+	r.scheduleSummary(ji)
+	r.scheduleSummary(ji) // second batch lands while the first is in flight
+	time.Sleep(700 * time.Millisecond)
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("in-flight dedup: want 1 generation, got %d", got)
+	}
+}
+
+func TestJournalStageOnlyRequestsSummary(t *testing.T) {
+	// The stage itself must never generate: it flags the want and returns.
+	js := openTestStore(t)
+	o := testJournalOpts()
+	o.summaryTokens = 300
+	o.upstream = "http://127.0.0.1:1" // nothing listens; a sync call would fail loudly/slowly
+	start := time.Now()
+	_, ji := applyJournalBody([]byte(longConv("what was my locker code again?")), js, o)
+	if ji == nil || ji.summarizeConv == nil || ji.summarizeThrough == 0 {
+		t.Fatalf("batch pass must request a summary: %+v", ji)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stage blocked on summary generation (%v)", elapsed)
 	}
 }

@@ -42,7 +42,10 @@ type Router struct {
 	jopts    journalOpts
 	jlogf    *os.File // journal observability log (nil when off/uncreatable)
 	jlog     *log.Logger
-	jDormant int // non-zero: journal requested but window this big needs no virtualization
+	jDormant int             // non-zero: journal requested but window this big needs no virtualization
+	jctx     context.Context // cancelled on Stop; bounds background summary generations
+	jcancel  context.CancelFunc
+	jsumming map[string]bool // conversations with a summary generation in flight (under mu)
 
 	mu         sync.Mutex
 	rlog       *log.Logger
@@ -80,6 +83,7 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		var ji *journalInfo
 		if req.Method == http.MethodPost && isChatPath(req.URL.Path) {
 			if body, rerr := io.ReadAll(req.Body); rerr == nil {
 				req.Body.Close()
@@ -87,7 +91,7 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 				// One parse for the whole rewrite pipeline (see preq); an unparseable
 				// body passes through untouched.
 				if p := parseReq(body); p != nil {
-					if ji := p.applyJournal(r.jstore, r.jopts); ji != nil {
+					if ji = p.applyJournal(r.jstore, r.jopts); ji != nil {
 						// Response metadata + a log line, never text injected into
 						// the assistant's reply: what was recalled must be checkable.
 						w.Header().Set("X-Winc-Journal", ji.header())
@@ -116,6 +120,15 @@ func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) 
 			}
 		}
 		rp.ServeHTTP(w, req)
+		if ji != nil {
+			// ServeHTTP blocks until the response finished streaming, so the
+			// background summary starts AFTER the batch turn's own generation
+			// -- measured: scheduling it before made the two generations
+			// contend for the same compute and the batch turn absorbed most
+			// of the summary's cost anyway (14.2s vs the 8.2s no-summary
+			// floor). Scheduled here it runs in user think-time.
+			r.scheduleSummary(ji)
+		}
 	})
 	// Send any remaining server-internal log lines to the void rather than the shared
 	// terminal, so nothing from winc ever corrupts the agent's TUI.

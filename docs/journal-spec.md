@@ -1,4 +1,4 @@
-# winc memory — context virtualization spec
+# winc journal — context virtualization spec
 
 **Status:** IMPLEMENTED as the **journal** feature — v1.24.0, built 2026-07-15 (M0–M4)
 **Date:** 2026-07-14 (spec) / 2026-07-15 (as built)
@@ -13,8 +13,8 @@ Sam's calls on the §16 open questions (2026-07-15):
 1. **Name = "journal"** (matches function). Everything renamed: `--journal`,
    `[journal]` config section, `<install>/journal/` store dir, `winc journal
    ls|show|rm|path`, `X-Winc-Journal` response header, `internal/journal`
-   package, `winc-journal.log`. The eval harness stays `cmd/membench`.
-2. **Default-on if it passes tests** — decided by the membench gates (see
+   package, `winc-journal.log`. The eval harness stays `cmd/journalbench`.
+2. **Default-on if it passes tests** — decided by the journalbench gates (see
    CHANGELOG for the measured numbers and the shipped default).
 3. **Education-app tie-in** planned later; winc stays modular — the JSONL
    store format is deliberately read-elsewhere-friendly.
@@ -40,12 +40,18 @@ Implementation deviations (all documented in code comments too):
   so `recalled=` in the header can exceed `recall_top_k`.
 - **Measured (retest 2026-07-15): the synchronous summary makes eviction-batch
   turns spike** (~19s vs ~5s normal on 4b Metal, twice per 40 turns; ~5.2s vs
-  ~1.9s on 2b cpu) — §9's "make async in M5 if it hurts" is confirmed hurt:
-  **async summary is the top M5 item.** Eviction target also moved to 0.5×
-  budget (deeper, rarer batches measured cheaper than the spec's 0.7×).
+  ~1.9s on 2b cpu) — §9's "make async in M5 if it hurts" is confirmed hurt.
+  **SHIPPED v1.25.0: summary generation is async** (one in-flight per
+  conversation, batch turn ships one-batch-stale, cancelled on Stop), and
+  `recall_tokens` default dropped 800→400 (the steady-state latency knob).
+  Eviction target also moved to 0.5× budget (deeper, rarer batches measured
+  cheaper than the spec's 0.7×). `--cache-reuse` was A/B-measured: no gain
+  (per-turn changes already sit at the prompt tail); quality-safe.
 
-The spec below is preserved as designed (with "memory" naming); read it with
-the rename + deviations above in mind.
+The spec below has been flushed to the shipped journal naming (2026-07-16;
+originally drafted as "winc memory" — the as-built decisions above record the
+rename). §16's first open question keeps its original wording as the record
+of the naming decision itself.
 
 ---
 
@@ -81,20 +87,20 @@ how long the conversation gets, by:
 Clients stay 100% API-compatible: they keep sending full history to the same
 endpoint; winc transparently virtualizes the context. No client changes, ever.
 
-**Measurable success (ship gates, calibrate exact numbers via membench):**
+**Measurable success (ship gates, calibrate exact numbers via journalbench):**
 
 - Needle recall ≥ 90% at 40-turn distance with a 4k live budget.
 - TTFT ≥ 2× better than full-context baseline at 40+ turns on the arm-cpu tier.
-- Memory-on beats trimmed-no-recall ablation by a wide margin (proves recall does
+- Journal-on beats trimmed-no-recall ablation by a wide margin (proves recall does
   the work, not just trimming).
-- `--memory` off (default) → byte-identical behavior to today; all existing tests
+- `--journal` off (default) → byte-identical behavior to today; all existing tests
   green.
 
 ## 3. Non-goals (MVP)
 
 - Embeddings / vector search (phase M5; BM25 first — see §8 for why).
 - Cross-conversation or global memory (contamination risk; per-conversation only).
-- Memory for the `--eval` profile (single-shot requests; nothing to remember).
+- Journaling for the `--eval` profile (single-shot requests; nothing to remember).
 - Multi/team mode (`StartTeam`) — single-model `Start()` first; team inherits in M5.
 - Client-visible protocol changes (a response header is the only addition).
 - Any new runtime dependency. Pure Go, stdlib only (protects the 6-binary
@@ -117,7 +123,7 @@ endpoint; winc transparently virtualizes the context. No client changes, ever.
 
 ## 5. Architecture
 
-Memory is a new stage in the existing router rewrite pipeline
+The journal is a new stage in the existing router rewrite pipeline
 ([internal/router/router.go](../internal/router/router.go) `Start()`, the
 `mux.HandleFunc("/")` at ~line 78). It generalizes what `trimCompaction` +
 `archiveTrimmed` already do for compaction requests to *every* chat request,
@@ -129,13 +135,13 @@ client (full history, unchanged)
    ▼
 winc router (:port)
    ├─ parseReq → preq
-   ├─ [NEW] p.applyMemory(store, budget)      ← this spec
+   ├─ [NEW] p.applyJournal(store, budget)      ← this spec
    │     1. identify conversation (prefix-hash chain)     §6
    │     2. ingest new turns to store (best-effort)       §7
    │     3. trim prompt to live budget (evict old turns)  §7
    │     4. BM25 recall over evicted turns                §8
    │     5. inject recalled block + summary               §9
-   ├─ p.trimCompaction(ctxWindow)      (existing, unchanged — skip-safe: memory
+   ├─ p.trimCompaction(ctxWindow)      (existing, unchanged — skip-safe: the journal
    ├─ blockIfNoGenRoom                  keeps prompts small so these rarely fire)
    ├─ p.compact(nil)                   (existing minify)
    ├─ p.injectThinking                 (existing, adaptive only)
@@ -144,19 +150,19 @@ winc router (:port)
 
 **Wiring change in [internal/cli/serve.go](../internal/cli/serve.go):** today the
 router only starts when `Reasoning.Mode == "adaptive"` (serve.go:98). With
-`--memory` the router must start regardless of reasoning mode (memory lives in the
-router). `--eval` rejects `--memory` (like it rejects `--multi`).
+`--journal` the router must start regardless of reasoning mode (the journal lives in the
+router). `--eval` rejects `--journal` (like it rejects `--multi`).
 
 **House rules the implementation must follow** (all modeled by existing code):
 
 - One parse per request; stages mutate `preq` and set `changed` (`parseReq` pattern).
 - Byte-based twin function per stage as the testable contract
-  (`applyMemory(body []byte, …) []byte` mirroring `(*preq).applyMemory`, exactly
+  (`applyJournal(body []byte, …) []byte` mirroring `(*preq).applyJournal`, exactly
   like `trimCompaction`).
 - Side effects (store writes) are **best-effort and fail-silent** — preservation
   must never block, slow, or log into the request path (`archiveTrimmed`
   philosophy, router.go:847).
-- **Fail-open:** any error in the memory stage → forward the request untouched
+- **Fail-open:** any error in the journal stage → forward the request untouched
   (that's just today's behavior).
 - Never orphan a `tool_result`: kept transcript must open on a plain user message
   (reuse `plainUserMessage`, router.go:892).
@@ -196,14 +202,14 @@ Cost: one sha256 per new message + O(conversations) map lookups. Microseconds.
 
 ## 7. Store + write path
 
-**Location:** `<install>/memory/` via new `paths.MemoryDir()` (house style:
+**Location:** `<install>/journal/` via new `paths.JournalDir()` (house style:
 everything relative to `InstallDir()`, `WINC_HOME` overridable — paths.go).
-Override with `[memory] dir`.
+Override with `[journal] dir`.
 
 **Layout (files are truth, human-readable — this store IS the "digital notebook"):**
 
 ```
-memory/
+journal/
   conv-3fa9c2d1b07e/
     transcript.jsonl   # one line per message: {"i":0,"role":"user","text":"…","ts":"…","h":"…"}
     meta.json          # {"id","created","title","chain":{…},"evicted_through":N,"summary":"…","summary_through":M}
@@ -215,13 +221,13 @@ memory/
   the record; model-written text (summaries) never replaces it — summaries are
   hints, not truth (a 4B will occasionally hallucinate; don't let that into the
   permanent record).
-- `title` = first user line, truncated — for `winc memory ls`.
+- `title` = first user line, truncated — for `winc journal ls`.
 - Writes: append-only, single `O_APPEND` write per request, in-process mutex per
   conversation. One winc serve per install dir is the supported topology (same
   as today); an flock is M5 hardening if ever needed.
 - Corrupt store on load → rename `conv-X` to `conv-X.corrupt`, start fresh,
   keep serving (fail-open).
-- No auto-deletion. `winc memory rm <id>` is the only deletion. Document plainly:
+- No auto-deletion. `winc journal rm <id>` is the only deletion. Document plainly:
   **plaintext transcripts on local disk** — that's the product (offline, local,
   private), but say it out loud in README/docs.
 
@@ -232,10 +238,10 @@ is then just moving a pointer (`evicted_through`), not a data copy.
 
 **Trim policy (the generalized `trimCompaction`):**
 
-- Applies to every chat request when memory is on, **except**: compaction
+- Applies to every chat request when the journal is on, **except**: compaction
   requests (`p.isCompaction()` — the existing path owns those) and info-only
   requests.
-- Budget `B` = `[memory] budget_tokens` (default `"auto"` = `clamp(ctx/2, 2048, 8192)`),
+- Budget `B` = `[journal] budget_tokens` (default `"auto"` = `clamp(ctx/2, 2048, 8192)`),
   measured with the existing `estTokens` (bytes/4) — consistency over precision.
 - **Hysteresis:** trim only when `estTokens > B`; when trimming, evict down to
   `0.7·B`. Evictions then happen in batches every ~N turns instead of every turn,
@@ -275,13 +281,13 @@ only durable artifact.
   toward recent, not a takeover.
 - Query = `ContentText` of the newest user message.
 - Selection: top-k (default `recall_top_k = 4`) with `final ≥ recall_threshold`
-  (default 1.0 — **calibrate via membench, don't trust this number**), then a
+  (default 1.0 — **calibrate via journalbench, don't trust this number**), then a
   hard token cap `recall_tokens` (default 800, estTokens). When a selected chunk
   has an adjacent paired message (the Q to its A), include the pair if budget
   allows — an answer without its question is often useless.
 - Nothing selected → no injection that turn (block absent, zero overhead).
 
-There is deliberately **no "did the user reference memory?" detector** — regex
+There is deliberately **no "did the user reference the past?" detector** — regex
 triggers are brittle and a model-based trigger costs a generation. Scoring every
 turn with a threshold approximates "only when referenced" for free.
 
@@ -289,7 +295,7 @@ turn with a threshold approximates "only when referenced" for free.
 
 Two injected artifacts, placed for KV-cache friendliness. llama-server reuses
 KV for the longest unchanged token prefix (`cache_prompt`, default-on in current
-llama.cpp; verify on our pinned engine — membench will show it in TTFT either
+llama.cpp; verify on our pinned engine — journalbench will show it in TTFT either
 way). Rule: **the more often a block changes, the later in the prompt it goes.**
 
 ```
@@ -322,7 +328,7 @@ way). Rule: **the more often a block changes, the later in the prompt it goes.**
   message carrying `tool_result` blocks is an agent mid-tool-loop; skip recall
   that turn (content-block ordering rules + no value).
 - **Summary (M3):** synthetic plain user message at the front of the kept tail —
-  `[Conversation memory — summary of turns 1–N]: …` — followed by a one-word
+  `[Conversation journal — summary of turns 1–N]: …` — followed by a one-word
   synthetic assistant ack. Same shape Claude Code compaction uses, so models and
   templates already tolerate it. Generated on eviction batches only: one extra
   generation (~300 tokens, greedy, fixed prompt) per batch, synchronous in MVP
@@ -334,30 +340,30 @@ way). Rule: **the more often a block changes, the later in the prompt it goes.**
 `winc.toml` (new section, house style — config.go):
 
 ```toml
-[memory]
-enabled = false            # master switch (or: winc serve --memory)
+[journal]
+enabled = false            # master switch (or: winc serve --journal)
 budget_tokens = "auto"     # live prompt target; auto = clamp(ctx/2, 2048, 8192)
 recall_tokens = 800        # hard cap on injected recall
 recall_top_k = 4
-recall_threshold = 1.0     # calibrate via membench
+recall_threshold = 1.0     # calibrate via journalbench
 summary_tokens = 300       # M3
-dir = ""                   # override store location (default <install>/memory)
+dir = ""                   # override store location (default <install>/journal)
 ```
 
 CLI:
 
-- `winc serve --memory [model]` — enable for this serve (forces router on).
-  `--eval` + `--memory` → error, same pattern as `--eval`/`--multi`.
-- `winc memory ls` — conversations: id, title, turns, evicted, size, last active.
-- `winc memory show <id> [--turns a-b]` — dump transcript (the notebook view).
-- `winc memory rm <id>` / `winc memory path` — housekeeping.
+- `winc serve --journal [model]` — enable for this serve (forces router on).
+  `--eval` + `--journal` → error, same pattern as `--eval`/`--multi`.
+- `winc journal ls` — conversations: id, title, turns, evicted, size, last active.
+- `winc journal show <id> [--turns a-b]` — dump transcript (the notebook view).
+- `winc journal rm <id>` / `winc journal path` — housekeeping.
   (M4; `ls`+`path` are trivial, ship them with M0 if convenient.)
 
-**Observability (honest-UI):** every response touched by memory gets a header —
-`X-Winc-Memory: conv=3fa9c2d1 recalled=3 evicted=12 live=3.9k` — and serve's
+**Observability (honest-UI):** every response touched by the journal gets a header —
+`X-Winc-Journal: conv=3fa9c2d1 recalled=3 evicted=12 live=3.9k` — and serve's
 verbose log gets one line per request with the same facts plus recalled turn
 numbers. Never inject status text into the assistant's reply content. What was
-recalled must be checkable (`winc memory show`), not vibes.
+recalled must be checkable (`winc journal show`), not vibes.
 
 ## 11. Performance budget
 
@@ -372,11 +378,11 @@ recalled must be checkable (`winc memory show`), not vibes.
 
 The single biggest implementation risk is **cache-hostile injection** (block
 placed early → full re-prefill every turn → feature makes winc *slower*). §9's
-ordering is the mitigation; membench TTFT is the regression tripwire.
+ordering is the mitigation; journalbench TTFT is the regression tripwire.
 
-## 12. Eval — membench (build this BEFORE the fancy parts)
+## 12. Eval — journalbench (build this BEFORE the fancy parts)
 
-`cmd/membench` (or `scripts/` first if faster): drives a running serve URL with a
+`cmd/journalbench` (or `scripts/` first if faster): drives a running serve URL with a
 synthetic conversation. Greedy/deterministic via the same knobs the eval profile
 uses.
 
@@ -384,12 +390,12 @@ uses.
 turn 1; add filler exchanges; ask for each fact at distances d ∈ {10, 20, 40};
 answer scored by substring match.
 
-**Conditions:** (a) full-context baseline (memory off), (b) trim-only ablation
-(memory on, recall forced off), (c) memory on. Report per condition: fact recall
+**Conditions:** (a) full-context baseline (journal off), (b) trim-only ablation
+(journal on, recall forced off), (c) memory on. Report per condition: fact recall
 %, TTFT per turn, forwarded prompt tokens (from the winc log line).
 
 **Acceptance (initial, calibrate):** §2's ship gates. Also run the existing
-canary (4.5/apply) to prove serve-path neutrality with memory off.
+canary (4.5/apply) to prove serve-path neutrality with the journal off.
 
 Run matrix: M4 Mac + one low tier (arm-cpu or <4GB preset), qwen3.5-4b and one
 2b rung.
@@ -398,10 +404,10 @@ Run matrix: M4 Mac + one low tier (arm-cpu or <4GB preset), qwen3.5-4b and one
 
 | M | Scope | Est |
 |---|---|---|
-| **M0** | `internal/memory` package (identity, store, ingest, BM25, recall) + router stage `applyMemory` + `--memory` flag + config section + `paths.MemoryDir` + unit tests (table-driven, house style). No summary. Works end-to-end behind flag. | 2–3 days |
-| **M1** | membench + calibration (threshold, budget defaults) + TTFT/cache verification on pinned engine. | 1–2 days |
-| **M2** | Fork/edit semantics hardened + corrupt-store recovery + `winc memory ls/show/rm/path`. | 1 day |
-| **M3** | Rolling summary on eviction batches (greedy, capped, fail-silent). Re-run membench. | 1 day |
+| **M0** | `internal/journal` package (identity, store, ingest, BM25, recall) + router stage `applyJournal` + `--journal` flag + config section + `paths.JournalDir` + unit tests (table-driven, house style). No summary. Works end-to-end behind flag. | 2–3 days |
+| **M1** | journalbench + calibration (threshold, budget defaults) + TTFT/cache verification on pinned engine. | 1–2 days |
+| **M2** | Fork/edit semantics hardened + corrupt-store recovery + `winc journal ls/show/rm/path`. | 1 day |
+| **M3** | Rolling summary on eviction batches (greedy, capped, fail-silent). Re-run journalbench. | 1 day |
 | **M4** | Docs (README + this doc updated), header/log polish, CHANGELOG, ship gates → **v1.24.0**. | 0.5 day |
 | **M5** | Later, separate notes: embeddings/hybrid (RAM-tier gated), team mode, sliding-window rematch, async summary, flock. | — |
 
@@ -409,10 +415,10 @@ Run matrix: M4 Mac + one low tier (arm-cpu or <4GB preset), qwen3.5-4b and one
 
 1. Branch from **master** (this is a general feature; winc-jobdar stays separate
    per the standing decision).
-2. `internal/paths/paths.go`: add `MemoryDir()` (+ 3-line test).
-3. `internal/config/config.go`: add `Memory` struct to `Config`, defaults in the
+2. `internal/paths/paths.go`: add `JournalDir()` (+ 3-line test).
+3. `internal/config/config.go`: add `Journal` struct to `Config`, defaults in the
    loader.
-4. New `internal/memory/`:
+4. New `internal/journal/`:
    - `identity.go` — msg normalize/hash, chain, longest-prefix match, fork ids.
    - `store.go` — load/scan dir, `Conversation` (append, meta, evicted pointer,
      mutex), corrupt-rename.
@@ -420,15 +426,15 @@ Run matrix: M4 Mac + one low tier (arm-cpu or <4GB preset), qwen3.5-4b and one
    - `recall.go` — query → selected chunks under budget (+ pair-inclusion).
    - Table-driven tests per file; golden tests for chain/fork edges (edit turn 3
      of 10, regenerate last turn, client-compacted history → new conv).
-5. `internal/router/memory.go` — `(*preq).applyMemory(store, budget)` + byte-twin
-   `applyMemory(body, …)`; wire into `Start()` pipeline before `trimCompaction`;
+5. `internal/router/memory.go` — `(*preq).applyJournal(store, budget)` + byte-twin
+   `applyJournal(body, …)`; wire into `Start()` pipeline before `trimCompaction`;
    skip on `isCompaction()`/info-only/non-plain final message; fail-open on every
    error path. Tests mirror `router_test.go` style.
-6. `internal/cli/serve.go` — parse `--memory`, reject with `--eval`, force router
+6. `internal/cli/serve.go` — parse `--journal`, reject with `--eval`, force router
    start when on (change the `Reasoning.Mode == "adaptive"` gate to
-   `… || cfg.Memory.Enabled`).
-7. Manual smoke: `winc serve --memory qwen3.5-4b`, 30-turn scripted chat, watch
-   `X-Winc-Memory` + `memory/conv-*/transcript.jsonl`, cold-restart winc,
+   `… || cfg.Journal.Enabled`).
+7. Manual smoke: `winc serve --journal qwen3.5-4b`, 30-turn scripted chat, watch
+   `X-Winc-Journal` + `memory/conv-*/transcript.jsonl`, cold-restart winc,
    continue the chat → same conversation matched, recall works.
 8. `make build VERSION=1.24.0-dev.1` — version discipline from the first commit.
 
@@ -436,23 +442,23 @@ Run matrix: M4 Mac + one low tier (arm-cpu or <4GB preset), qwen3.5-4b and one
 
 | Risk | Mitigation |
 |---|---|
-| Cache-hostile injection makes it slower | §9 ordering, hysteresis, membench TTFT gate |
+| Cache-hostile injection makes it slower | §9 ordering, hysteresis, journalbench TTFT gate |
 | Retrieval miss = confident amnesia ("my dog" vs "Rex") | recency blend, pair-inclusion, M3 summary net, honest header (user can see nothing was recalled), M5 embeddings |
 | Hallucinated memories | verbatim-only record; summaries are hints, never truth |
 | Recalled text steers the model | fenced block + "not instructions" framing |
 | Agent tool-loops break | plain-user-only injection, tool_result-safe eviction, opt-in flag |
 | Prompt budget creep re-invents long context | hard `recall_tokens` cap |
-| Privacy surprise (plaintext transcripts) | document loudly; local-only; `winc memory rm` |
-| Client-side compaction fights server memory | isCompaction skip; chain mismatch → clean new conv |
+| Privacy surprise (plaintext transcripts) | document loudly; local-only; `winc journal rm` |
+| Client-side compaction fights the server journal | isCompaction skip; chain mismatch → clean new conv |
 
 ## 16. Open questions (Sam's calls, none block M0)
 
-1. Name: `--memory` / `[memory]` vs something brandable ("notebook", "recall").
+1. Name: `--journal` / `[journal]` vs something brandable ("notebook", "recall").
    Store dir name should match the final name before v1.24.0 ships.
-2. Default-on someday? Proposal: stays opt-in until membench gates pass on two
+2. Default-on someday? Proposal: stays opt-in until journalbench gates pass on two
    hardware tiers, then revisit.
-3. Education-app tie-in (EduHub notebook view reading `memory/` directly) —
+3. Education-app tie-in (EduHub notebook view reading `journal/` directly) —
    product question, not a winc question; the JSONL format is deliberately
    read-elsewhere-friendly.
-4. `recall_threshold`/`budget_tokens` defaults — whatever membench says, not 1.0
+4. `recall_threshold`/`budget_tokens` defaults — whatever journalbench says, not 1.0
    because this doc said so.

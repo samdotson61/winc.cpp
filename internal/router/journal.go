@@ -107,8 +107,16 @@ type journalInfo struct {
 	newlyEvicted int
 	recalled     []int // row indices injected this request
 	liveTokens   int   // forwarded messages-array size, est. tokens
-	summarized   bool
-	overBudget   bool // a keep-newest floor left the prompt over budget (giant message)
+	overBudget   bool  // a keep-newest floor left the prompt over budget (giant message)
+
+	// summarizeConv, when non-nil, asks the router to refresh the rolling
+	// summary through summarizeThrough IN THE BACKGROUND. The stage never
+	// generates inline: measured on 4b/Metal, the synchronous generation made
+	// eviction-batch turns ~19s vs ~5s normal -- the worst moment in the
+	// product. The batch turn ships with the PREVIOUS summary instead (one
+	// batch stale, which a lagging gist safety-net is by design).
+	summarizeConv    *journal.Conv
+	summarizeThrough int
 }
 
 // header renders the X-Winc-Journal response header value.
@@ -216,7 +224,7 @@ func (p *preq) applyJournal(js *journal.Store, o journalOpts) (ji *journalInfo) 
 			_ = conv.AdvanceEvicted(newEp)
 			archiveTrimmed(msgs[ep:newEp]) // the two safety nets compose
 			if o.summaryTokens > 0 {
-				info.summarized = summarizeEvicted(conv, o, newEp)
+				info.summarizeConv, info.summarizeThrough = conv, newEp
 			}
 			info.newlyEvicted = newEp - ep
 			ep = newEp
@@ -328,17 +336,60 @@ func (r *Router) openJournal(cfg *config.Config, upstream string, ctxWindow int)
 	}
 	r.jstore = js
 	r.jopts = opts
+	r.jctx, r.jcancel = context.WithCancel(context.Background())
+	r.jsumming = map[string]bool{}
 	if r.jlog != nil {
 		r.jlog.Printf("journal on: %s (%d conversations, budget %d tokens)",
 			js.Dir(), js.Count(), r.jopts.budgetBytes/4)
 	}
 }
 
+// scheduleSummary kicks off the background rolling-summary refresh a journal
+// pass asked for. At most one generation is in flight per conversation; a
+// batch that lands while one is running is simply skipped -- the NEXT batch
+// re-schedules, and the summary is a lagging gist by design. On a single-slot
+// server the generation queues behind live traffic instead of sitting inside
+// a user's turn.
+func (r *Router) scheduleSummary(ji *journalInfo) {
+	conv, through := ji.summarizeConv, ji.summarizeThrough
+	if conv == nil || r.jctx == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.jsumming[conv.ID()] {
+		r.mu.Unlock()
+		return
+	}
+	r.jsumming[conv.ID()] = true
+	r.mu.Unlock()
+	go func() {
+		ok := summarizeEvicted(r.jctx, conv, r.jopts, through)
+		r.mu.Lock()
+		delete(r.jsumming, conv.ID())
+		jlog := r.jlog
+		r.mu.Unlock()
+		if jlog == nil {
+			return
+		}
+		id := strings.TrimPrefix(conv.ID(), "conv-")
+		if ok {
+			jlog.Printf("conv=%s summary-updated through=%d (async)", id, through)
+		} else {
+			jlog.Printf("conv=%s summary-skipped through=%d (generation failed; verbatim recall still carries)", id, through)
+		}
+	}()
+}
+
 func (r *Router) closeJournal() {
+	if r.jcancel != nil {
+		r.jcancel() // abandon in-flight background summaries; they fail silent
+	}
+	r.mu.Lock()
 	if r.jlogf != nil {
 		_ = r.jlogf.Close()
 		r.jlogf, r.jlog = nil, nil
 	}
+	r.mu.Unlock()
 }
 
 // noteJournal records one journal pass in the session stats and the journal log.
@@ -355,8 +406,8 @@ func (r *Router) noteJournal(ji *journalInfo) {
 	if ji.newlyEvicted > 0 {
 		extra += fmt.Sprintf(" newly-evicted=%d", ji.newlyEvicted)
 	}
-	if ji.summarized {
-		extra += " summary-updated"
+	if ji.summarizeConv != nil {
+		extra += " summary-scheduled"
 	}
 	if ji.overBudget {
 		extra += " over-budget(keep-newest floor)"
@@ -451,7 +502,7 @@ func prependRecall(raw json.RawMessage, snips []journal.Snippet) (json.RawMessag
 func summaryMessages(summary string, through int) (user, ack json.RawMessage, ok bool) {
 	u, err := json.Marshal(map[string]string{
 		"role":    "user",
-		"content": fmt.Sprintf("[Conversation memory — summary of turns 1–%d]: %s", through, summary),
+		"content": fmt.Sprintf("[Conversation journal — summary of turns 1–%d]: %s", through, summary),
 	})
 	if err != nil {
 		return nil, nil, false
@@ -471,10 +522,13 @@ const summaryTimeout = 60 * time.Second
 // summarizeEvicted regenerates the rolling summary to cover rows [0,through),
 // folding the newly evicted turns into the prior summary with one greedy,
 // capped generation against the upstream directly (bypassing the router's own
-// rewrite pipeline). Runs BEFORE the original request is forwarded, so even a
-// single-slot server has a free slot. Every failure path returns false and the
-// request proceeds without a summary update.
-func summarizeEvicted(conv *journal.Conv, o journalOpts, through int) bool {
+// rewrite pipeline). Called from scheduleSummary's goroutine -- NEVER on the
+// request path (measured: inline generation made batch turns ~19s vs ~5s).
+// Every failure path returns false; the summary just stays one batch older.
+func summarizeEvicted(parent context.Context, conv *journal.Conv, o journalOpts, through int) bool {
+	if parent == nil {
+		parent = context.Background()
+	}
 	if o.upstream == "" {
 		return false
 	}
@@ -507,7 +561,7 @@ func summarizeEvicted(conv *journal.Conv, o journalOpts, through int) bool {
 	if err != nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), summaryTimeout)
+	ctx, cancel := context.WithTimeout(parent, summaryTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(o.upstream, "/")+"/v1/chat/completions", bytes.NewReader(body))

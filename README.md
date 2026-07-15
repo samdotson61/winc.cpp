@@ -106,7 +106,7 @@ complexity_boost = true     # +1 tier for code / tool-use / build-intent prompts
 [journal]                   # context virtualization: long chats stay fast (see below)
 enabled = true              # engages only on small windows (< 48k) with an "auto" budget
 budget_tokens = "auto"      # live prompt target; auto = clamp(context/2, 2048, 8192)
-recall_tokens = 800         # cap on recalled text injected per request
+recall_tokens = 400         # cap on recalled text injected per request (the steady-state latency knob)
 recall_top_k = 4            # evicted turns recalled per request (0 = trim-only)
 
 [performance]

@@ -22,7 +22,7 @@ type Snippet struct {
 
 // Recall scores the conversation's evicted rows against the query and returns
 // the top snippets in chronological order. There is deliberately no "did the
-// user reference memory?" detector -- scoring every turn with a threshold
+// user reference the past?" detector -- scoring every turn with a threshold
 // approximates one for free, and nothing selected means nothing injected.
 func (c *Conv) Recall(query string, o RecallOpts) ([]Snippet, error) {
 	if o.TopK <= 0 || o.MaxTokens <= 0 || query == "" {

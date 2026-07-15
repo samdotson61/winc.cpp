@@ -177,9 +177,9 @@ complexity_boost = true          # +1 tier if code / tool_result / build-intent 
 # 'winc journal ls/show/rm' to inspect or delete them.
 enabled = true                   # per-run override: winc serve/start --journal[=off]
 budget_tokens = "auto"           # live prompt target; auto = clamp(context/2, 2048, 8192), dormant on big windows
-recall_tokens = 800              # hard cap on injected recall (est. tokens)
+recall_tokens = 400              # cap on injected recall; the block re-prefills every recall turn, so this is the steady-state latency knob (re-gated 5/5 at 400)
 recall_top_k = 4                 # evicted turns recalled per request; 0 = trim-only
-recall_threshold = 2.0           # minimum score to inject anything (calibrated via membench)
+recall_threshold = 2.0           # minimum score to inject anything (calibrated via journalbench)
 summary_tokens = 300             # rolling-summary cap; 0 disables the summary
 dir = ""                         # blank = <install>/journal
 

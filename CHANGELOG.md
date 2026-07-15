@@ -3,6 +3,45 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.25.0 — 2026-07-15
+
+Journal speed pass: the two levers the v1.24.0 measurements singled out.
+
+### Changed
+- **Rolling-summary generation is now asynchronous.** v1.24.0 measured the
+  synchronous generation making eviction-batch turns ~19s vs ~5s normal on
+  4b/Metal (~5.2s vs ~1.9s on 2b/cpu) — the worst moment in the product. The
+  journal stage now only *requests* a refresh; the router runs one background
+  generation per conversation (deduped while in flight, cancelled on Stop),
+  and the batch turn ships with the previous summary — one batch stale, which
+  a lagging gist safety-net is by design. The journal log says
+  `summary-scheduled` on the turn and `summary-updated … (async)` when it
+  lands, so the timeline stays checkable.
+  Measured (same protocol as v1.24.0, both tiers): batch turns
+  **19.0s → 7.8s on 4b/Metal** (right at the 8.2s no-summary floor) and
+  **5.1s → 1.9s on 2b/cpu — indistinguishable from a normal turn** (1.95s).
+  The generation is scheduled AFTER the response finishes streaming
+  (scheduling it before was measured at 14.2s: the two generations contended
+  for the same compute). journalbench sends turns with zero think-time — the
+  worst case for a background generation — and following turns still absorbed
+  only ~0.1s of contention; real conversations hide it entirely.
+- **`recall_tokens` default 800 → 400.** The recalled block re-prefills on
+  every recall-carrying turn, so its size is the steady-state latency knob;
+  400 halves that tax. Re-gated: recall stayed **5/5 on both tiers**, and
+  steady-state recall-turn TTFT dropped ~4.9s → ~3.0–3.4s on 4b/Metal
+  (~1.0s → ~0.8s on 2b/cpu). Raise it back in winc.toml if your
+  conversations need wider recall.
+- **`cmd/membench` is now `cmd/journalbench`**, and the design doc is
+  `docs/journal-spec.md` (was `docs/memory-spec.md`) — the last "memory"-era
+  names, flushed to the shipped journal naming. Earlier entries below refer
+  to the tool by whichever name it had at the time of writing, now updated
+  throughout for consistency.
+- The `--cache-reuse` engine lever was A/B-measured on the ship config and
+  showed **no gain** (the injection design already keeps per-turn changes at
+  the prompt tail, and batch turns are generation-dominated) — documented so
+  nobody re-litigates it; 5/5 recall under KV shifting means the flag is at
+  least quality-safe for users who set it themselves.
+
 ## v1.24.0 — 2026-07-15
 
 The journal: context virtualization for long conversations. The live prompt
@@ -19,7 +58,7 @@ virtualizes transparently (100% API-compatible, no client changes).
   window virtualized down to 8k would trade capability the hardware HAS for
   savings it doesn't need. An explicit numeric `budget_tokens` forces it on
   any window; `--journal=off` / `enabled = false` disables. Default-on was
-  gated on the membench results below (Sam's call: default-on if it passes).
+  gated on the journalbench results below (Sam's call: default-on if it passes).
 - **`internal/journal` store** — one directory per conversation under
   `<install>/journal/`: verbatim `transcript.jsonl` (human-readable; files are
   truth, model-written summaries never replace the record) + `meta.json`.
@@ -62,12 +101,12 @@ virtualizes transparently (100% API-compatible, no client changes).
   `show` marks evicted rows; `rm` is the ONLY deletion path (nothing is ever
   auto-deleted). Privacy stated plainly in README + winc.toml comments:
   transcripts are PLAINTEXT on local disk.
-- **`cmd/membench`** — the eval harness: plants facts at turn 1, pads with
+- **`cmd/journalbench`** — the eval harness: plants facts at turn 1, pads with
   disjoint-topic filler, probes at controlled distances; measures needle
   recall, streaming TTFT, forwarded prompt size (via the journal header), and
   dumps a replay body for cold-restart TTFT probes.
 
-### Measured (membench; M4 Pro 24GB, engine pinned, temperature 0)
+### Measured (journalbench; M4 Pro 24GB, engine pinned, temperature 0)
 
 Needle-recall protocol: 5 facts planted at turn 1, disjoint-topic filler, one
 probe per fact at d=40, substring-scored. Two tiers: qwen3.5-4b/Metal (4k
