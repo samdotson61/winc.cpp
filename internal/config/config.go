@@ -15,6 +15,7 @@ import (
 type Config struct {
 	General      General       `toml:"general"`
 	Reasoning    Reasoning     `toml:"reasoning"`
+	Journal      Journal       `toml:"journal"`
 	Performance  Performance   `toml:"performance"`
 	Multi        Multi         `toml:"multi"`
 	Team         Team          `toml:"team"`
@@ -46,6 +47,23 @@ type Adaptive struct {
 type TierBudget struct {
 	MaxInputTokens int `toml:"max_input_tokens"`
 	BudgetTokens   int `toml:"budget_tokens"`
+}
+
+// Journal is context virtualization for long conversations: the live prompt is
+// held at a small fixed budget by evicting old turns to a per-conversation
+// on-disk store (verbatim, files are truth) and recalling the most relevant
+// evicted turns each request (BM25). Clients stay 100% API-compatible -- they
+// keep sending full history; winc virtualizes transparently. Transcripts are
+// PLAINTEXT on local disk (that is the product: offline, local, private --
+// `winc journal ls/show/rm` to inspect or delete).
+type Journal struct {
+	Enabled         bool    `toml:"enabled"`
+	BudgetTokens    string  `toml:"budget_tokens"`    // live prompt target: "auto" = clamp(ctx/2, 2048, 8192), or an integer
+	RecallTokens    int     `toml:"recall_tokens"`    // hard cap on injected recall (est. tokens)
+	RecallTopK      int     `toml:"recall_top_k"`     // evicted turns recalled per request; 0 disables recall (trim-only)
+	RecallThreshold float64 `toml:"recall_threshold"` // minimum blended BM25 score to inject anything
+	SummaryTokens   int     `toml:"summary_tokens"`   // rolling-summary generation cap; 0 disables the summary
+	Dir             string  `toml:"dir"`              // override store location (blank = <install>/journal)
 }
 
 type Performance struct {
@@ -157,6 +175,24 @@ tiers = [
 ]
 ceiling_budget_tokens = 8192     # above the last tier
 complexity_boost = true          # +1 tier if code / tool_result / build-intent verbs present
+
+[journal]
+# Context virtualization: keep the live prompt small no matter how long the chat
+# gets. Old turns are evicted to a per-conversation on-disk journal (verbatim,
+# human-readable JSONL under <install>/journal) and the most relevant evicted
+# turns are recalled into each request. Clients keep sending full history --
+# winc virtualizes transparently. With budget_tokens = "auto" the journal only
+# ENGAGES when the loaded context is genuinely small (< 48k tokens): where the
+# window is big, virtualization would just cost capability, so it stays
+# dormant. NOTE: transcripts are stored as PLAINTEXT on this machine;
+# 'winc journal ls/show/rm' to inspect or delete them.
+enabled = true                   # per-run override: winc serve/start --journal[=off]
+budget_tokens = "auto"           # live prompt target; auto = clamp(context/2, 2048, 8192), dormant on big windows
+recall_tokens = 400              # cap on injected recall; the block re-prefills every recall turn, so this is the steady-state latency knob (re-gated 5/5 at 400)
+recall_top_k = 4                 # evicted turns recalled per request; 0 = trim-only
+recall_threshold = 2.0           # minimum score to inject anything (calibrated via journalbench)
+summary_tokens = 300             # rolling-summary cap; 0 disables the summary
+dir = ""                         # blank = <install>/journal
 
 [performance]
 backend    = "auto"     # auto | cuda | metal | vulkan | rocm | cpu
@@ -343,6 +379,9 @@ func (c *Config) backfill() {
 	}
 	if c.Reasoning.Adaptive.CeilingBudgetTokens == 0 {
 		c.Reasoning.Adaptive.CeilingBudgetTokens = d.Reasoning.Adaptive.CeilingBudgetTokens
+	}
+	if c.Journal.BudgetTokens == "" {
+		c.Journal.BudgetTokens = d.Journal.BudgetTokens
 	}
 	if c.Performance.Backend == "" {
 		c.Performance.Backend = d.Performance.Backend

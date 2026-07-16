@@ -66,6 +66,8 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 | `winc -s ... --noteam` | Disable team mode — run a single model |
 | `winc -s ... --reasoning <mode>` | Override reasoning mode for this launch |
 | `winc serve [--multi]` | Run the server(s)/router only (point your own client at it) |
+| `winc serve/-s ... --journal[=off]` | Override the journal (context virtualization) for this run |
+| `winc journal [ls\|show\|rm\|path]` | Inspect the conversation journal — plaintext, local, nothing auto-deleted |
 | `winc doctor` | Read-only health snapshot: hardware, engine, models (GGUF check), config, agents, ports, logs |
 | `winc logs [name] [--bundle]` | Show log tails; `--bundle` zips a support archive for bug reports |
 | `winc -c` / `winc check` | Update status: winc version, source freshness, engine, catalog |
@@ -101,6 +103,12 @@ tiers = [
 ceiling_budget_tokens = 8192
 complexity_boost = true     # +1 tier for code / tool-use / build-intent prompts
 
+[journal]                   # context virtualization: long chats stay fast (see below)
+enabled = true              # engages only on small windows (< 48k) with an "auto" budget
+budget_tokens = "auto"      # live prompt target; auto = clamp(context/2, 2048, 8192)
+recall_tokens = 400         # cap on recalled text injected per request (the steady-state latency knob)
+recall_top_k = 4            # evicted turns recalled per request (0 = trim-only)
+
 [performance]
 backend = "auto"            # auto | cuda | metal | vulkan | rocm | cpu
 gpu_layers = "auto"
@@ -130,6 +138,38 @@ mode (the default) `winc` runs a tiny in-process router that sets a per-request 
 ceiling* scaled to request size: "hi" answers instantly, while a real coding task gets a
 full budget. Set `mode = "on"` (always think), `"off"` (never), or `"fixed"` for a constant
 budget — those run with **zero proxy hop** (direct to llama-server).
+
+### Journal — long chats on a small live prompt (context virtualization)
+
+Small local models degrade — and slow down — as a conversation grows: the KV cache eats RAM,
+prefill eats time, and a 4B attending over 30k tokens of history answers worse than one
+reading a focused 4k prompt. The journal is **on by default where it helps**: with an
+`"auto"` budget it engages only when the loaded context is genuinely small (under ~48k
+tokens) and stays dormant on big windows — virtualizing a 128k window down to 8k would
+trade capability your hardware has for savings it doesn't need. (Set a numeric
+`budget_tokens` to force it on any window; `--journal=off` or `enabled = false` kills it.)
+When engaged, `winc` keeps the **live prompt at a fixed budget** no matter how long the
+chat gets:
+
+- **Evict:** old turns leave the forwarded prompt and land in a per-conversation store —
+  verbatim, human-readable JSONL under `<install>/journal/` (files are truth; summaries
+  never replace the record).
+- **Recall:** each request, the most relevant evicted turns (BM25 + recency, capped at
+  `recall_tokens`) are injected back as a clearly-labeled historical block. Ask about the
+  locker code from 60 turns ago and the original turn comes back with the question.
+- **Summarize:** on eviction batches a small rolling summary is refreshed as a gist
+  safety-net for what recall might miss (`summary_tokens = 0` disables).
+
+Clients keep sending full history to the same endpoint — **no client changes**; `winc`
+virtualizes transparently, and conversations are re-identified across restarts by their
+own content (no session IDs). Every touched response carries an `X-Winc-Journal` header
+(`conv=… recalled=… evicted=… live=…`) and `winc-journal.log` gets one line per request,
+so what was recalled is checkable — never vibes. `winc journal show <id>` is the notebook
+view; `winc journal rm <id>` is the **only** deletion path.
+
+**Privacy, plainly:** transcripts are stored as **plaintext on your machine**. That's the
+product — offline, local, private — but know it's there and where it lives
+(`winc journal path`).
 
 ### Agent team (default on a big model)
 

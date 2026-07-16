@@ -22,7 +22,7 @@ func cmdServe(args []string) int {
 	cfg := loadConfig()
 	cat := catalog.Load(cfg.CustomModels)
 
-	var reasoning string
+	var reasoning, journalFlag string
 	var multi, eval bool
 	var pos []string
 	for i := 0; i < len(args); i++ {
@@ -32,6 +32,10 @@ func cmdServe(args []string) int {
 			multi = true
 		case a == "--eval":
 			eval = true
+		case a == "--journal" || a == "--journal=on":
+			journalFlag = "on"
+		case a == "--journal=off" || a == "--no-journal":
+			journalFlag = "off"
 		case a == "--reasoning":
 			if i+1 < len(args) {
 				reasoning = args[i+1]
@@ -48,6 +52,16 @@ func cmdServe(args []string) int {
 			ui.Err("--eval is a single-model profile; it can't combine with --multi")
 			return 1
 		}
+		if journalFlag == "on" {
+			ui.Err("--eval can't combine with --journal: eval requests are single-shot, so each one would become a junk conversation in the store")
+			return 1
+		}
+		// Same reason, silently for the config default: there is nothing to
+		// virtualize in a single-shot request. Forced off regardless of winc.toml.
+		if cfg.Journal.Enabled {
+			ui.Dim("journal: off for --eval (single-shot requests)")
+			cfg.Journal.Enabled = false
+		}
 		return cmdServeEval(cfg, cat, pos)
 	}
 	model := cfg.General.DefaultModel
@@ -57,8 +71,12 @@ func cmdServe(args []string) int {
 	if reasoning != "" {
 		cfg.Reasoning.Mode = reasoning
 	}
+	applyJournalFlag(cfg, journalFlag)
 
 	if multi {
+		if cfg.Journal.Enabled {
+			ui.Dim("journal: single-model mode only for now; --multi runs without it")
+		}
 		return startMulti(cfg, cat, platform.DetectHardwareCached(), "")
 	}
 
@@ -94,11 +112,14 @@ func cmdServe(args []string) int {
 		ui.Warn("could not write agent notes: %v", err)
 	}
 
+	// The router carries the journal stage, so it must front the server
+	// whenever the journal is on -- not only in adaptive reasoning mode.
 	baseURL := serverURL
-	if cfg.Reasoning.Mode == "adaptive" {
+	if cfg.Reasoning.Mode == "adaptive" || cfg.Journal.Enabled {
 		if r, rerr := router.Start(cfg, serverURL, loadedCtx, ""); rerr == nil {
 			defer r.Stop()
 			baseURL = r.BaseURL()
+			reportJournal(cfg, r)
 		} else {
 			ui.Warn("router failed (%v); serving direct", rerr)
 		}
