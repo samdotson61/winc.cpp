@@ -669,3 +669,35 @@ func TestTensorSplitArgs(t *testing.T) {
 		t.Errorf("oversized footprint must not emit a split, got %v", got)
 	}
 }
+
+func TestContextPinned(t *testing.T) {
+	cfg := config.Defaults()
+	for _, v := range []string{"", "auto", "optimal", " Auto ", "OPTIMAL"} {
+		cfg.Performance.Context = v
+		if ContextPinned(&cfg) {
+			t.Errorf("Context=%q must not be pinned", v)
+		}
+	}
+	for _, v := range []string{"2048", "16384", " 49152 "} {
+		cfg.Performance.Context = v
+		if !ContextPinned(&cfg) {
+			t.Errorf("Context=%q must be pinned", v)
+		}
+	}
+}
+
+func TestContextLadderHonorsSubFloorPin(t *testing.T) {
+	// A pin below the 16384 agent floor is a rung of its own (small-footprint
+	// serving); auto sizing never resolves below ctxFloor so only pins hit this.
+	if got := ContextLadder(2048); len(got) != 1 || got[0] != 2048 {
+		t.Errorf("ContextLadder(2048) = %v, want [2048]", got)
+	}
+	if got := ContextLadder(16384); len(got) != 1 || got[0] != 16384 {
+		t.Errorf("ContextLadder(16384) = %v, want [16384]", got)
+	}
+	// Above the floor the ladder is unchanged: target first, standard rungs below.
+	got := ContextLadder(49152)
+	if got[0] != 49152 || got[len(got)-1] != 16384 {
+		t.Errorf("ContextLadder(49152) = %v, want 49152..16384", got)
+	}
+}

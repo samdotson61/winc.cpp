@@ -3,6 +3,23 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.26.0 — 2026-07-16
+
+Context pin: an explicit `context` in winc.toml is honored exactly.
+
+### Fixed
+- **Explicit context values are no longer climbed past by auto-sizing
+  rescues.** Measured: `context = "16384"` settled at `-c 49152` — the
+  starved-KV upgrade treated the pin like an auto result and probed larger
+  windows; every value from 2048–16384 landed on the same 49152. A pin now
+  stops the climb (and caps the climb-back after a load-rescued step-down).
+- **The context ladder honors pins below the 16384 agent floor** (only
+  explicit pins can sit there; auto never resolves under the floor). Use
+  case: small-footprint task serving — a ~700-token-per-request labeling
+  endpoint runs at `-c 2048` in ~2.9 GB RSS vs ~3.6 GB fitted. Stepping
+  down when a pinned size fails to load remains (rescue, not override).
+- Auto/optimal sizing and the eval profile are unchanged.
+
 ## v1.25.0 — 2026-07-15
 
 Journal speed pass: the two levers the v1.24.0 measurements singled out.

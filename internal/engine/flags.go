@@ -746,13 +746,17 @@ func rawCtxTokens(cfg *config.Config, hw platform.Hardware, cacheType, modelPath
 }
 
 // ContextLadder returns descending context sizes to try (largest fitting first),
-// always bottoming out at a workable floor.
+// always bottoming out at a workable floor. The target itself is always a rung,
+// even under the 16384 agent floor: a sub-floor target only ever comes from an
+// explicit winc.toml pin (auto sizing never resolves below ctxFloor), and a pin
+// means the user chose the window -- e.g. a small-footprint labeling endpoint,
+// not an agent.
 func ContextLadder(target int) []int {
 	steps := []int{target, 196608, 131072, 98304, 65536, 49152, 32768, 24576, 16384}
 	var out []int
 	seen := map[int]bool{}
 	for _, s := range steps {
-		if s <= target && s >= 16384 && !seen[s] {
+		if s <= target && (s >= 16384 || s == target) && !seen[s] {
 			out = append(out, s)
 			seen[s] = true
 		}
@@ -761,6 +765,18 @@ func ContextLadder(target int) []int {
 		out = []int{16384}
 	}
 	return out
+}
+
+// ContextPinned reports an explicit numeric context in winc.toml. A pin means
+// the user chose the window: the sizing rescues (the starved-KV window climb,
+// the bottom-target push) must not raise it. Stepping DOWN when the pinned
+// size fails to load remains allowed -- that is load rescue, not override.
+func ContextPinned(cfg *config.Config) bool {
+	switch strings.ToLower(strings.TrimSpace(cfg.Performance.Context)) {
+	case "", "auto", "optimal":
+		return false
+	}
+	return true
 }
 
 // ResolveMaxOutput caps the agent's response length: configured value, or (auto)
