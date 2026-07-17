@@ -114,7 +114,6 @@ func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serv
 	if !noMTP {
 		args = append(args, engine.MTPArgs(cfg, hw, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
 	}
-	args = append(args, engine.CacheReuseArgs(serverBin)...) // extend prompt-cache reuse (probed)
 	lastBench = benchResult{}
 	proc, err := server.Start(serverBin, args, logPath)
 	if err != nil {

@@ -250,9 +250,22 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != BottomCtxTokens {
 		t.Errorf("downshifted window = %d, want %d", got, BottomCtxTokens)
 	}
+	// Ample VRAM (13+ GB free): f16 KV still reaches the ceiling, so the window
+	// is capped either way and f16 is free decode/prompt speed (v1.27.0).
 	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
-	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "q8_0" {
-		t.Errorf("ample window should stay q8_0, got %q", got)
+	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "f16" {
+		t.Errorf("ceiling-capped window should use f16, got %q", got)
+	}
+	// Roomy but not ceiling-capped (~6.5 GB free -> f16 ~205k < ceiling, q8 fine):
+	// keep q8_0 so f16's 2x KV never costs window.
+	mid := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 8192}
+	if got := EffectiveCacheType(&cfg, mid, "m.gguf", 1000, false); got != "q8_0" {
+		t.Errorf("non-ceiling window should stay q8_0, got %q", got)
+	}
+	// MoE experts offloaded: VRAM math differs, stay q8_0 (f16 was measured on
+	// the dense case only).
+	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, true); got != "q8_0" {
+		t.Errorf("expert-offloaded should stay q8_0, got %q", got)
 	}
 	// Explicit q8_0 never downshifts the CACHE; the window that pure-q8 KV can't
 	// reach lands at the usable floor instead (partial offload places the rest).

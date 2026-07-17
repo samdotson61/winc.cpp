@@ -301,3 +301,10 @@ func DefaultBackend(hw Hardware) string {
 // layer waits for the slowest worker -- so a KNOWN P count is worth pinning
 // and an unknown one is never guessed.
 func PerformanceCores() int { return performanceCores() }
+
+// EfficiencyCoreRange returns the efficiency cluster's [lo, hi] logical-CPU
+// index range when the OS exposes a P/E split that winc can pin against, else
+// ok=false. Apple Silicon only for now -- it exists to keep unified-memory team
+// workers off the performance cores, where CPU decode steals memory bandwidth
+// from the main GPU model.
+func EfficiencyCoreRange() (lo, hi int, ok bool) { return efficiencyCoreRange() }

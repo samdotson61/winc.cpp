@@ -110,3 +110,24 @@ func TestHWCacheRoundTrip(t *testing.T) {
 		t.Fatal("corrupt cache must miss, not panic or half-load")
 	}
 }
+
+// EfficiencyCoreRange must be internally consistent with PerformanceCores: when
+// a split is exposed, the E range starts exactly above the P cores and ends at
+// the last logical CPU. Machine-independent (holds on a P/E box and on uniform
+// hardware where both report no split).
+func TestEfficiencyCoreRangeConsistency(t *testing.T) {
+	lo, hi, ok := EfficiencyCoreRange()
+	p := PerformanceCores()
+	if !ok {
+		return // no split on this machine (or non-darwin) -- nothing to check
+	}
+	if p <= 0 {
+		t.Fatalf("EfficiencyCoreRange ok but PerformanceCores=%d", p)
+	}
+	if lo != p {
+		t.Errorf("E range lo=%d, want PerformanceCores=%d", lo, p)
+	}
+	if hi < lo {
+		t.Errorf("E range hi=%d < lo=%d", hi, lo)
+	}
+}

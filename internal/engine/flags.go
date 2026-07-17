@@ -214,16 +214,10 @@ func serverSupportsFlag(bin, flag string) bool {
 	return bin != "" && strings.Contains(serverHelp(bin), flag)
 }
 
-// CacheReuseArgs enables KV-shift prompt-cache reuse (recovers the prefix cache after a
-// small mid-prompt change) when the engine supports it. Prompt-prefix caching itself is on
-// by default; this just extends it. Probed via --help, so an older build that lacks the
-// flag simply runs without it.
-func CacheReuseArgs(serverBin string) []string {
-	if serverSupportsFlag(serverBin, "--cache-reuse") {
-		return []string{"--cache-reuse", "256"}
-	}
-	return nil
-}
+// --cache-reuse was dropped in v1.27.0: the v1.25.0 journal-era A/B measured NO
+// gain from it (the request pipeline is already prefix-cache-optimal), and a
+// flag that does nothing here is one more engine interaction surface. Users who
+// want it back have extra_server_args.
 
 // mtpHeadFor finds an external MTP drafter head next to a model: a small
 // "<family>-<quant>-MTP.gguf" file (Gemma 4 ships its prediction heads as a
@@ -534,8 +528,11 @@ func mtpActive(cfg *config.Config, modelPath string) bool {
 	if !isMTPFile(modelPath) && mtpHeadFor(modelPath) == "" {
 		return false
 	}
-	// draft-mtp is unstable on the Metal backend (crashes during inference -> the
-	// agent retries forever). CUDA/Vulkan/CPU keep MTP.
+	// draft-mtp is off on the Metal backend: originally because it crashed during
+	// inference (agent retries forever), and MEASURED (M4 Pro 9B, v1.27.0) it is
+	// also a speed LOSS there even when stable -- -8% decode at n-max 1, -15% at
+	// the default 2, -38% at 3 vs MTP off. Metal doesn't get the batch-verification
+	// parallelism speculation needs. CUDA/Vulkan/CPU keep MTP (its design target).
 	return CurrentBackend() != "metal"
 }
 
@@ -661,6 +658,18 @@ func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath stri
 	}
 	if !cfg.Performance.FlashAttn || modelFileMB <= 0 {
 		return "q8_0" // no flash-attn (cache is f16 anyway) or unknown size -> never downshift
+	}
+	// Prefer f16 KV when it costs NO window -- i.e. the f16 cache still reaches
+	// the context ceiling, so the window is ceiling-capped either way and f16
+	// only buys speed. MEASURED (M4 Pro, 4B, v1.27.0): f16 decodes ~9% faster at
+	// an 8k-deep context and processes prompts ~11% faster than q8_0, for 2x the
+	// KV bytes -- free when the window is already capped, a capacity loss when it
+	// isn't. So f16 only when it reaches the ceiling (free VRAM >= ~8 GB of KV);
+	// below that q8_0 keeps the window, and q8_0/q4_0 rescues a starved card.
+	// MoE with offloaded experts keeps q8_0: its VRAM math is the expert-offload
+	// budget, not the dense case this was measured on.
+	if !expertsOffloaded && rawCtxTokens(cfg, hw, "f16", modelPath, modelFileMB) >= ctxCeil {
+		return "f16"
 	}
 	// Starvation is judged on the RAW full-GPU estimate, not the bottom-bumped
 	// target: the bump reports a window the KV budget can't actually hold, which

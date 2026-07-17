@@ -81,3 +81,19 @@ func performanceCores() int {
 	}
 	return n
 }
+
+// efficiencyCoreRange returns the [lo, hi] logical-CPU index range of the
+// efficiency cluster, or ok=false when there is no P/E split. Apple Silicon
+// numbers the P cluster first (0..P-1) and the E cluster last (P..N-1), so the
+// E range is [performanceCores(), NumCPU-1]. Used to pin unified-memory team
+// workers off the P cores, where CPU worker decode contends with the main GPU
+// model for memory bandwidth (measured: 16% main-decode loss, ~half recovered
+// by this pin).
+func efficiencyCoreRange() (lo, hi int, ok bool) {
+	p := performanceCores()
+	n := runtime.NumCPU()
+	if p <= 0 || p >= n {
+		return 0, 0, false
+	}
+	return p, n - 1, true
+}

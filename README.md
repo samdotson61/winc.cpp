@@ -228,7 +228,7 @@ set, the 4B also gets `Write`, and the HEAD model keeps every tool. This is the 
 savings — fewer tools means a smaller prefill (faster first token, fewer stream-idle
 timeouts) and better tool-selection on tiny models. Stripping is deterministic per tier, so
 llama.cpp's prompt-prefix cache still reuses the worker's head across the fan-out; `winc` also
-adds `--cache-reuse` (probed) and losslessly drops optional `input_examples`. Set
+losslessly drops optional `input_examples`. Set
 `worker_tools` / `sonnet_tools` in `[team]` (`["all"]` disables stripping for a tier).
 
 ---
@@ -327,7 +327,7 @@ end of this section only exist if you want to override a decision.
 | **Multi-GPU** | Detects **every** GPU (not just the first); the memory budget is the **combined** VRAM, and the engine spreads layers across all cards by each one's free VRAM at load | A 16 GB + 12 GB pair is sized as 28 GB — a 22 GB MoE that needed expert-offload on one card runs **fully on GPU** across two, at a much larger context |
 | **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU but parks the **expert weights in RAM** (`--cpu-moe`), freeing VRAM for a much larger context | A 35B-A3B runs near GPU speed on 12 GB; on a tight 16 GB fit it trades a little speed for a ~32k→~100k+ context |
 | **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and sets the compaction trigger to leave **max(8k, window/8) tokens of headroom** — room for the in-flight turn *plus* the compaction summary itself. If a session still overflows, the router **trims the oldest transcript messages out of the compaction request** so the summary completes instead of truncating mid-write | Long sessions auto-compact and keep going; no more overflow → broken-summary → overflow death loop |
-| **Flash attention + Q8 KV cache** | Enables `--flash-attn` and stores the KV cache at `q8_0` when on GPU | Halves KV-cache memory → bigger context in the same VRAM, and faster attention |
+| **Flash attention + speed-aware KV cache** | Enables `--flash-attn` and auto-picks the KV type: **f16 when it still reaches the context ceiling** (measured ~9% faster decode / ~11% faster prompt processing than q8, free when the window is capped either way), else **q8_0** to keep the window, else a q8_0/q4_0 downshift when a card is starved | The speed of f16 on roomy setups without ever trading away context on tight ones |
 | **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with an asymmetric q8_0/q4_0 KV cache** — keys keep full q8 precision (4-bit keys measurably degrade coding), only values compress — applied to the main *and* MTP draft caches, keeping the widest window that loads, memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
@@ -363,8 +363,8 @@ gpu_layers = "auto"   # "auto" (fit to VRAM) or an integer -ngl
 context    = "optimal"   # "optimal" (~128K/agent, 40-80 tok/s baseline) | "auto" (largest that fits, up to 256K) | a fixed token count
 batch      = "auto"   # "auto" (2048) or an integer
 flash_attn = true     # flash attention when on GPU
-cache_type = "auto"   # KV cache: "auto" (q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 (max quality) | q4_0 (smallest → ~2× the auto context). Needs flash_attn
-threads    = "auto"   # CPU threads (auto = all cores)
+cache_type = "auto"   # KV cache: "auto" (f16 when it still hits the ceiling — faster; else q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 | q4_0 (smallest → ~2× the auto context). Needs flash_attn
+threads    = "auto"   # CPU threads (auto = all cores; CPU-only installs pin the performance cores on a P/E split)
 max_output_tokens = "auto"   # cap on response length ("auto" = ~half the context)
 
 # MoE expert offload (see above)
@@ -414,14 +414,22 @@ older engines just run without it).
 
 `mtp = "off"` disables it.
 
-**More context at ~the same speed:** this is automatic now — `cache_type = "auto"` drops
-the **value** cache to q4_0 (keys stay q8_0; they're the quantization-sensitive side)
-whenever the q8_0 window would come up short, and the launch probe verifies the wider
+**Speed and context, both automatic:** `cache_type = "auto"` picks the fastest KV type
+that doesn't cost window. When f16 still reaches the context ceiling — roomy VRAM, the
+common case for the small models these tiers target — it uses **f16** (measured ~9%
+faster decode / ~11% faster prompt processing than q8, and free because the window is
+capped either way). When f16 would shrink the window it uses **q8_0**, and it drops the
+**value** cache to q4_0 (keys stay q8_0; they're the quantization-sensitive side)
+whenever even the q8_0 window would come up short — the launch probe verifies the wider
 window actually loads. Workers always pin q8_0 — small models suffer most from KV
-quantization. Set `cache_type = "q4_0"` (or any `"k/v"` pair) to force a layout —
-`winc`'s auto-context sizing then fits proportionally more tokens in the same VRAM
-(up to the model's trained limit). `q8_0` stays the default for the best speed/accuracy
-balance.
+quantization. Set `cache_type` to `q8_0` / `f16` / `q4_0` (or any `"k/v"` pair) to force
+a layout.
+
+**Speculative decoding is CUDA/Vulkan-only.** On Metal it's a measured loss (MTP -8% to
+-38% by draft depth; an external draft ~0% for a wasted model load), because the backend
+doesn't get the batch-verification parallelism drafting needs — so winc runs MTP models
+plain there and never auto-pairs a draft. On a dedicated GPU, both stay on (their design
+target).
 
 Run `winc detect` to see exactly what `winc` resolved for your machine (backend, VRAM,
 context, MoE offload, recommended tier).

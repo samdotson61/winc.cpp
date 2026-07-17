@@ -3,6 +3,62 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.27.0 — 2026-07-17
+
+Speed pass, measured end to end on an M4 Pro (direct-`llama-server` benches,
+winc out of the loop). Every lever below shipped only because it won on this
+hardware; the ones that didn't are recorded as notes so they aren't re-tried
+blind. Net: winc's decode is llama.cpp's, and the launcher now leaves less on
+the table on Apple Silicon.
+
+### Changed
+- **KV cache auto-picks f16 when it costs no window.** `cache_type = "auto"`
+  now returns f16 (the engine default, so the `--cache-type-k/v` flags are
+  simply omitted) whenever the f16 cache still reaches the 262144 context
+  ceiling -- i.e. free VRAM holds ~8 GB of KV, so the window is capped either
+  way and f16 is pure free speed. MEASURED (4B): f16 vs q8_0 is **+9% decode
+  at an 8k-deep context, +11% prompt processing**, +2% empty, for 2x the KV
+  bytes. Below the ceiling, q8_0 keeps the window (capacity over speed), and a
+  starved card still downshifts to the q8_0/q4_0 pair. MoE with offloaded
+  experts stays q8_0 (its VRAM math is the offload budget, not the measured
+  dense case). Roomy setups -- the common case for the nano/small tiers these
+  models target -- get the speed for free.
+- **Speculative decoding is fully suppressed on Metal.** `mtpActive` already
+  ran MTP off there (originally a crash guard); MEASURED, it is also a decode
+  LOSS -- MTP costs **-8% at n-max 1, -15% at the default 2, -38% at 3** vs
+  off on a 9B, and an external 0.8B draft measured **0% best-case** for an
+  827 MiB load. Metal doesn't get the batch-verification parallelism
+  speculation needs. So the external-draft auto-pairing (`autoPairDraft`) and
+  the draft / MTP-head *download offers* now also no-op on Metal, matching the
+  MTP gate -- a Metal user is never auto-paired a draft, nor nudged to fetch
+  one that can't help. Explicit `draft_model` still wins (the user's
+  override). CUDA/Vulkan keep speculation (its design target).
+- **Unified-memory team workers pin to the efficiency cores.** CPU and GPU
+  share one memory bus on Apple Silicon and GPU decode is bandwidth-bound, so
+  a CPU worker (`-ngl 0`) decoding subagents while the main model streams
+  steals bandwidth from it. MEASURED: concurrent workers cost the main model
+  **16% decode**; pinning them to the E cores (`--cpu-range`, new
+  `platform.EfficiencyCoreRange`) recovers about half. Applied only to CPU
+  workers on unified memory with a known P/E split -- a no-op for GPU workers,
+  non-unified machines, and unknown layouts.
+
+### Removed
+- `--cache-reuse 256` from every launch. The v1.25.0 journal-era A/B measured
+  NO gain (the request pipeline is already prefix-cache-optimal), so it was a
+  dead flag -- one less engine interaction surface. `extra_server_args`
+  restores it for anyone who wants it.
+
+### Notes (measured, deliberately NOT shipped)
+- **The router hop is negligible.** Benchmarked (`internal/router/bench_test.go`,
+  kept as a regression guard): the parse + minify + encode the router runs on
+  every chat POST costs **3.7 ms on a 1 MB body** -- under 1% of any real
+  request's seconds-long prompt processing, and the minify shrinks the upstream
+  payload in return. A dormant-journal fast-path was considered and rejected:
+  no measurable win, real added complexity.
+- **ubatch is flat on Metal.** 512 vs 1024 vs 2048 prompt processing measured
+  498 / 503 / 503 tok/s -- noise. A bump only helps CUDA (unmeasured here), so
+  the default holds rather than change it blind.
+
 ## v1.26.0 — 2026-07-16
 
 Context pin: an explicit `context` in winc.toml is honored exactly.
