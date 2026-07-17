@@ -114,7 +114,6 @@ func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serv
 	if !noMTP {
 		args = append(args, engine.MTPArgs(cfg, hw, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
 	}
-	args = append(args, engine.CacheReuseArgs(serverBin)...) // extend prompt-cache reuse (probed)
 	lastBench = benchResult{}
 	proc, err := server.Start(serverBin, args, logPath)
 	if err != nil {
@@ -878,8 +877,12 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 	}
 	target := engine.ResolveContext(cfg, hw, modelPath, mb, off)
 	starved := ctx/engine.ParallelSlots(cfg) < engine.StarvedCtxTokens
-	if ctx >= target && !starved {
-		return proc, ctx // landed where the formula aimed, and no slot is starved
+	if ctx >= target && (!starved || engine.ContextPinned(cfg)) {
+		// Landed where the formula aimed. The starved-window climb is an
+		// auto-sizing rescue: an explicitly pinned context is the user's
+		// choice, never climbed past (measured: a 16384 pin used to settle
+		// at 49152 through this path).
+		return proc, ctx
 	}
 
 	key := fmt.Sprintf("%s|%d", filepath.Base(modelPath), ctx)
@@ -909,6 +912,9 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		next := engine.NextLadderRung(best)
 		if next <= best {
 			break
+		}
+		if next > target && engine.ContextPinned(cfg) {
+			break // a rung past an explicit pin is never taken
 		}
 		if !rungWorthTrying(&q4, hw, modelPath, next, 1, false) {
 			break

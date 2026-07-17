@@ -183,3 +183,6 @@ func EnsureBuildEnv() error {
 // GetSystemCpuSetInformation; that plumbing isn't worth carrying until a
 // measured need shows up. 0 = let the engine default stand, never guess.
 func performanceCores() int { return 0 }
+
+// efficiencyCoreRange: darwin-only (see the linux stub). ok=false.
+func efficiencyCoreRange() (lo, hi int, ok bool) { return 0, 0, false }

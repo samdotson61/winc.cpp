@@ -23,6 +23,9 @@ func autoPairDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) 
 	if strings.TrimSpace(cfg.Performance.DraftModel) != "" {
 		return // explicit user override wins
 	}
+	if speculationUselessHere() {
+		return
+	}
 	m := cat.Find(modelQuery)
 	draft := cat.DraftFor(m)
 	if draft == nil {
@@ -38,6 +41,17 @@ func autoPairDraft(cfg *config.Config, cat *catalog.Catalog, modelQuery string) 
 	cfg.Performance.DraftModel = draft.LocalFile()
 	ui.Info("speculative decoding on: drafting %s with %s", m.Alias, draft.Alias)
 }
+
+// speculationUselessHere reports whether speculative decoding (external draft or
+// MTP) should be suppressed on this backend. On Metal it is net-negative: the
+// backend doesn't get the batch-verification parallelism that makes drafting win
+// on CUDA. MEASURED (M4 Pro, v1.27.0): MTP costs -8% (n=1) to -38% (n=3) decode
+// vs off, and an external 0.8B draft measured 0% best-case for an 827 MiB load.
+// engine.mtpActive already gates MTP off on Metal (originally for a crash); this
+// extends the same call to the external draft and the download-time offers, so a
+// Metal user is never auto-paired a draft or nudged to fetch one that can't help.
+// An explicit draft_model still wins -- the user's override is checked first.
+func speculationUselessHere() bool { return engine.CurrentBackend() == "metal" }
 
 // qwen35Family matches the Qwen3.5 model family in a filename -- the one family
 // whose tokenizer the catalog's 0.8B draft shares (Qwen3.6 changed tokenizers and
@@ -81,6 +95,9 @@ func offerDraft(cfg *config.Config, cat *catalog.Catalog, m *catalog.Model, auto
 	if draft == nil {
 		return
 	}
+	if speculationUselessHere() {
+		return // measured net-negative on Metal -- don't spend the user's bandwidth on it
+	}
 	md := modelsDir(cfg)
 	if fileExists(filepath.Join(md, draft.LocalFile())) {
 		ui.Info("speculative decoding ready: %s will draft with %s", m.Alias, draft.Alias)
@@ -108,6 +125,9 @@ func offerDraft(cfg *config.Config, cat *catalog.Catalog, m *catalog.Model, auto
 func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 	if m == nil || m.MtpHead == "" {
 		return
+	}
+	if speculationUselessHere() {
+		return // MTP runs off on Metal (see engine.mtpActive) -- the head can't help there
 	}
 	md := modelsDir(cfg)
 	local := filepath.Base(m.MtpHead)

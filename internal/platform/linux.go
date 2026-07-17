@@ -173,3 +173,9 @@ func perfCoresFromSysfs(dir string) int {
 	}
 	return total - slow
 }
+
+// efficiencyCoreRange: the slow cpufreq class need not be a contiguous
+// high-index block on Linux, and unified-memory bandwidth contention is an
+// Apple-specific concern -- so this is darwin-only for now. ok=false everywhere
+// else leaves worker placement at the engine default.
+func efficiencyCoreRange() (lo, hi int, ok bool) { return 0, 0, false }

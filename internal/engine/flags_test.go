@@ -250,9 +250,22 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	if got := ResolveContext(&cfg, tight, "m.gguf", 6200, false); got != BottomCtxTokens {
 		t.Errorf("downshifted window = %d, want %d", got, BottomCtxTokens)
 	}
+	// Ample VRAM (13+ GB free): f16 KV still reaches the ceiling, so the window
+	// is capped either way and f16 is free decode/prompt speed (v1.27.0).
 	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28591}
-	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "q8_0" {
-		t.Errorf("ample window should stay q8_0, got %q", got)
+	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, false); got != "f16" {
+		t.Errorf("ceiling-capped window should use f16, got %q", got)
+	}
+	// Roomy but not ceiling-capped (~6.5 GB free -> f16 ~205k < ceiling, q8 fine):
+	// keep q8_0 so f16's 2x KV never costs window.
+	mid := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 8192}
+	if got := EffectiveCacheType(&cfg, mid, "m.gguf", 1000, false); got != "q8_0" {
+		t.Errorf("non-ceiling window should stay q8_0, got %q", got)
+	}
+	// MoE experts offloaded: VRAM math differs, stay q8_0 (f16 was measured on
+	// the dense case only).
+	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, true); got != "q8_0" {
+		t.Errorf("expert-offloaded should stay q8_0, got %q", got)
 	}
 	// Explicit q8_0 never downshifts the CACHE; the window that pure-q8 KV can't
 	// reach lands at the usable floor instead (partial offload places the rest).
@@ -667,5 +680,37 @@ func TestTensorSplitArgs(t *testing.T) {
 	// Footprint over the combined budgets -> nil (the ladder handles it).
 	if got := TensorSplitArgs(&cfg, hw, "m.gguf", 30000, 98304, "q8_0"); got != nil {
 		t.Errorf("oversized footprint must not emit a split, got %v", got)
+	}
+}
+
+func TestContextPinned(t *testing.T) {
+	cfg := config.Defaults()
+	for _, v := range []string{"", "auto", "optimal", " Auto ", "OPTIMAL"} {
+		cfg.Performance.Context = v
+		if ContextPinned(&cfg) {
+			t.Errorf("Context=%q must not be pinned", v)
+		}
+	}
+	for _, v := range []string{"2048", "16384", " 49152 "} {
+		cfg.Performance.Context = v
+		if !ContextPinned(&cfg) {
+			t.Errorf("Context=%q must be pinned", v)
+		}
+	}
+}
+
+func TestContextLadderHonorsSubFloorPin(t *testing.T) {
+	// A pin below the 16384 agent floor is a rung of its own (small-footprint
+	// serving); auto sizing never resolves below ctxFloor so only pins hit this.
+	if got := ContextLadder(2048); len(got) != 1 || got[0] != 2048 {
+		t.Errorf("ContextLadder(2048) = %v, want [2048]", got)
+	}
+	if got := ContextLadder(16384); len(got) != 1 || got[0] != 16384 {
+		t.Errorf("ContextLadder(16384) = %v, want [16384]", got)
+	}
+	// Above the floor the ladder is unchanged: target first, standard rungs below.
+	got := ContextLadder(49152)
+	if got[0] != 49152 || got[len(got)-1] != 16384 {
+		t.Errorf("ContextLadder(49152) = %v, want 49152..16384", got)
 	}
 }

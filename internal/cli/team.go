@@ -538,9 +538,17 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 
 		args := engine.ServerArgs(&wc, hw, modelPath, pnum, "", ctx) // ServerArgs adds family-correct sampling
 		args = append(args, "--parallel", strconv.Itoa(parallel))
-		// Extend prompt-prefix cache reuse (recovers the cache after small mid-prompt edits);
-		// probed, so an older engine that lacks the flag just runs without it.
-		args = append(args, engine.CacheReuseArgs(serverBin)...)
+		// Unified memory + CPU worker (-ngl 0): pin the worker to the efficiency
+		// cores. CPU and GPU share one memory bus on Apple Silicon, and GPU decode
+		// is bandwidth-bound, so a worker decoding on the P cores steals bandwidth
+		// from the main GPU model. MEASURED (M4 Pro, v1.27.0): concurrent CPU
+		// workers cost the main model 16% decode; pinning them to the E cores
+		// recovers about half. No-op for GPU workers and non-unified machines.
+		if !gpu && hw.Unified {
+			if lo, hi, ok := platform.EfficiencyCoreRange(); ok {
+				args = append(args, "--cpu-range", fmt.Sprintf("%d-%d", lo, hi), "--threads", strconv.Itoa(hi-lo+1))
+			}
+		}
 		proc, err := server.Start(serverBin, args, logPath)
 		if err != nil {
 			ui.Warn("team: %s worker failed to launch: %v", role, err)
