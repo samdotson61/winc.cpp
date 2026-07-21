@@ -85,7 +85,6 @@ func cmdServe(args []string) int {
 		reportMissingModel(alias, model)
 		return 1
 	}
-	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 	hw := platform.DetectHardwareCached()
 	ensureGPUSpeeds(cfg, cat, &hw) // multi-GPU bandwidth weights, measured once per machine
 

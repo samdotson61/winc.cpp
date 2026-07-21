@@ -105,7 +105,6 @@ func cmdStart(args []string) int {
 		return 1
 	}
 	rememberLastUsed(cfg, app, alias)
-	autoPairDraft(cfg, cat, model) // dense model + downloaded draft -> speculative decoding
 	// (family-correct sampling is applied for all tiers inside engine.ServerArgs)
 
 	if _, err := config.EnsureClaudeLocal(); err != nil {

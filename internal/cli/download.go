@@ -51,7 +51,6 @@ func cmdDownload(args []string) int {
 	target := filepath.Join(md, localName)
 	if fileExists(target) {
 		ui.Good("already downloaded: %s", localName)
-		offerDraft(cfg, cat, m, autoYes)
 		offerMTPHead(cfg, m, autoYes)
 		mtpTip(cat, m)
 		return 0
@@ -67,7 +66,6 @@ func cmdDownload(args []string) int {
 	if engine.IsMTPFile(localName) {
 		ui.Good("MTP variant - winc turns on --spec-type draft-mtp automatically at launch")
 	}
-	offerDraft(cfg, cat, m, autoYes)
 	offerMTPHead(cfg, m, autoYes)
 	mtpTip(cat, m)
 	return 0
