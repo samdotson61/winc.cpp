@@ -3,6 +3,25 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.28.0-jobdar.2 — 2026-07-21 (winc-jobdar branch)
+
+### Changed
+- **Low-end eval pick now actively recommends the accuracy leader.** The
+  preference order already led with gemma4-e2b below 5 GB (the only sub-3 GB
+  model that rejects every senior/mid/manager trap, 12/12 on the June policy
+  set) — but "first downloaded wins" meant a box with only the old 2B pulled
+  stayed on it silently forever. The picker now names the tier's
+  measured-accuracy leader and prints the `winc -d` command whenever it falls
+  back past it (base alias only, never an arm `-q40` rung; quiet when the
+  fallback IS the leader's own rung).
+- Re-measured on the current decomposed Jobfaro rubric (2026-07-21, 6-posting
+  harness, 5070 Ti, temp 0): **gemma4-e2b 5/6 correct + 6/6 parseable JSON**
+  (with or without a JSON grammar) vs **Qwen 2B-Q4 1/6 JSON** — it rambles past
+  a 1600-token cap and doesn't close the object, grammar or not. The 2B's
+  low-end slot is a last-resort safety net, not a peer. (Production's schema
+  grammar + clamp may soften this — measured in-harness — but the accuracy
+  order stands either way.) Numbers recorded in the eval.go comments.
+
 ## 1.28.0-jobdar.1 — 2026-07-21 (winc-jobdar branch)
 
 Merges master **v1.28.0** (external-draft auto-pair retired on CUDA-measured
