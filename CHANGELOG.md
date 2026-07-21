@@ -3,6 +3,56 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.28.0 — 2026-07-21
+
+The CUDA side of the v1.27.0 speed pass: the two levers that could not be
+measured on a Mac, plus re-proof of the external-draft claim, measured on a
+Windows box (RTX 5070 Ti 16 GB — the machine's second card is gone, so this is
+a single-GPU record; driver 610.74, cuda-13.3 engine b9672/74ade5274, direct
+`llama-server` benches on a scratch port, winc out of the loop, `-dev CUDA0`
+pinned because this build enumerates the one card as CUDA0 *and* Vulkan0).
+
+### Changed
+- **External-draft speculation retired: the dense 0.8B auto-pair and its
+  download-time offer are gone.** MEASURED (9B-Q4 + 0.8B draft-simple, temp 0,
+  256-tok gens, 3 reps/cell): plain **119.4 code / 119.0 chat** tok/s; with
+  draft **68.4 code (−43%) / 51.0 chat (−57%)**; `-ngld 99` pins don't help
+  (72.1 / 52.4). The kicker: acceptance was HEALTHY — 67%, mean accepted run
+  3.2 tokens — and it still lost, because at 119 tok/s native the draft's own
+  serial generation costs more than batch verification saves. With Metal at 0%
+  best-case (v1.27.0) and the 2026-06-13 eval-shape pass measuring decode
+  halved on CPU and low-VRAM tiers, the pairing has now lost on every backend
+  ever measured, across two engine generations — so the automatic path is
+  retired outright rather than backend-gated. An explicit
+  `[performance].draft_model` in winc.toml still works verbatim (force it to
+  measure your own hardware). MTP is untouched — different mechanism, measured
+  positive on CUDA — and `catalog.DraftFor` + the catalog pairing metadata stay
+  (shared by every install's `winc update`; only winc's use of them retired).
+  README claims updated to match the measurements.
+
+### Notes (measured-no / validated — recorded so they aren't re-tried blind)
+- **ubatch is flat on CUDA too.** 4B pp on a 10.5k-token prompt: `-ub 512`
+  **7529**, `-ub 1024` 7486 (−0.6%), `-ub 2048` 7473 (−0.7%) tok/s, while
+  VRAM grows 4691 → 4920 MB at 2048. The community's "+10–30% pp on CUDA"
+  does not reproduce on this card/build; matches Metal's flat 498/503/503.
+  No VRAM-tiered ubatch — `Batch "auto"` (2048/512) stays.
+- **f16-KV auto-policy validated on CUDA.** 4B, f16 vs q8_0: empty decode
+  **183.5 vs 176.8 (+3.8%)**, decode at 10.5k depth **169.3 vs 165.2
+  (+2.5%)**, prompt fill **7913 vs 7646 (+3.5%)**, +186 MB VRAM at 16k.
+  Same direction as Metal's +9%/+11% — the v1.27.0 `cache_type="auto"` f16
+  branch needs no backend gate.
+- **dGPU team contention is NOT ~0 — flagged, nothing shipped.** 4B GPU decode
+  drops **176.6 → 159.2 tok/s (−9.8%)** while a 0.8B `-ngl 0 --parallel 2`
+  CPU sidecar runs two concurrent 512-tok generations (Ryzen 7 7700X). The
+  v1.27.0 assumption (unified-memory-only contention) undercounts host-side
+  contention — the CPU feeding the GPU loses cycles to workers. Worth a
+  discussion before any fix: the 7700X has no E-cores, so the Metal-style pin
+  doesn't transplant; priority/affinity for team workers is the likely shape.
+- **Windows P-core pinning stays the honest 0.** This box's 7700X is
+  homogeneous Zen 4 (no P/E split), so the T4 measurement is impossible here;
+  `performanceCores` returning 0 on Windows remains correct until a hybrid
+  Intel box measures a need.
+
 ## v1.27.0 — 2026-07-17
 
 Speed pass, measured end to end on an M4 Pro (direct-`llama-server` benches,

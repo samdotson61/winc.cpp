@@ -53,7 +53,6 @@ func cmdSetup() int {
 				if err := config.UpdateDefaultModel(def.Alias); err == nil {
 					ui.Say("  set %s as default model in winc.toml", def.Alias)
 				}
-				offerDraft(cfg, cat, def, false) // dense pick -> offer its speculative-decoding draft
 			}
 		}
 	} else {

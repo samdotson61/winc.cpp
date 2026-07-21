@@ -53,7 +53,7 @@ winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
 |---------|--------------|
 | `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
-| `winc -d <alias> [-y]` | Download a catalogue model (offers its speculative-decoding draft for dense models and the MTP head for Gemma 4; `-y` auto-accepts) |
+| `winc -d <alias> [-y]` | Download a catalogue model (offers the MTP head for Gemma 4; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
 | `winc -s` | Start the **last used** agent on the **last used** model (every successful agent start updates the defaults) |
@@ -293,7 +293,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | ★ qwen3.5-4b | 4B | 2.6 GB | Feb 2026 | ~56 | ~45-65 / ~10-18 | best tiny **coder + tools** |
 | gemma4-e2b | 2.3B eff | 2.9 GB | Mar 2026 | ~44 | ~50-70 / ~12-20 | general, multimodal |
 | qwen3.5-2b | 2B | 1.2 GB | Feb 2026 | — | ~80-110 / ~22-36 | fastest small coder |
-| qwen3.5-0.8b | 0.8B | 0.5 GB | Mar 2026 | — | ~120-160 / ~40-60 | phones / edge / draft |
+| qwen3.5-0.8b | 0.8B | 0.5 GB | Mar 2026 | — | ~120-160 / ~40-60 | phones / edge |
 
 **`small` — 6-8 GB (RTX 3050 / RX 6600-class) or 8-16 GB unified**
 
@@ -305,8 +305,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
 
 Anchors: an RTX 3050 8 GB runs a 9B Q4 at ~25 tok/s; a 4B is ~2x that, a sub-1B ~5x+;
-GPU is ~5-10x faster than CPU. **For coding, prefer the Qwen3.5 line (or OmniCoder-9B);
-all pair with the tiny `qwen3.5-0.8b` draft for speculative decoding.**
+GPU is ~5-10x faster than CPU. **For coding, prefer the Qwen3.5 line (or OmniCoder-9B).**
 
 ---
 
@@ -332,7 +331,7 @@ end of this section only exist if you want to override a decision.
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
-| **Auto-paired draft (dense)** | Downloading a **dense** catalogue model offers its tiny same-tokenizer draft; once present, `winc` enables `--spec-draft-model` automatically at launch. MoE models are skipped (drafts backfire there) | The draft proposes tokens the big model verifies in a batch — up to ~2× on predictable code |
+| **External drafts: explicit-only** | The dense 0.8B auto-pair is retired — measured a decode **loss** on every backend tested (CUDA 5070 Ti: −43% code / −57% chat at 67% acceptance; Metal: 0% best case; CPU: halved): the draft's own serial generation costs more than batch verification saves. Set `draft_model` in `winc.toml` to force one anyway | No silent slowdown from a "speedup" — measured-no, documented in the CHANGELOG |
 | **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine) | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
@@ -370,10 +369,10 @@ max_output_tokens = "auto"   # cap on response length ("auto" = ~half the contex
 # MoE expert offload (see above)
 cpu_moe = "auto"      # "auto" (offload only if it won't fit VRAM) | "on" | "off" | <layer count>
 
-# Speculative decoding: winc AUTO-PAIRS a tiny same-tokenizer draft for dense catalogue
-# models once the draft is downloaded (it offers to fetch it on `winc -d <dense>`). Set
-# this only to force a specific draft GGUF (must live in models/) or override the pick.
-draft_model = ""      # "" = auto-pair for dense models; or a filename to force one
+# External-draft speculative decoding: OFF unless you force it. The old dense auto-pair
+# measured as a decode loss on every backend tested (see the v1.28.0 CHANGELOG entry).
+# Set a draft GGUF filename (must live in models/) only to force it anyway.
+draft_model = ""      # "" = off; or a draft GGUF filename to force external drafting
 
 # Multi-Token Prediction: auto-on for *-mtp model variants (built-in draft heads).
 mtp = "auto"          # "auto" (on for MTP models, engine permitting) | "off"
@@ -383,13 +382,13 @@ mtp_draft_max = 2     # tokens drafted per step (--spec-draft-n-max)
 extra_server_args = []   # e.g. ["--mlock"] (lock model in RAM) or ["--n-cpu-moe", "16"]
 ```
 
-**Speculative decoding is automatic for dense models.** When you download a dense
-catalogue model, `winc` offers to also grab its tiny same-tokenizer draft (the 0.8B
-`qwen3.5-0.8b` pairs with the Qwen3.5 small coders like `qwen3.5-9b` and `omnicoder-9b`).
-Once the draft is present, `winc` turns on `--spec-draft-model`
-automatically at launch — up to ~2× on predictable code. **MoE models are never paired**
-(only ~3B is active, so a draft just adds overhead). `draft_model` forces a specific
-draft or overrides the auto-pick.
+**External drafts are explicit-only (auto-pair retired in v1.28.0).** The 0.8B
+draft pairing measured as a decode **loss** everywhere it was tested: on a CUDA
+5070 Ti the 9B dropped −43% on code / −57% on chat at temp 0 — *despite* a healthy
+67% acceptance rate — because the draft's own serial generation costs more than
+batch verification saves; Metal measured 0% best case, and CPU tiers halved.
+`draft_model` in `winc.toml` still forces a specific draft verbatim if you want to
+measure your own hardware.
 
 **MTP (`*-mtp` variants).** Multi-Token Prediction is prediction heads baked into the
 model itself — no second model to download or keep in VRAM. For Qwen3.6 it's also the

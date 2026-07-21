@@ -37,7 +37,6 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		return 1
 	}
 	rememberLastUsed(cfg, app, mainAlias)
-	autoPairDraft(cfg, cat, mainQuery) // the main model still gets its draft / MTP speedup
 
 	if _, err := config.EnsureClaudeLocal(); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)
