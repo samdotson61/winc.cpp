@@ -3,6 +3,30 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.28.0-jobdar.3 — 2026-07-21 (winc-jobdar branch)
+
+### Fixed (the record, not the code)
+- **The jobdar.2 claim "Qwen 2B-Q4 1/6 JSON, grammar or not" was a harness
+  artifact — the production stack is immune, corrected in the eval.go notes.**
+  Re-measured the same day under the REAL production shape (this profile's
+  `--reasoning off --temp 0 --top-k 1` server + jobfaro's
+  `response_format=json_schema` + max_tokens 700, the coordinated jobdar.4
+  change): the 2B is **6/6 valid JSON, 5/6 correct — including BOTH senior/mid
+  reject traps** — answering in 219-342 tokens with clean stops. The identical
+  server WITHOUT the schema drops to 3/6 JSON (and the earlier harness's
+  schema-less, plain-sampled shape measured 1/6; its "grammar" was
+  `json_object`, a nudge, not a real grammar). Mechanism confirmed: schema-less
+  serving lets Qwen3.5 verbalize reasoning into content (the community-
+  documented reasoning-leak class on llama.cpp/vLLM under json+greedy); the
+  schema grammar is LOAD-BEARING for the 2B. Same-day production-shape
+  anchors: qwen3.5-4b 5/6 + 6/6, gemma4-e2b 5/6 + 6/6 (every miss across all
+  three = P1 years-inflated-entry via a years-only meets_all=false, which
+  jobfaro's clamp forgives — effectively clean sweeps in production terms).
+- The accuracy-leader recommendation (jobdar.2 feature) STANDS on the June
+  12-posting H2H (e2b 12/12 vs 2B 10/12, REJECT 5/5 vs 3/5) plus e2b's
+  shape-robustness (it behaves with or without a grammar). The picker's tip
+  no longer cites a specific CHANGELOG version.
+
 ## 1.28.0-jobdar.2 — 2026-07-21 (winc-jobdar branch)
 
 ### Changed

@@ -134,12 +134,20 @@ const evalEvalThresholdMB = 5120
 // gemma4-e2b, then the 2B.
 //
 // RE-CHECKED 2026-07-21 on the current decomposed Jobfaro rubric (6-posting
-// harness, 5070 Ti, temp 0): gemma4-e2b held — 5/6 correct, 6/6 parseable JSON
-// (with or without a JSON grammar) — while the Qwen 2B-Q4 rambled past a
-// 1600-token cap and closed its JSON only 1/6, grammar or not. The 2B slot in
-// the low-end order is a last-resort safety net, not a peer: when the picker
-// lands on it, it now says so and recommends the leader (production's schema
-// grammar + clamp may soften the 2B's failure, but the accuracy order stands).
+// harness, 5070 Ti): the first pass served WITHOUT the production stack (no
+// schema grammar, plain sampling) and measured the 2B-Q4 at 1/6 valid JSON —
+// which turned out to be a HARNESS ARTIFACT. Re-measured the same day under
+// the REAL production shape (this profile's --reasoning off + --temp 0
+// --top-k 1, PLUS jobfaro's response_format=json_schema and max_tokens 700):
+// the 2B is 6/6 valid JSON, 5/6 correct — including BOTH senior/mid reject
+// traps — answering in 219-342 tokens; the same server without the schema
+// drops to 3/6 JSON. Mechanism: schema-less serving lets Qwen3.5 verbalize
+// reasoning into the content (the documented reasoning-leak class); the
+// grammar is LOAD-BEARING for the 2B. gemma4-e2b measured 5/6 + 6/6 in both
+// shapes — it needs no grammar to behave, which is exactly why it leads this
+// tier: its June 12-posting H2H edge (12/12 vs the 2B's 10/12, REJECT 5/5 vs
+// 3/5) plus shape-robustness. The 2B is a fully-functional fallback WHEN
+// served through the production stack — not broken, just grammar-dependent.
 // evalPrefs is the eval-model preference order for this hardware (first downloaded
 // wins). The order flips at evalEvalThresholdMB per the note above: low-end leads
 // with gemma4-e2b, 5 GB+ leads with the Qwen 4B anchor.
@@ -177,7 +185,7 @@ func evalPickModel(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardwar
 			// quiet when the fallback is just the leader's own rung expansion.
 			if best := evalPrefs(hw)[0]; i > 0 && strings.TrimSuffix(a, "-q40") != best {
 				ui.Dim("preferred eval model %s isn't downloaded - using %s", best, a)
-				ui.Info("for the most accurate evals on this hardware: winc -d %s (measured-accuracy leader for this tier; see CHANGELOG 1.28.0-jobdar.2)", best)
+				ui.Info("for the most accurate evals on this hardware: winc -d %s (measured-accuracy leader for this tier)", best)
 			}
 			return p, a
 		}
