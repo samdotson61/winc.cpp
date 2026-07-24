@@ -81,7 +81,7 @@ func cmdDetect() int {
 			ui.Say("  MoE offload   : yes (experts -> RAM; attention on GPU)")
 		case moe != "":
 			ui.Say("  MoE offload   : %s expert layers -> RAM", moe)
-		case engine.IsMoEFile(def.File):
+		case engine.IsMoE(def.File):
 			ui.Say("  MoE offload   : no (model fits VRAM; runs fully on GPU)")
 		}
 		if def.Mtp != "" {

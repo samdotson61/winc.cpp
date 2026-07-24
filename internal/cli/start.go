@@ -139,7 +139,7 @@ func cmdStart(args []string) int {
 	}
 	if loadedCtx < 49152 {
 		ui.Warn("context is small (%d tokens) - Claude Code may compact often.", loadedCtx)
-		if engine.IsMoEFile(modelPath) && !engine.WillOffloadExperts(cfg, hw, modelPath) {
+		if engine.IsMoE(modelPath) && !engine.WillOffloadExperts(cfg, hw, modelPath) {
 			ui.Say("  tip: set cpu_moe = \"on\" in winc.toml to offload experts to RAM and free VRAM for a much larger context.")
 		}
 	}

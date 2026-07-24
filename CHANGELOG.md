@@ -3,6 +3,115 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.29.0 — 2026-07-24
+
+Three handler fixes so winc sizes, reports and launches models it has never
+seen — each one replacing a guess from a filename or a constant with a read of
+the model's own metadata — plus two catalogue additions to the `small` tier.
+Measured on an M4 Pro (18 GB
+unified, Metal, engine b9651): `llama-bench -ngl 99 -p 512 -n 128 -r 3` for the
+speed figures, and a 5-task coding set whose hidden tests were themselves
+validated against reference solutions before any model saw them.
+
+### Added
+- **`lfm2.5-8b-a1b` — LiquidAI's LFM2.5-8B-A1B joins the `small` tier**, the
+  first Mixture-of-Experts model in the catalogue small enough for it: 8.5B
+  total but only ~1.5B active per token, so it decodes like a 2B while
+  answering like a 9B. MEASURED pp512/tg128: **1373 / 129.1 tok/s** against
+  `qwen3.5-9b`'s **332 / 34.1** — **3.8x the decode and 4.1x the prompt speed
+  at slightly LESS memory** (4.95 vs 5.46 GiB). Through winc's own serve path
+  at full context it holds **116 tok/s** against the 9B's **32.3**. It solved
+  **5/5** of the coding set and passed every functional gate (tool_use,
+  tool_result round trip, structured JSON, exact-format instruction
+  following). Deliberately placed SECOND in the tier so
+  `qwen3.5-9b` remains the default: LFM2.5's published tool-choice score
+  (BFCLv3 64.4) trails the Qwen coders (71.1), and tool choice is the job
+  winc exists to do. Take it for speed. Note its 128K trained context (most of
+  the catalogue is 256K, though `gemma4-e2b` turns out to be 131072 too) and
+  its custom LFM license, not Apache.
+- **`ornith-9b` — DeepReinforce's Ornith-1.0-9B joins the `small` tier** as the
+  coding pick, ahead of `omnicoder-9b`. MIT, a Qwen3.5-9B post-train that
+  learns its own RL scaffold; published SWE-bench Verified **69.4** and
+  Terminal-Bench 2.1 **43.1**, above Gemma 4-31B at a third the size. MEASURED:
+  **5/5** on the coding set against `omnicoder-9b`'s **3/5**, and it answers in
+  a third the tokens of `qwen3.5-9b` (2232 vs 6323 on the same task). Decode is
+  identical to the 9B it is built on (**31.1 vs 32.3 tok/s**, and 329.9 vs
+  332.0 pp512), so preferring it costs nothing. Its tokenizer is byte-identical
+  to `qwen3.5-0.8b` (`gpt2:248320:248046`, verified, not assumed), so the
+  catalogue draft pairing is valid.
+
+### Changed
+- **`omnicoder-9b` is no longer described as the "best small coder".** MEASURED
+  at **3/5** on the coding set — the weakest of the four small-tier coders
+  tested, and both failures are real code, not harness artifacts: `tokenize("1+2")`
+  returns the wrong list, and its `TTLCache` never defines a `get` method (it
+  then failed the same task again at a 24k-token budget). The entry stays —
+  five tasks is not enough evidence to delete a model on — but its note now
+  says what was measured and points at `ornith-9b`.
+
+### Fixed
+- **MoE detection reads the model's metadata instead of guessing from its
+  filename.** `IsMoE` now prefers the authoritative `<arch>.expert_count` in
+  the GGUF and falls back to the name convention only when no file can be read
+  (a catalogue entry for a model that isn't downloaded yet). The old name-only
+  heuristic looked for an `A3B`-style active-param tag, which **Mixtral-8x7B,
+  DeepSeek-V2-Lite and grok-1 do not have** — all three were classified dense,
+  so `resolveCPUMoE` never offloaded their experts and a VRAM-tight machine got
+  a floor-level context or an OOM. Any renamed file lost detection entirely.
+  Verified against 11 real GGUFs on disk: metadata reads correctly (LFM2.5 = 32
+  experts, gemma-4-26B-A4B = 128) and **agrees with the old heuristic on every
+  model currently in the catalogue**, so this is a strict widening with no
+  behaviour change for the existing roster.
+- **The context window winc reports is now the one that actually loads.** winc
+  sized, printed and estimated decode against its own target without asking the
+  model what it was trained for, so serving a sub-256K model printed
+  `decode: ~77 tok/s at 262144 context` and `(context 262144, max output 65536)`
+  while llama-server logged `the slot context (262144) exceeds the training
+  context of the model (128000) - capping` and ran the slots at **128000**.
+  Every one of those numbers described a configuration that never ran. The
+  target is now clamped to `<arch>.context_length` before sizing, reporting and
+  the decode estimate. No quality bug existed — the engine always capped
+  correctly — this is the honest-UI fix. An explicit `[performance].context`
+  pin is still honoured exactly up to that ceiling; past it the engine overrules
+  everyone, so winc says so once instead of printing a number the user can
+  never get. Unknown trained length changes nothing. `ctxCeil`'s "every 2026
+  catalog model is natively >=256K" assumption was **already false before this
+  release**: reading the trained length off every GGUF on disk shows
+  `gemma-4-E2B-it-Q4_K_M` at **131072**, so the nano tier's Gemma anchor has
+  been advertised at 262144 and capped to half that in the engine this whole
+  time. `lfm2.5-8b-a1b` (128K) only makes it easier to hit.
+- **An incompatible explicit `draft_model` is caught before the engine chokes
+  on it.** `[performance].draft_model` reached `--spec-draft-model` after only
+  an existence check; a draft that doesn't share the target's vocabulary fails
+  inside llama-server with an error naming neither file. `DraftMismatch` now
+  compares tokenizer fingerprints (`<tokenizer-model>:<vocab-size>:<eos-id>`)
+  and, on a **provable** mismatch, drops the flag and says why — the model
+  still serves, just without drafting. Unreadable metadata passes through
+  untouched, so the guard only fires on a mismatch it can demonstrate, and it
+  warns once per pair rather than on every rung of the launch ladder.
+
+### Notes (method — recorded so the next model bake-off doesn't repeat them)
+- **Killing `winc serve` does NOT kill its llama-server.** The wrapper dies and
+  the engine child keeps port 8090, so the next model under test is silently
+  answered by the previous one. This invalidated a whole round of results here
+  (`omnicoder-9b` "scored" 5/5 while a stale Ornith engine served the requests;
+  it really scores 3/5). Any comparison harness must kill the engine too and
+  then ASSERT the loaded `-m` path matches the model it thinks it is testing —
+  every number above was re-measured under that assertion.
+- **A token cap makes a verbose model look wrong.** At `max_tokens` 3000 both
+  9Bs "failed" the tokenizer task by never emitting a code fence — they were
+  still reasoning. At 8000 both passed. Budget exhaustion and incorrect code
+  are different findings and a coding harness has to separate them: check
+  `stop_reason`, and re-run anything that stopped at the cap.
+- **Verbosity is a real cost, separate from speed.** Solving the identical task
+  took `lfm2.5-8b-a1b` 1,033 output tokens, `ornith-9b` 2,232 and `qwen3.5-9b`
+  6,323. At equal tok/s that is a 6x difference in wall-clock and context
+  burn — worth measuring alongside decode rate, not folded into it.
+- **Trained context lengths, read off disk** (the data behind the clamp above):
+  Qwen3.5 family, Ornith and OmniCoder **262144**; `gemma-4-E2B` and MiniCPM5
+  **131072**; `lfm2.5-8b-a1b` **128000**. The assumption that the whole 2026
+  roster is >=256K was never true.
+
 ## v1.28.0 — 2026-07-21
 
 The CUDA side of the v1.27.0 speed pass: the two levers that could not be
