@@ -13,6 +13,7 @@ import (
 
 	"winc/internal/config"
 	"winc/internal/platform"
+	"winc/internal/ui"
 )
 
 // moeNamePat matches the MoE naming convention: an active-param tag like "A3B" /
@@ -20,10 +21,30 @@ import (
 var moeNamePat = regexp.MustCompile(`(?i)(^|[-_.])a\d+(\.\d+)?b([-_.]|$)|moe|gpt-oss`)
 
 // isMoEFile guesses whether a GGUF is a Mixture-of-Experts model from its name.
+// A guess is all a name can give: plenty of real MoEs carry no active-param tag
+// (Mixtral-8x7B, DeepSeek-V2-Lite, grok-1), and any renamed file loses the tag
+// entirely. Use IsMoE instead wherever a real file is on hand.
 func isMoEFile(path string) bool { return moeNamePat.MatchString(filepath.Base(path)) }
 
-// IsMoEFile reports whether a GGUF filename looks like a Mixture-of-Experts model.
-func IsMoEFile(path string) bool { return isMoEFile(path) }
+// IsMoE reports whether a GGUF is a Mixture-of-Experts model, preferring the
+// authoritative "<arch>.expert_count" in the file's metadata and falling back to
+// the filename convention only when that metadata cannot be read -- which is the
+// normal case for a catalogue entry naming a model that isn't downloaded yet.
+// Getting this wrong is expensive: a MoE misread as dense never gets its experts
+// offloaded, so a VRAM-tight machine is left with a floor-level context or an OOM.
+func IsMoE(path string) bool {
+	switch n := ExpertCount(path); {
+	case n > 0:
+		return true
+	case n == 0:
+		return false // metadata read cleanly and says dense
+	default:
+		return isMoEFile(path) // metadata unavailable -> fall back to the name
+	}
+}
+
+// draftWarned tracks target|draft pairs already reported as tokenizer-incompatible.
+var draftWarned sync.Map
 
 // minKVHeadroomMB is the free VRAM (after model + compute buffer) below which a MoE
 // model's context would be stuck near the floor. Auto-offload kicks in under this so
@@ -69,7 +90,7 @@ func resolveCPUMoE(cfg *config.Config, hw platform.Hardware, modelPath string, m
 			return strconv.Itoa(n)
 		}
 	}
-	if ngl == 0 || hw.VRAMMB <= 0 || modelMB <= 0 || !isMoEFile(modelPath) {
+	if ngl == 0 || hw.VRAMMB <= 0 || modelMB <= 0 || !IsMoE(modelPath) {
 		return ""
 	}
 	if hw.VRAMMB-modelMB-gpuReserveMB(hw, modelMB) < minKVHeadroomMB {
@@ -447,7 +468,7 @@ func GpuLayers(cfg *config.Config, hw platform.Hardware) int {
 
 const (
 	ctxFloor = 32768  // last-resort ladder bottom; enough to boot an agent at all
-	ctxCeil  = 262144 // every 2026 catalog model is natively >=256K; the load ladder protects the rest
+	ctxCeil  = 262144 // the aim for natively-256K+ models; models trained shorter (lfm2.5-8b-a1b: 128K) are clamped to their own ceiling by clampToTrainedContext, and the load ladder protects the rest
 
 	// BottomCtxTokens is the UNIVERSAL bottom target: ~64K of usable working
 	// context on top of Claude Code's fixed overhead (~24k system prompt +
@@ -613,7 +634,7 @@ func FFNSpillPlan(cfg *config.Config, hw platform.Hardware, modelPath string, ct
 	if cfg.Performance.GpuLayers != "auto" && cfg.Performance.GpuLayers != "" {
 		return 0, 0
 	}
-	if isMoEFile(modelPath) {
+	if IsMoE(modelPath) {
 		return 0, 0
 	}
 	modelMB := FileMB(modelPath)
@@ -699,8 +720,40 @@ func ResolveContext(cfg *config.Config, hw platform.Hardware, modelPath string, 
 }
 
 // resolveContextFor is ResolveContext with the KV cache type pinned (the "auto"
-// resolution needs to size the q8 window without recursing).
+// resolution needs to size the q8 window without recursing). Whatever the sizing
+// policy asks for, the answer is capped at what the model was actually trained
+// for -- see clampToTrainedContext.
 func resolveContextFor(cfg *config.Config, hw platform.Hardware, cacheType, modelPath string, modelFileMB int, expertsOffloaded bool) int {
+	want := unclampedContextFor(cfg, hw, cacheType, modelPath, modelFileMB, expertsOffloaded)
+	return clampToTrainedContext(modelPath, want, ContextPinned(cfg))
+}
+
+// ctxClampWarned tracks models already reported as having a clamped context pin.
+var ctxClampWarned sync.Map
+
+// clampToTrainedContext caps a requested window at the model's trained context.
+// Above that, llama-server caps the slot itself ("the slot context (N) exceeds
+// the training context of the model (M) - capping"), so an unclamped target made
+// winc size, PRINT, and estimate decode for a window that never loads -- the
+// honesty bug this exists to close. Unknown trained length (0) changes nothing.
+// An explicit winc.toml pin is still honoured exactly up to this ceiling; beyond
+// it the engine overrules everyone, so winc says so once rather than print a
+// number the user will never get.
+func clampToTrainedContext(modelPath string, want int, pinned bool) int {
+	trained := TrainedContext(modelPath)
+	if trained <= 0 || want <= trained {
+		return want
+	}
+	if pinned {
+		if _, seen := ctxClampWarned.LoadOrStore(modelPath, true); !seen {
+			ui.Warn("context %d exceeds %s's trained context (%d) - using %d; the engine caps it there regardless",
+				want, filepath.Base(modelPath), trained, trained)
+		}
+	}
+	return trained
+}
+
+func unclampedContextFor(cfg *config.Config, hw platform.Hardware, cacheType, modelPath string, modelFileMB int, expertsOffloaded bool) int {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Performance.Context))
 	switch mode {
 	case "", "auto", "optimal":
@@ -824,6 +877,11 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	ngl := GpuLayers(cfg, hw)
 	if ctx <= 0 {
 		ctx = ResolveContext(cfg, hw, modelPath, modelMB, expertsOff)
+	} else {
+		// A caller-supplied window (team workers) skips ResolveContext, so clamp
+		// here too -- every launch leaves this function with a window the model
+		// can actually hold, whoever chose it.
+		ctx = clampToTrainedContext(modelPath, ctx, ContextPinned(cfg))
 	}
 	// GPU placement policy, head-first:
 	//  - MoE expert offload: all layers on the GPU (-ngl 99), expert weights in RAM,
@@ -908,7 +966,21 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 			dp = filepath.Join(filepath.Dir(modelPath), d)
 		}
 		if fi, err := os.Stat(dp); err == nil && !fi.IsDir() {
-			args = append(args, "--spec-draft-model", dp)
+			// Speculative decoding requires the draft to share the target's
+			// vocabulary; a mismatched pair fails inside the engine with an error
+			// that points at neither file. When both tokenizers are readable and
+			// differ, drop the flag and say so -- the model still serves, just
+			// without drafting. Unreadable metadata passes through untouched.
+			if DraftMismatch(modelPath, dp) {
+				// Once per pair: the launch ladder calls ServerArgs on every
+				// context attempt, and one warning is information, five is noise.
+				if _, seen := draftWarned.LoadOrStore(modelPath+"|"+dp, true); !seen {
+					ui.Warn("draft_model %s has a different tokenizer than %s - speculative decoding off (a draft must share the target's vocabulary)",
+						filepath.Base(dp), filepath.Base(modelPath))
+				}
+			} else {
+				args = append(args, "--spec-draft-model", dp)
+			}
 		}
 	}
 

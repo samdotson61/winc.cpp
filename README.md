@@ -240,7 +240,7 @@ losslessly drops optional `input_examples`. Set
 | Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b |
-| `small` | 6-8 GB / 8-16 GB unified | **qwen3.5-9b**, omnicoder-9b, gemma4-12b, gemma4-e4b |
+| `small` | 6-8 GB / 8-16 GB unified | **qwen3.5-9b**, lfm2.5-8b-a1b (fastest), omnicoder-9b, gemma4-12b, gemma4-e4b |
 | `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.6-27b |
 | `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.6-27b-q5 |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
@@ -300,12 +300,28 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | Model | Params | Size | Released | LiveCodeBench~ | tok/s (6-8 GB GPU / CPU) | Best for |
 |---|---|---|---|---|---|---|
 | ★ qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
-| omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | agentic **coding** specialist |
+| lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
+| ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
+| omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | older coding specialist — measured weakest |
 | gemma4-12b | 12B | 7.1 GB (Q4) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist (8+ GB) |
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
 
 Anchors: an RTX 3050 8 GB runs a 9B Q4 at ~25 tok/s; a 4B is ~2x that, a sub-1B ~5x+;
-GPU is ~5-10x faster than CPU. **For coding, prefer the Qwen3.5 line (or OmniCoder-9B).**
+GPU is ~5-10x faster than CPU. **For coding, prefer the Qwen3.5 line or `ornith-9b`.**
+
+MEASURED (same M4 Pro, 5 coding tasks whose hidden tests were validated against
+reference solutions first, each model served through winc with its engine identity
+asserted): `lfm2.5-8b-a1b` **5/5**, `ornith-9b` **5/5**, `qwen3.5-9b` **5/5**,
+`omnicoder-9b` **3/5**. Correctness ties three ways, so the tiebreakers are speed and
+verbosity — solving the same task took LFM2.5 **1,033** output tokens, Ornith 2,232,
+and the 9B 6,323. Five tasks is a small sample: read it as "no reason to prefer
+OmniCoder", not as a ranking of the top three.
+
+MEASURED (M4 Pro, Metal, `llama-bench` pp512/tg128): `lfm2.5-8b-a1b` **1373 / 129.1
+tok/s** vs `qwen3.5-9b` **332 / 34.1** — **3.8x the decode at slightly less memory**,
+because only ~1.5B of its 8.5B parameters are active per token. Through winc's own
+serve path at a full context it holds **116 tok/s**. The tier's tok/s column above is
+scaled to 6-8 GB GPUs, which is a different (tighter) class than this anchor.
 
 ---
 

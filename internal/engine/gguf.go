@@ -104,6 +104,219 @@ func readBlockCount(path string) (int, error) {
 	return 0, nil
 }
 
+var expertCountCache sync.Map // modelPath -> int (-1 = metadata unreadable)
+
+// ExpertCount returns the model's MoE expert count from GGUF metadata
+// ("<arch>.expert_count"): >0 for a Mixture-of-Experts model, 0 when the model is
+// dense (the key is absent), and -1 when the metadata could not be read at all --
+// the file is missing, truncated, or only a bare filename was passed. Callers must
+// treat 0 and -1 differently: 0 is an authoritative "dense", -1 means "unknown".
+func ExpertCount(path string) int {
+	if v, ok := expertCountCache.Load(path); ok {
+		return v.(int)
+	}
+	n, err := readExpertCount(path)
+	if err != nil {
+		n = -1
+	}
+	expertCountCache.Store(path, n)
+	return n
+}
+
+func readExpertCount(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<16)
+
+	var magic, version uint32
+	var nTensors, nKV uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return 0, err
+	}
+	if magic != ggufMagic {
+		return 0, fmt.Errorf("not a GGUF file")
+	}
+	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
+		return 0, err
+	}
+	for i := uint64(0); i < nKV; i++ {
+		key, err := ggufString(r)
+		if err != nil {
+			return 0, err
+		}
+		var vtype uint32
+		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
+			return 0, err
+		}
+		// "<arch>.expert_count" only -- NOT expert_used_count / expert_shared_count.
+		if strings.HasSuffix(key, ".expert_count") {
+			return ggufUint(r, vtype)
+		}
+		if err := ggufSkipValue(r, vtype); err != nil {
+			return 0, err
+		}
+	}
+	return 0, nil // read cleanly, no expert_count key -> dense
+}
+
+var trainedCtxCache sync.Map // modelPath -> int (0 = unknown)
+
+// TrainedContext returns the context length the model was trained for, from GGUF
+// metadata ("<arch>.context_length"), or 0 when it cannot be read. Asking for more
+// than this doesn't get it: llama-server caps the slot to n_ctx_train and logs
+// "the slot context (N) exceeds the training context of the model (M) - capping",
+// so any window winc sizes, reports, or estimates decode for above this describes
+// a configuration that never actually runs.
+func TrainedContext(path string) int {
+	if v, ok := trainedCtxCache.Load(path); ok {
+		return v.(int)
+	}
+	n, err := readTrainedContext(path)
+	if err != nil || n < 0 {
+		n = 0
+	}
+	trainedCtxCache.Store(path, n)
+	return n
+}
+
+func readTrainedContext(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<16)
+
+	var magic, version uint32
+	var nTensors, nKV uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return 0, err
+	}
+	if magic != ggufMagic {
+		return 0, fmt.Errorf("not a GGUF file")
+	}
+	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
+		return 0, err
+	}
+	for i := uint64(0); i < nKV; i++ {
+		key, err := ggufString(r)
+		if err != nil {
+			return 0, err
+		}
+		var vtype uint32
+		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
+			return 0, err
+		}
+		// "<arch>.context_length" exactly -- NOT rope.scaling.original_context_length.
+		if strings.HasSuffix(key, ".context_length") {
+			return ggufUint(r, vtype)
+		}
+		if err := ggufSkipValue(r, vtype); err != nil {
+			return 0, err
+		}
+	}
+	return 0, nil
+}
+
+var tokenizerFPCache sync.Map // modelPath -> string ("" = unreadable)
+
+// TokenizerFingerprint returns a short identity for a GGUF's tokenizer --
+// "<tokenizer-model>:<vocab-size>:<eos-id>" -- or "" when it cannot be read.
+// Two models sharing a fingerprint share a vocabulary, which is the actual
+// requirement for one to draft the other in speculative decoding. Matching on
+// this instead of on a family name in the filename means any model can be
+// drafted by any compatible draft, however it happens to be named.
+func TokenizerFingerprint(path string) string {
+	if v, ok := tokenizerFPCache.Load(path); ok {
+		return v.(string)
+	}
+	fp, err := readTokenizerFingerprint(path)
+	if err != nil {
+		fp = ""
+	}
+	tokenizerFPCache.Store(path, fp)
+	return fp
+}
+
+func readTokenizerFingerprint(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<16)
+
+	var magic, version uint32
+	var nTensors, nKV uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return "", err
+	}
+	if magic != ggufMagic {
+		return "", fmt.Errorf("not a GGUF file")
+	}
+	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
+		return "", err
+	}
+	var model string
+	var vocab, eos int
+	for i := uint64(0); i < nKV; i++ {
+		key, err := ggufString(r)
+		if err != nil {
+			return "", err
+		}
+		var vtype uint32
+		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
+			return "", err
+		}
+		switch {
+		case key == "tokenizer.ggml.model" && vtype == 8:
+			if model, err = ggufString(r); err != nil {
+				return "", err
+			}
+		case key == "tokenizer.ggml.eos_token_id":
+			if eos, err = ggufUint(r, vtype); err != nil {
+				return "", err
+			}
+		case key == "tokenizer.ggml.tokens" && vtype == 9:
+			// Array header carries the vocabulary size; skip the tokens themselves.
+			var subtype uint32
+			var count uint64
+			if err := readLE(r, &subtype, &count); err != nil {
+				return "", err
+			}
+			vocab = int(count)
+			if subtype != 8 {
+				return "", fmt.Errorf("tokenizer.ggml.tokens is not a string array")
+			}
+			for j := uint64(0); j < count; j++ {
+				if err := ggufSkipValue(r, 8); err != nil {
+					return "", err
+				}
+			}
+		default:
+			if err := ggufSkipValue(r, vtype); err != nil {
+				return "", err
+			}
+		}
+	}
+	if model == "" || vocab == 0 {
+		return "", fmt.Errorf("no tokenizer metadata")
+	}
+	return fmt.Sprintf("%s:%d:%d", model, vocab, eos), nil
+}
+
+// DraftMismatch reports whether a draft model's tokenizer is KNOWN to differ from
+// its target's. It returns false when either fingerprint is unreadable, so an
+// unverifiable pair is handed to the engine untouched rather than blocked on a
+// guess -- this guard only fires on a mismatch it can actually prove.
+func DraftMismatch(targetPath, draftPath string) bool {
+	t, d := TokenizerFingerprint(targetPath), TokenizerFingerprint(draftPath)
+	return t != "" && d != "" && t != d
+}
+
 var ffnBytesCache sync.Map // modelPath -> int64 (total bytes of all blk.*.ffn_* tensors)
 
 // FFNTotalBytes returns the EXACT on-disk bytes of every feed-forward weight
@@ -275,7 +488,7 @@ func ggufUint(r *bufio.Reader, vtype uint32) (int, error) {
 		err := binary.Read(r, binary.LittleEndian, &v)
 		return int(v), err
 	}
-	return 0, fmt.Errorf("block_count has non-integer type %d", vtype)
+	return 0, fmt.Errorf("gguf scalar has non-integer type %d", vtype)
 }
 
 // ChatTemplate extracts the embedded "tokenizer.chat_template" string from a GGUF

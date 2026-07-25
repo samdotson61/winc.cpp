@@ -104,13 +104,32 @@
   },
   {
    "tier": "small",
+   "alias": "lfm2.5-8b-a1b",
+   "name": "LFM2.5-8B-A1B UD-Q4_K_M (MoE)",
+   "size": "5.3 GB",
+   "repo": "unsloth/LFM2.5-8B-A1B-GGUF",
+   "file": "LFM2.5-8B-A1B-UD-Q4_K_M.gguf",
+   "note": "FASTEST in this tier by a wide margin: 8.5B total but ~1.5B active. MEASURED (M4 Pro Metal): 129 tok/s decode + 1373 tok/s prompt = 3.8x the 9B's decode at slightly LESS memory. Native tool calling, 128K ctx. Published tool-choice (BFCLv3 64.4) trails the Qwen coders (71.1) - take it for speed, not the hardest agent work. Custom LFM license, not Apache"
+  },
+  {
+   "tier": "small",
+   "alias": "ornith-9b",
+   "name": "Ornith-1.0-9B Q4_K_M (agentic coder)",
+   "size": "5.7 GB",
+   "repo": "unsloth/Ornith-1.0-9B-GGUF",
+   "file": "Ornith-1.0-9B-Q4_K_M.gguf",
+   "draft": "qwen3.5-0.8b",
+   "note": "Best small CODER measured here (Jun 2026, MIT, Qwen3.5-9B post-train that writes its own RL scaffold). Published SWE-bench Verified 69.4 / Terminal-Bench 2.1 43.1, above Gemma 4-31B. MEASURED: 5/5 on winc's coding set vs omnicoder-9b's 3/5, and it answers in a third the tokens of the 9B; decode is identical to the 9B (31 tok/s), so it costs nothing to prefer"
+  },
+  {
+   "tier": "small",
    "alias": "omnicoder-9b",
    "name": "OmniCoder-9B Q4_K_M (coder)",
    "size": "5.9 GB",
    "repo": "bartowski/Tesslate_OmniCoder-9B-GGUF",
    "file": "Tesslate_OmniCoder-9B-Q4_K_M.gguf",
    "draft": "qwen3.5-0.8b",
-   "note": "Agentic-coding specialist (Mar 2026, Qwen3.5-9B tune). +61% Terminal-Bench vs base; best small coder"
+   "note": "Agentic-coding specialist (Mar 2026, Qwen3.5-9B tune), published +61% Terminal-Bench vs base. MEASURED here at 3/5 on winc's coding set - the weakest of the four small-tier coders tested (wrong tokenizer output; a TTLCache with no get method). Prefer ornith-9b unless you have a reason not to"
   },
   {
    "tier": "small",
