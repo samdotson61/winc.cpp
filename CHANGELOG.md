@@ -3,6 +3,43 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.31.0-jobdar.1 — 2026-07-25 (winc-jobdar branch)
+
+Merge of master **v1.31.0** (released binaries signed with Sigstore build
+provenance). **No runtime code changes reach this branch** — master's v1.31.0
+touched only `release.yml`, `README.md`, `CHANGELOG.md` and the version
+string, so `eval.go`, the router and every eval path are byte-identical.
+
+Two branch-specific notes on that merge:
+
+### Fixed
+- **`winc check` no longer advertises master releases to a jobdar build.** The
+  version comparison was `latest master tag != Version`, which on a branch
+  build is true by construction (`1.31.0` != `1.31.0-jobdar.1`) — so every
+  `winc check` on a jobfaro backend printed *"newer winc available: v1.31.0"*
+  and the prebuilt hint told the user to "redownload the release for code
+  changes". Both pointed at the one action that silently drops the eval
+  profile. `winc update` itself was never at risk (`selfUpdatePrebuilt` has
+  refused jobdar builds since 1.21.2), but the advice contradicted the guard.
+  A jobdar build now reports that it tracks the branch and updates from it.
+
+### Added
+- **A regression test for the self-update guard.** The single `strings.Contains(
+  Version, "jobdar")` check in `selfUpdatePrebuilt` is what keeps a jobfaro
+  backend from being replaced by a master release binary, and nothing locked
+  it in — a refactor of the version string would have silently disarmed it.
+  `update_jobdar_test.go` asserts the guard holds for the real branch version
+  form, that a plain master version is unaffected, and that this branch's own
+  `Version` constant actually carries the suffix the guard keys on.
+
+## The release workflow is inert on this branch
+
+`release.yml` triggers on `tags: ['v*']`. This branch is **never tagged** (a
+tag here would become the repo's "latest release" and every winc install's
+self-update would pull a jobdar build), so the signing added in v1.31.0 never
+fires from `winc-jobdar` — branch binaries are built from source and carry no
+attestation, by design. `ci.yml` still runs per-push and is unaffected.
+
 ## 1.30.0-jobdar.1 — 2026-07-25 (winc-jobdar branch)
 
 Merge of master **v1.30.0** (`ornith-9b` promoted to the `small`-tier
@@ -13,6 +50,29 @@ tier, and `evalPickModel` selects by its own tier list, not by small-tier
 order, so the promotion is inert for every eval path. The `:8080` eval serve
 names its model explicitly (`winc serve --eval qwen3.5-4b`) and is likewise
 unaffected.
+
+## v1.31.0 — 2026-07-25
+
+### Added
+- **Released binaries are signed with build provenance.** The release workflow
+  now runs `actions/attest-build-provenance` over `dist/*` before publishing,
+  so every asset carries a Sigstore attestation binding its SHA-256 digest to
+  the exact workflow, repository, commit and tag that produced it. Anyone can
+  check a download with `gh attestation verify winc-<os>-<arch> --repo
+  samdotson61/winc.cpp`. **Keyless** — the signature is made against GitHub's
+  OIDC token, so there is no private key in the repo, in a secret, or on any
+  machine, and nothing to rotate or leak; the previous state was simply
+  unsigned (all tags through v1.30.0 are plain lightweight tags and their
+  binaries have no attestation to check). The step is gated on a tag ref and
+  runs BEFORE the publish step, so a signing failure fails the release rather
+  than shipping unsigned binaries. The `build` job now declares its own
+  `permissions` block — job-level permissions replace the workflow default, so
+  `contents: write` is restated there alongside the `id-token: write` and
+  `attestations: write` the attestation requires.
+- Verification is **optional and external**: it needs the GitHub CLI, `winc`
+  itself neither produces nor checks attestations, and `winc update` continues
+  to verify its downloads by SHA-256 as before. Nothing about installing or
+  running winc changes.
 
 ## v1.30.0 — 2026-07-25
 

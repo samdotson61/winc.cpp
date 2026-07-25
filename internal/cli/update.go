@@ -43,7 +43,14 @@ func cmdCheck() int {
 	go func() { defer wg.Done(); inst = engine.InstalledLlamaTag() }()
 	wg.Wait()
 	ui.Info("winc version    : %s", Version)
-	if wincTag != "" && strings.TrimPrefix(wincTag, "v") != Version {
+	// A branch build is never "behind" a master release -- it deliberately tracks
+	// a different line, and the version comparison below is true by construction
+	// (1.31.0 != 1.31.0-jobdar.1). Reporting an upgrade here would advertise the
+	// exact action selfUpdatePrebuilt refuses: taking a master release binary
+	// would silently drop the eval profile jobfaro depends on.
+	if isJobdarBuild() {
+		ui.Info("winc-jobdar branch build - tracks the winc-jobdar branch, not master releases")
+	} else if wincTag != "" && strings.TrimPrefix(wincTag, "v") != Version {
 		ui.Warn("newer winc available: %s (you have %s)", wincTag, Version)
 	}
 	ui.Good("llama.cpp latest : %s", latest)
@@ -70,6 +77,10 @@ func cmdCheck() int {
 			ui.Info("source   : up to date with origin")
 		}
 		ui.Info("clone    : 'winc update' pulls all repo files + rebuilds winc; offers an engine refresh if it's behind")
+	} else if isJobdarBuild() {
+		// "redownload the release" is the wrong advice here -- the only releases
+		// are master's, and taking one drops the eval profile.
+		ui.Info("prebuilt : 'winc update' refreshes the catalog + offers an engine refresh; rebuild from the winc-jobdar branch for code changes")
 	} else {
 		ui.Info("prebuilt : 'winc update' refreshes the catalog + offers an engine refresh; redownload the release for code changes")
 	}
@@ -128,6 +139,15 @@ func liveOnPath(dir string) bool {
 	return false
 }
 
+// isJobdarBuild reports whether this binary was built from the winc-jobdar
+// branch, which is identified solely by the "-jobdar.N" suffix its version.go
+// carries. This is the single predicate protecting jobfaro's backend: the
+// branch exists to hold the `winc serve --eval` profile stable, and any path
+// that would swap this binary for a master release must consult it first.
+// The branch is never tagged, so there is no jobdar release to update TO --
+// branch installs update by rebuilding from the branch.
+func isJobdarBuild() bool { return strings.Contains(Version, "jobdar") }
+
 // wincAssetName is this platform's release asset, exactly as `make release`
 // names them (dist/winc-<os>-<arch>[.exe]).
 func wincAssetName() string {
@@ -151,7 +171,7 @@ func selfUpdatePrebuilt() {
 	// latest master release would silently drop the jobdar stability profile.
 	// Branch users update from the branch (git pull + rebuild, or a fresh
 	// branch binary); the engine + catalog refresh still applies.
-	if strings.Contains(Version, "jobdar") {
+	if isJobdarBuild() {
 		ui.Info("winc-jobdar branch build (%s) - self-update from master releases is disabled; update from the winc-jobdar branch", Version)
 		return
 	}
