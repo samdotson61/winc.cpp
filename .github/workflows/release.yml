@@ -36,6 +36,12 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    # Job-level permissions REPLACE the workflow default, so contents:write is
+    # restated here next to the two the attestation step needs.
+    permissions:
+      contents: write       # create the release, upload dist/*
+      id-token: write       # OIDC token Sigstore signs against - there is no key to manage
+      attestations: write   # record the attestation against the repo
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +51,14 @@ jobs:
           go-version: '1.26'
       - name: Cross-compile
         run: make release
+      # Signs each binary's digest against this workflow run, keylessly, through
+      # Sigstore and the GitHub OIDC token. Runs BEFORE publish so a signing
+      # failure fails the release instead of shipping unsigned binaries.
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
       - name: Publish release binaries
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2

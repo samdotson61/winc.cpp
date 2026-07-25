@@ -28,8 +28,19 @@ cd winc.cpp
 - **macOS:** double-click `install.command`
 - **Linux:** run `./install.sh`
 
-**Or grab a prebuilt binary** (once a release is published): download `winc` for your OS from the
-repo's **Releases**, put it in a folder, and run `winc setup` — no build, no Go.
+**Or grab a prebuilt binary:** download `winc` for your OS from the repo's **Releases**, put it
+in a folder, and run `winc setup` — no build, no Go.
+
+Every released binary is **signed with build provenance** (keyless, through Sigstore and GitHub's
+OIDC token — there is no key to trust or rotate). To check that a download really came from this
+repo's release workflow and was not modified afterwards:
+
+```
+gh attestation verify winc-linux-amd64 --repo samdotson61/winc.cpp
+```
+
+Verification is optional and needs the [GitHub CLI](https://cli.github.com); `winc` itself does
+not require it. Signing starts with v1.31.0 — earlier releases have no attestation to check.
 
 Either way, `winc setup` detects your hardware, downloads the right prebuilt llama.cpp backend
 (CUDA / Metal / Vulkan / ROCm / CPU — with **native ARM builds** on Windows-on-ARM and ARM

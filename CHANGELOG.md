@@ -3,6 +3,29 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.31.0 — 2026-07-25
+
+### Added
+- **Released binaries are signed with build provenance.** The release workflow
+  now runs `actions/attest-build-provenance` over `dist/*` before publishing,
+  so every asset carries a Sigstore attestation binding its SHA-256 digest to
+  the exact workflow, repository, commit and tag that produced it. Anyone can
+  check a download with `gh attestation verify winc-<os>-<arch> --repo
+  samdotson61/winc.cpp`. **Keyless** — the signature is made against GitHub's
+  OIDC token, so there is no private key in the repo, in a secret, or on any
+  machine, and nothing to rotate or leak; the previous state was simply
+  unsigned (all tags through v1.30.0 are plain lightweight tags and their
+  binaries have no attestation to check). The step is gated on a tag ref and
+  runs BEFORE the publish step, so a signing failure fails the release rather
+  than shipping unsigned binaries. The `build` job now declares its own
+  `permissions` block — job-level permissions replace the workflow default, so
+  `contents: write` is restated there alongside the `id-token: write` and
+  `attestations: write` the attestation requires.
+- Verification is **optional and external**: it needs the GitHub CLI, `winc`
+  itself neither produces nor checks attestations, and `winc update` continues
+  to verify its downloads by SHA-256 as before. Nothing about installing or
+  running winc changes.
+
 ## v1.30.0 — 2026-07-25
 
 ### Changed
