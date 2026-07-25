@@ -3,6 +3,38 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.30.0-jobdar.1 — 2026-07-25 (winc-jobdar branch)
+
+Merge of master **v1.30.0** (`ornith-9b` promoted to the `small`-tier
+default). **The eval profile is untouched** — `internal/cli/eval.go` is
+byte-identical, and the change is catalogue-order + fresh-install-template
+only. The eval tiers (`qwen3.5-4b`/`2b`/`gemma4-e2b`) live in the `nano`
+tier, and `evalPickModel` selects by its own tier list, not by small-tier
+order, so the promotion is inert for every eval path. The `:8080` eval serve
+names its model explicitly (`winc serve --eval qwen3.5-4b`) and is likewise
+unaffected.
+
+## v1.30.0 — 2026-07-25
+
+### Changed
+- **`ornith-9b` is now the `small`-tier default** (first position + the
+  RECOMMENDED marker, previously on `qwen3.5-9b`), which flows through
+  everything keyed to tier order: `winc detect`'s hardware recommendation for
+  8-16 GB machines, the fresh-install `winc.toml` (`default_model` and the
+  `[multi]` sonnet/opus/haiku slots), and the README quickstart. Rationale:
+  on the v1.29.0 coding set the top three tied 5/5, so the tiebreakers
+  decide — Ornith answers in **2,232** output tokens where the 9B takes
+  **6,323** at identical decode speed (~3x faster answers for free), carries
+  the published agentic-coding edge (SWE-bench Verified 69.4 /
+  Terminal-Bench 2.1 43.1), is MIT-licensed, and as a Qwen3.5-9B post-train
+  keeps the Qwen tool-calling lineage — so the tool-choice concern that
+  deliberately kept `lfm2.5-8b-a1b` out of the default slot does not apply.
+  `qwen3.5-9b` stays second as the all-rounder pick (stronger for
+  non-coding chat, 1M ctx); `lfm2.5-8b-a1b` stays the speed pick. Also fixes
+  the README tier-overview row, which had omitted `ornith-9b` in v1.29.0.
+  Existing configs are untouched — this changes recommendations and
+  fresh-install defaults only.
+
 ## 1.29.0-jobdar.1 — 2026-07-24 (winc-jobdar branch)
 
 Merge of master **v1.29.0** (metadata-first handler pass + two small-tier
@@ -78,6 +110,7 @@ loss; ubatch-flat + f16-KV-validated CUDA notes) into the jobdar stability
 branch -- see the entry below. The eval profile is UNAFFECTED: `--eval`
 already ran draft/MTP off and pins `cache_type = "q8_0"` explicitly; the
 retirement removes only the general auto-pair path serving/agent flows used.
+
 ## v1.29.0 — 2026-07-24
 
 Three handler fixes so winc sizes, reports and launches models it has never

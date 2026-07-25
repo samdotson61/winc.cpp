@@ -18,8 +18,8 @@ func TestRecommendModelConservative(t *testing.T) {
 	cases := map[int]string{
 		4096:  "qwen3.5-4b",     // 4 GB: 2.6 GB weights + ~1.3 GB measured runtime fits
 		5800:  "qwen3.5-4b",     // ~6 GB-class: nano default fits
-		8192:  "qwen3.5-9b",     // 8 GB: small default stays
-		12288: "qwen3.5-9b",     // 12 GB: mid tier has nothing honest -> descend to small
+		8192:  "ornith-9b",      // 8 GB: small default stays
+		12288: "ornith-9b",      // 12 GB: mid tier has nothing honest -> descend to small
 		16303: "qwen3.6-35b",    // 16 GB: mid default
 		28591: "qwen3.6-35b-q4", // 28 GB dual-GPU: large default
 	}
