@@ -140,7 +140,7 @@ const defaultTOML = `# winc.toml - the one and only winc.cpp config. Edit freely
 
 [general]
 default_app   = "claude"        # claude | opencode | openclaw | cli
-default_model = "qwen3.5-9b"  # alias from ` + "`winc ls`" + `
+default_model = "ornith-9b"  # alias from ` + "`winc ls`" + `
 host = "127.0.0.1"
 port = 8080
 
@@ -220,9 +220,9 @@ extra_server_args = []       # e.g. ["--mlock"] or ["--prio", "2"] or ["--n-cpu-
 [multi]                  # llama-swap, only with ` + "`winc -s ... --multi`" + `
 enabled = false
 ttl_seconds = 600
-sonnet = "qwen3.5-9b"   # Claude Code's claude-sonnet slot -> this local model alias
-opus   = "qwen3.5-9b"
-haiku  = "qwen3.5-9b"
+sonnet = "ornith-9b"   # Claude Code's claude-sonnet slot -> this local model alias
+opus   = "ornith-9b"
+haiku  = "ornith-9b"
 
 [team]                     # agent hierarchy -- DEFAULT for a big main model
 # The model you launch orchestrates as the MAIN agent while a small worker runs on the

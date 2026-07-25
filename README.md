@@ -41,8 +41,8 @@ Then start coding on a local model:
 
 ```
 winc ls                            # list downloaded + available models
-winc -d qwen3.5-9b           # download one
-winc -s claude qwen3.5-9b    # launch Claude Code on it (sandboxed)
+winc -d ornith-9b            # download one
+winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 ```
 
 ---
@@ -86,7 +86,7 @@ Everything lives in `winc.toml` next to the binary — hand-editable, written on
 ```toml
 [general]
 default_app   = "claude"
-default_model = "qwen3.5-9b"
+default_model = "ornith-9b"
 port = 8080
 
 [reasoning]
@@ -116,9 +116,9 @@ flash_attn = true
 cache_type = "q8_0"
 
 [multi]                     # llama-swap model-slot mapping (winc -s ... --multi)
-sonnet = "qwen3.5-9b"
-opus   = "qwen3.5-9b"
-haiku  = "qwen3.5-9b"
+sonnet = "ornith-9b"
+opus   = "ornith-9b"
+haiku  = "ornith-9b"
 
 [team]                      # agent hierarchy — DEFAULT for a big model (--noteam to disable)
 mode      = "auto"          # auto (team for big models) | on | off
@@ -240,7 +240,7 @@ losslessly drops optional `input_examples`. Set
 | Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b |
-| `small` | 6-8 GB / 8-16 GB unified | **qwen3.5-9b**, lfm2.5-8b-a1b (fastest), omnicoder-9b, gemma4-12b, gemma4-e4b |
+| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, qwen3.5-9b, lfm2.5-8b-a1b (fastest), omnicoder-9b, gemma4-12b, gemma4-e4b |
 | `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.6-27b |
 | `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.6-27b-q5 |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
@@ -299,9 +299,9 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 
 | Model | Params | Size | Released | LiveCodeBench~ | tok/s (6-8 GB GPU / CPU) | Best for |
 |---|---|---|---|---|---|---|
-| ★ qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
+| ★ ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
+| qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
-| ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
 | omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | older coding specialist — measured weakest |
 | gemma4-12b | 12B | 7.1 GB (Q4) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist (8+ GB) |
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
