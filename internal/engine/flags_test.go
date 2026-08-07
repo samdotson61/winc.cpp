@@ -236,14 +236,18 @@ func TestResolveCPUMoEAuto(t *testing.T) {
 	}
 }
 
-// cache_type = "auto" downshifts to the ASYMMETRIC q8_0/q4_0 pair (keys keep
-// precision, values compress) when the q8-sized window would be starved; ample
-// setups keep q8_0, and explicit values are honored.
+// cache_type = "auto" downshifts to SYMMETRIC q4_0 when the q8-sized window
+// would be starved -- never to a mixed q8_0/q4_0 pair, which has no FA kernel
+// in upstream CUDA prebuilts and silently collapses prompt processing ~19x onto
+// CPU attention; ample setups keep q8_0, and explicit values are honored.
 func TestAutoKVCacheDownshift(t *testing.T) {
 	cfg := config.Defaults() // cache_type = "auto"
 	tight := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 8192}
-	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 6200, false); got != "q8_0/q4_0" {
-		t.Errorf("starved window should downshift to q8_0/q4_0, got %q", got)
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 6200, false); got != "q4_0" {
+		t.Errorf("starved window should downshift to symmetric q4_0, got %q", got)
+	}
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 6200, false); strings.Contains(got, "/") {
+		t.Errorf("auto must never pick a mixed K/V pair (no CUDA FA kernel in prebuilts), got %q", got)
 	}
 	// The raw asym window (705 MB free -> ~57k) is still under the bottom
 	// target, so sizing aims at the bottom and placement spills the difference.

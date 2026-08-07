@@ -209,7 +209,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		}
 		ui.Info("loading model + waiting for server (%s)...", backendLabel(backend))
 		wasAuto := autoSized(cfg)
-		fp := launchFingerprint(cfg, hw) // against the ORIGINAL config, before launch mutations
+		fp := launchFingerprint(cfg, hw, engine.LlamaTagOf(bin)) // against the ORIGINAL config, before launch mutations
 		// Fast path: a previous session already measured this model's best window and
 		// KV cache under these exact sizing inputs -- load straight there (one load
 		// instead of re-walking the ladder).
@@ -548,10 +548,12 @@ func autoSized(cfg *config.Config) bool {
 	return ctxAuto && (ct == "" || ct == "auto")
 }
 
-// starvedKV is the KV cache the upgrade probe downshifts to: keys stay q8_0
-// (4-bit keys measure ~+10% perplexity -- past the usefulness line for coding),
-// values drop to q4_0 (near-lossless) -- ~1.3x the window at minimal quality cost.
-const starvedKV = "q8_0/q4_0"
+// starvedKV is the KV cache the upgrade probe downshifts to: symmetric q4_0 --
+// 2x the window at ~+0.3% measured perplexity (Hadamard-rotation engines). The
+// old asymmetric q8_0/q4_0 is banned here: mixed K/V types have no FA kernel in
+// upstream CUDA prebuilts and silently collapse prompt processing ~19x onto CPU
+// attention (see engine.EffectiveCacheType for the measurements).
+const starvedKV = "q4_0"
 
 // benchResult is the placement gate's measurement for the accepted server,
 // reused by the final speed report so a launch is never benched twice.
@@ -752,11 +754,15 @@ func launchMemoKey(modelPath string) string {
 // measured under different inputs is a different launch, not a cache hit:
 // context "optimal" vs "auto" change the target, a card appearing/vanishing
 // changes the budget, team escalation's --parallel changes the slot split,
-// and the KV/MoE/MTP knobs change what fits. Computed against the ORIGINAL
-// config before the launch mutates it.
-func launchFingerprint(cfg *config.Config, hw platform.Hardware) string {
+// and the KV/MoE/MTP knobs change what fits. The engine build tag is a sizing
+// input too: a new llama.cpp build changes kernels, fit behavior and measured
+// speeds, so memos measured on the old engine must miss and re-measure rather
+// than replay a stale placement (engineTag "" -- unreadable version -- still
+// fingerprints consistently and self-heals on the next readable build).
+// Computed against the ORIGINAL config before the launch mutates it.
+func launchFingerprint(cfg *config.Config, hw platform.Hardware, engineTag string) string {
 	h := fnv.New32a()
-	fmt.Fprintf(h, "%s|%s|%v|%s|%s|%s|%s|%d|%d|%v|%d",
+	fmt.Fprintf(h, "%s|%s|%v|%s|%s|%s|%s|%d|%d|%v|%d|%s",
 		strings.ToLower(strings.TrimSpace(cfg.Performance.Context)),
 		strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType)),
 		cfg.Performance.FlashAttn,
@@ -766,6 +772,7 @@ func launchFingerprint(cfg *config.Config, hw platform.Hardware) string {
 		strings.TrimSpace(cfg.Performance.DraftModel),
 		engine.ParallelSlots(cfg),
 		hw.VRAMMB, hw.Unified, len(hw.GPUs),
+		strings.ToLower(strings.TrimSpace(engineTag)),
 	)
 	return fmt.Sprintf("%08x", h.Sum32())
 }
