@@ -64,7 +64,7 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 |---------|--------------|
 | `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
-| `winc -d <alias> [-y]` | Download a catalogue model (offers the MTP head for Gemma 4 and the DFlash head for Qwen3.5 4B/9B; `-y` auto-accepts) |
+| `winc -d <alias> [-y]` | Download a catalogue model (vision projector downloads automatically for multimodal models; offers the MTP head for Gemma 4 and the DFlash head for Qwen3.5 4B/9B; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
 | `winc -s` | Start the **last used** agent on the **last used** model (every successful agent start updates the defaults) |
@@ -476,7 +476,9 @@ variants, Gemma 4 external heads), **DFlash heads** (Qwen3.5 4B/9B — measured 
 +100% on fresh generation), and **model-free ngram speculation** (default on for every
 model — measured 4.4–7.2× on the file re-emission and edit turns agentic coding is made
 of, at zero cost on fresh output). Drafts are always verified by the main model, so
-output is unaffected by construction. On Metal all of it stays off: speculation there is
+output is unaffected by construction. One interaction to know: a loaded vision
+projector suppresses the DRAFT mechanisms (measured: image batches break them) —
+vision servers keep ngram only. On Metal all of it stays off: speculation there is
 a measured loss (MTP -8% to -38% by draft depth; an external draft ~0% for a wasted
 model load), because the backend doesn't get the batch-verification parallelism drafting
 needs.
