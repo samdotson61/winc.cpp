@@ -553,6 +553,16 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 			ui.Warn("team: %s worker failed to launch: %v", role, err)
 			return nil, ""
 		}
+		// Discrete-GPU / CPU-only boxes: drop the worker's scheduler priority so
+		// the main model's host threads win under contention. MEASURED (5070 Ti +
+		// 7700X, v1.28.0): concurrent workers cost the main model 9.8% decode via
+		// host-side CPU contention, and a homogeneous CPU has no E cores to exile
+		// them to (the unified-memory fix above). Priority beats a thread cap:
+		// workers only pay when the main model is actually busy. Applies to GPU
+		// workers too -- their host-side threads contend the same way.
+		if !hw.Unified {
+			proc.Deprioritize()
+		}
 		where := "CPU"
 		if gpu {
 			where = fmt.Sprintf("GPU (~%d MB of leftover VRAM)", gpuMB)
