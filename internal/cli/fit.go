@@ -97,13 +97,18 @@ func tryContextOnce(cfg *config.Config, hw platform.Hardware, modelPath, serverB
 func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, port int, serverURL, logPath string, ctx int, noMTP, lastResort, gated bool) *server.Proc {
 	// The expected RESIDENT weight set: the whole model, minus any FFN blocks
 	// the spill placement deliberately parks in RAM.
-	residentMB := engine.FileMB(modelPath) - engine.FFNSpillMB(modelPath, cfg.Performance.FFNSpill)
+	residentMB := engine.FileMB(modelPath) - engine.FFNSpillMB(modelPath, cfg.Performance.FFNSpill) -
+		engine.MoEPackSpillMB(cfg, hw, modelPath, engine.FileMB(modelPath), ctx) // packed MoE: CPU-side experts aren't expected resident
 	waitVRAMFree(residentMB+2048, 20*time.Second)
 	// The gate covers exactly the loads where winc pins -ngl 99 because the model
 	// SHOULD fit: those are the ones the driver can silently satisfy from shared
 	// system memory when the pin turns out to be over budget. Explicit user
 	// settings run as written.
-	gate := gated && engine.ForcedFullGPU(cfg, hw, modelPath)
+	gate := gated && engine.ForcedFullGPUCtx(cfg, hw, modelPath, ctx)
+	if n, spill, ok := engine.MoEPackPlan(cfg, hw, modelPath, engine.FileMB(modelPath), ctx); ok {
+		_, layers := engine.MoEExpertStats(modelPath)
+		ui.Info("MoE experts: packing %d/%d layers on GPU, %d layers (~%d MB) in RAM (--n-cpu-moe %d)", layers-n, layers, n, spill, n)
+	}
 	preFree := 0
 	if gate {
 		for _, g := range platform.ProbeGPUFree() {
