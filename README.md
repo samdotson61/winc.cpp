@@ -382,8 +382,12 @@ experts. This is why the `mid` tier recommends a 35B MoE even on a 16 GB card.
 
 `winc` turns it on automatically when a MoE model **won't fit** *or* fits so tightly that
 there's no VRAM left for a usable context (e.g. a 14 GB MTP build on a 16 GB card, which
-would otherwise be stuck at the 32k floor). Offloading the experts frees ~10 GB+ for KV,
-so the context jumps to ~100k+. Comfortably-fitting models stay 100% on the GPU (fastest).
+would otherwise be stuck at the 32k floor). The window gets first claim on the freed
+VRAM — and since v1.36.0 the offload is no longer all-or-nothing: whatever VRAM the
+window doesn't need is **packed with as many layers' experts as fit** (exact sizes from
+the GGUF tensor table), so only the overflow lives in RAM. Measured on the 35B: +70%
+decode over full offload at the same window. Comfortably-fitting models stay 100% on
+the GPU (fastest).
 **Want more context on a tight-fit MoE?** Set `cpu_moe = "on"` — it offloads the experts
 (a little slower, MTP softens it) and `winc` then sizes the context to the freed VRAM.
 
@@ -403,7 +407,7 @@ threads    = "auto"   # CPU threads (auto = all cores; CPU-only installs pin the
 max_output_tokens = "auto"   # cap on response length ("auto" = ~half the context)
 
 # MoE expert offload (see above)
-cpu_moe = "auto"      # "auto" (offload only if it won't fit VRAM) | "on" | "off" | <layer count>
+cpu_moe = "auto"      # "auto" (offload only what doesn't fit — window first, leftover packed on GPU) | "on" (all experts to RAM) | "off" | <layer count>
 
 # External-draft speculative decoding: OFF unless you force it. The old dense auto-pair
 # measured as a decode loss on every backend tested (see the v1.28.0 CHANGELOG entry).
