@@ -3,6 +3,43 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.35.0 — 2026-08-07
+
+### Added
+- **DFlash draft-head speculation.** Models whose catalogue entry names a DFlash
+  head (the z-lab head line, quantized GGUFs on HF) now get the head offered at
+  download time — mirroring the Gemma MTP-head flow exactly — and pair it
+  automatically at launch (`--spec-type draft-dflash --spec-draft-n-max 6
+  --spec-draft-model <head>`, composed with ngram speculation into one flag).
+  DFlash is the first mechanism that speeds up FRESH generation, the case ngram
+  can't touch: MEASURED (z-lab heads Q8, b10298, 5070 Ti) — 4B **+57% fresh
+  decode** (178 → 280 tok/s) and 2.4x re-emission; 9B **fresh decode DOUBLES**
+  (120 → 240 tok/s) with re-emission at 307 alone / ~900 combined with ngram.
+  End-to-end verified through a real `winc serve qwen3.5-4b`: the head pairs
+  automatically, the composed `--spec-type draft-dflash,ngram-simple` reaches
+  llama-server, and the launch lands a fully-resident 262144 window with the
+  launch bench reading 226 tok/s (vs ~187 without the head). Covered now: the
+  Qwen3.5-4B and 9B families (all catalogue quants — one head serves every
+  quant of its model, saved as `<Family>-DFlash.gguf`). MTP models keep
+  MTP (both mechanisms need the draft slot; MTP has priority), the shed-the-
+  draft fallback rung sheds DFlash the same way, sizing reserves the head's
+  weights + draft context, Metal stays off pending its measurement leg, and
+  `dflash = "off"` opts out. Provenance note: heads are the official z-lab
+  releases, quantized by the Anbeeld community GGUF line — the same trust class
+  as the catalogue's model quants — and every download is digest-verified by
+  the standard HF flow.
+
+### Fixed
+- **`winc -v` now reports the real version on clone installs.** Two holes,
+  found after this box sat reporting "1.31.0" through three releases: (1)
+  `winc update`'s from-source rebuild stamped no version, so a clone kept
+  version.go's literal forever — the rebuild now stamps `git describe` exactly
+  like `make release` (winc-jobdar clones excepted: their literal carries the
+  load-bearing `-jobdar.N` suffix the self-update guard keys on); (2) the
+  literal itself only changed when someone remembered — a new gate test pins
+  it to the newest CHANGELOG heading, so the release commit that forgets the
+  bump fails its own gate, on both branches.
+
 ## v1.34.0 — 2026-08-06
 
 ### Added

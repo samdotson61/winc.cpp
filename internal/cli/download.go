@@ -52,6 +52,7 @@ func cmdDownload(args []string) int {
 	if fileExists(target) {
 		ui.Good("already downloaded: %s", localName)
 		offerMTPHead(cfg, m, autoYes)
+		offerDFlashHead(cfg, m, autoYes)
 		mtpTip(cat, m)
 		return 0
 	}
@@ -67,6 +68,7 @@ func cmdDownload(args []string) int {
 		ui.Good("MTP variant - winc turns on --spec-type draft-mtp automatically at launch")
 	}
 	offerMTPHead(cfg, m, autoYes)
+	offerDFlashHead(cfg, m, autoYes)
 	mtpTip(cat, m)
 	return 0
 }

@@ -34,7 +34,13 @@ type Model struct {
 	Draft   string `json:"draft,omitempty"`    // alias of a same-tokenizer draft model (speculative decoding); "" = none
 	Mtp     string `json:"mtp,omitempty"`      // alias of this model's Multi-Token-Prediction variant (heads baked in); "" = none
 	MtpHead string `json:"mtp_head,omitempty"` // repo path of a separate MTP drafter head fetched alongside (Gemma 4); "" = none
-	Note    string `json:"note"`
+	// DFlash drafter head: a small per-model GGUF from its OWN HF repo (z-lab line),
+	// saved locally as DflashSave ("<Family>-DFlash.gguf") so launch pairing can use
+	// the same family-prefix rule as MTP heads. All three set together or not at all.
+	DflashRepo string `json:"dflash_repo,omitempty"`
+	DflashFile string `json:"dflash_file,omitempty"`
+	DflashSave string `json:"dflash_save,omitempty"`
+	Note       string `json:"note"`
 }
 
 // LocalFile is the on-disk filename winc saves/looks for (Save if set, else File).

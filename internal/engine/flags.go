@@ -181,8 +181,9 @@ var (
 // serverSupportsMTP / serverSupportsNgram report whether a llama-server binary
 // understands the respective --spec-type. The --help text is cached per binary
 // path (--help is cheap but we may ask several times per launch).
-func serverSupportsMTP(bin string) bool   { return serverHelpContains(bin, "draft-mtp") }
-func serverSupportsNgram(bin string) bool { return serverHelpContains(bin, "ngram-simple") }
+func serverSupportsMTP(bin string) bool    { return serverHelpContains(bin, "draft-mtp") }
+func serverSupportsNgram(bin string) bool  { return serverHelpContains(bin, "ngram-simple") }
+func serverSupportsDFlash(bin string) bool { return serverHelpContains(bin, "draft-dflash") }
 
 func serverHelpContains(bin, needle string) bool {
 	mtpProbeMu.Lock()
@@ -290,6 +291,13 @@ func SpecArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin str
 	var args []string
 	if includeMTP {
 		args = MTPArgs(cfg, hw, modelPath, serverBin)
+		if args == nil {
+			// No MTP for this model -- a DFlash head may claim the draft slot
+			// instead (MEASURED, 4B/b10298: +57% fresh decode; the case ngram
+			// can't speed up). includeMTP=false is the shed-the-draft rung, so
+			// DFlash is shed with it -- it costs the same kind of VRAM.
+			args = DFlashArgs(cfg, hw, modelPath, serverBin)
+		}
 	}
 	if !ngramActive(cfg, serverBin) {
 		return args
@@ -338,18 +346,109 @@ func MTPArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin stri
 			args = append(args, "--spec-draft-model", head)
 		}
 	}
-	// The MTP draft context keeps its OWN KV cache (f16 by default) that scales with
-	// the full window -- at large windows it allocates last and OOMs the fullest card
-	// (measured: a 768 MiB f16 draft cache at 131K killed the load on a 16+12 GB
-	// pair). Quantize it like the main cache: drafts are verified by the main model,
-	// so a lighter draft cache only nudges acceptance, never output quality.
-	if cfg.Performance.FlashAttn {
-		if ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath)); ct != "" && ct != "f16" {
-			k, v := SplitKV(ct)
-			args = append(args, "--spec-draft-type-k", k, "--spec-draft-type-v", v)
+	return append(args, draftCacheArgs(cfg, hw, modelPath)...)
+}
+
+// draftCacheArgs quantizes a drafter's OWN KV cache like the main cache. The
+// draft context (MTP or DFlash) keeps its own KV (f16 by default) that scales
+// with the full window -- at large windows it allocates last and OOMs the
+// fullest card (measured: a 768 MiB f16 draft cache at 131K killed the load on
+// a 16+12 GB pair). Drafts are verified by the main model, so a lighter draft
+// cache only nudges acceptance, never output quality.
+func draftCacheArgs(cfg *config.Config, hw platform.Hardware, modelPath string) []string {
+	if !cfg.Performance.FlashAttn {
+		return nil
+	}
+	ct := EffectiveCacheType(cfg, hw, modelPath, FileMB(modelPath), WillOffloadExperts(cfg, hw, modelPath))
+	if ct == "" || ct == "f16" {
+		return nil
+	}
+	k, v := SplitKV(ct)
+	return []string{"--spec-draft-type-k", k, "--spec-draft-type-v", v}
+}
+
+// dflashDraftMax is --spec-draft-n-max for DFlash. MEASURED (b10298, 5070 Ti,
+// z-lab 4B head Q8, n-max 6): +57% fresh-generation decode, 2.4x re-emission;
+// 6 is also the head publishers' recommended block size.
+const dflashDraftMax = 6
+
+// DFlashArgs returns the DFlash speculative-decoding flags, or nil when no
+// DFlash head sits next to the model, config disables it, MTP already engages
+// (both mechanisms need --spec-draft-model -- MTP keeps priority), the backend
+// is Metal (unmeasured there, same gate as MTP/ngram), or the engine doesn't
+// know the type. Heads are small per-model GGUFs downloaded by the catalog
+// flow and paired by filename, exactly like Gemma's external MTP heads.
+func DFlashArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string) []string {
+	if !dflashActive(cfg, modelPath) {
+		return nil
+	}
+	if serverBin != "" && !serverSupportsDFlash(serverBin) {
+		return nil
+	}
+	head := dflashHeadFor(modelPath)
+	if head == "" {
+		return nil
+	}
+	args := []string{"--spec-type", "draft-dflash", "--spec-draft-n-max", strconv.Itoa(dflashDraftMax), "--spec-draft-model", head}
+	return append(args, draftCacheArgs(cfg, hw, modelPath)...)
+}
+
+// dflashActive reports whether DFlash will engage for this model: a head file
+// is present, config permits, MTP does not already claim the draft slot, and
+// the backend isn't Metal.
+func dflashActive(cfg *config.Config, modelPath string) bool {
+	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Dflash), "off") {
+		return false
+	}
+	if mtpActive(cfg, modelPath) {
+		return false
+	}
+	if dflashHeadFor(modelPath) == "" {
+		return false
+	}
+	return CurrentBackend() != "metal"
+}
+
+// dflashHeadFor finds an external DFlash drafter head next to a model: a
+// "<Family>-DFlash.gguf" file pairs when the model's filename starts with the
+// head's family prefix (same rule as MTP heads -- one head serves every quant
+// of its model). Returns "" when no head matches.
+func dflashHeadFor(modelPath string) string {
+	base := filepath.Base(modelPath)
+	dir := filepath.Dir(modelPath)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || n == base || !strings.HasSuffix(strings.ToLower(n), "-dflash.gguf") {
+			continue
+		}
+		family := n[:len(n)-len("-DFlash.gguf")]
+		if family != "" && strings.HasPrefix(strings.ToLower(base), strings.ToLower(family)) {
+			return filepath.Join(dir, n)
 		}
 	}
-	return args
+	return ""
+}
+
+// dflashReserveMB is the DFlash allowance for a launch: the head's own weights
+// plus its draft context, nonzero only when DFlash will actually engage.
+func dflashReserveMB(cfg *config.Config, modelPath string) int {
+	if !dflashActive(cfg, modelPath) {
+		return 0
+	}
+	if head := dflashHeadFor(modelPath); head != "" {
+		return FileMB(head) + 1024
+	}
+	return 0
+}
+
+// specReserveMB is the total speculative-decoding VRAM allowance for sizing:
+// whichever drafter will engage (MTP or DFlash) contributes its reserve.
+func specReserveMB(cfg *config.Config, modelPath string) int {
+	return mtpReserveMB(cfg, modelPath) + dflashReserveMB(cfg, modelPath)
 }
 
 // SplitMeasured reports whether every detected GPU carries a measured solo
@@ -393,7 +492,7 @@ func TensorSplitArgs(cfg *config.Config, hw platform.Hardware, modelPath string,
 	if f := kvCtxFactor(cacheType, cfg.Performance.FlashAttn); f > 0 {
 		kvMB = ctx / f
 	}
-	footprint := float64(modelMB + kvMB + mtpReserveMB(cfg, modelPath))
+	footprint := float64(modelMB + kvMB + specReserveMB(cfg, modelPath))
 	totalReserve := gpuReserveMB(hw, modelMB)
 	order := make([]int, n)
 	for i := range order {
@@ -624,7 +723,7 @@ func fullyFitsGPU(cfg *config.Config, hw platform.Hardware, modelPath string, mo
 	if hw.Unified || hw.VRAMMB <= 0 || modelMB <= 0 {
 		return false
 	}
-	return hw.VRAMMB-modelMB-gpuReserveMB(hw, modelMB)-mtpReserveMB(cfg, modelPath) >= minKVHeadroomMB
+	return hw.VRAMMB-modelMB-gpuReserveMB(hw, modelMB)-specReserveMB(cfg, modelPath) >= minKVHeadroomMB
 }
 
 // mainBlocks is the transformer block count EXCLUDING an MTP head's extra block
@@ -691,7 +790,7 @@ func FFNSpillPlan(cfg *config.Config, hw platform.Hardware, modelPath string, ct
 	}
 	ct := EffectiveCacheType(cfg, hw, modelPath, modelMB, false)
 	needKVMB := ctx / kvCtxFactor(ct, cfg.Performance.FlashAttn)
-	haveMB := hw.VRAMMB - modelMB - gpuReserveMB(hw, modelMB) - mtpReserveMB(cfg, modelPath)
+	haveMB := hw.VRAMMB - modelMB - gpuReserveMB(hw, modelMB) - specReserveMB(cfg, modelPath)
 	deficit := needKVMB - haveMB
 	if deficit <= 0 {
 		return 0, main
@@ -849,7 +948,7 @@ func unclampedContextFor(cfg *config.Config, hw platform.Hardware, cacheType, mo
 // the asym downshift never fires, and the exact cards it exists for lose it).
 func rawCtxTokens(cfg *config.Config, hw platform.Hardware, cacheType, modelPath string, modelFileMB int) int {
 	// Reserve compute buffer(s), the MTP draft context when one will load, + safety.
-	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw, modelFileMB) - mtpReserveMB(cfg, modelPath)
+	free := hw.VRAMMB - modelFileMB - gpuReserveMB(hw, modelFileMB) - specReserveMB(cfg, modelPath)
 	if free <= 0 {
 		return 0
 	}

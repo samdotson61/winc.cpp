@@ -62,3 +62,36 @@ func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 	}
 	ui.Good("MTP head ready - multi-token prediction turns on automatically for %s", m.Alias)
 }
+
+// offerDFlashHead prompts to also fetch the small DFlash drafter head for a
+// freshly-downloaded model that has one in the catalogue (the z-lab head line,
+// quantized GGUFs on HF). The head lives in its OWN repo and is saved under the
+// catalogue's dflash_save name ("<Family>-DFlash.gguf") so launch pairing uses
+// the same family-prefix rule as MTP heads. MEASURED (4B, b10298, 5070 Ti):
+// +57% fresh-generation decode, and it composes with ngram speculation. autoYes
+// fetches without asking. No-op without a catalogue head / already present.
+func offerDFlashHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
+	if m == nil || m.DflashRepo == "" || m.DflashFile == "" || m.DflashSave == "" {
+		return
+	}
+	if speculationUselessHere() {
+		return // speculation runs off on Metal -- the head can't help there
+	}
+	md := modelsDir(cfg)
+	if fileExists(filepath.Join(md, m.DflashSave)) {
+		ui.Info("DFlash ready: %s pairs with its drafter head automatically at launch", m.Alias)
+		return
+	}
+	q := fmt.Sprintf("%s has a small DFlash drafter head - also download it to speed up decoding (~1.5x)?", m.Alias)
+	if !autoYes && !ui.Confirm(q, true) {
+		ui.Dim("skipped - run 'winc -d %s' anytime to fetch it", m.Alias)
+		return
+	}
+	ui.Good("Downloading DFlash head %s", m.DflashSave)
+	ui.Say("  from %s", m.DflashRepo)
+	if _, err := download.HFDownloadAs(m.DflashRepo, m.DflashFile, md, m.DflashSave, cfg.HuggingFace.Token); err != nil {
+		ui.Warn("DFlash head download failed: %v (the model runs fine without it)", err)
+		return
+	}
+	ui.Good("DFlash head ready - draft speculation turns on automatically for %s", m.Alias)
+}

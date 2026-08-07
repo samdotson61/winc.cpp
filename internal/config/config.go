@@ -79,6 +79,7 @@ type Performance struct {
 	DraftModel      string   `toml:"draft_model"`       // filename of a small draft model (speculative decoding)
 	Mtp             string   `toml:"mtp"`               // auto | off  (Multi-Token Prediction for *-MTP models)
 	Ngram           string   `toml:"ngram"`             // auto | off  (model-free ngram-simple speculative decoding; non-Metal)
+	Dflash          string   `toml:"dflash"`            // auto | off  (DFlash draft-head speculation for models with a downloaded head; non-Metal)
 	MtpDraftMax     int      `toml:"mtp_draft_max"`     // --spec-draft-n-max for MTP (default 2)
 	ExtraServerArgs []string `toml:"extra_server_args"` // advanced: extra llama-server flags
 	// NoTensorSplit is winc-internal (never read from winc.toml): set on a retry
@@ -214,6 +215,7 @@ draft_model = ""             # e.g. "Qwen3.5-0.8B-Q4_K_M.gguf"; blank = off
 # engine supports it; harmlessly skipped otherwise. ~1.4-2.2x on dense, ~1.2x on MoE.
 mtp = "auto"                 # "auto" (on for MTP models) | "off"
 ngram = "auto"               # "auto" | "off" - model-free ngram speculation: big decode win when output repeats prompt content (file edits); no VRAM cost; non-Metal
+dflash = "auto"              # "auto" | "off" - DFlash draft-head speculation when a head GGUF sits next to the model (winc offers the download); non-Metal
 mtp_draft_max = 2            # tokens drafted per step (--spec-draft-n-max); 2 is a good default
 
 # Advanced escape hatch: extra llama-server flags appended verbatim.
@@ -403,6 +405,9 @@ func (c *Config) backfill() {
 	}
 	if c.Performance.Ngram == "" {
 		c.Performance.Ngram = d.Performance.Ngram
+	}
+	if c.Performance.Dflash == "" {
+		c.Performance.Dflash = d.Performance.Dflash
 	}
 	if c.Performance.MtpDraftMax == 0 {
 		c.Performance.MtpDraftMax = d.Performance.MtpDraftMax
