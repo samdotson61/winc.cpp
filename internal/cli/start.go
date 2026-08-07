@@ -104,6 +104,7 @@ func cmdStart(args []string) int {
 		reportMissingModel(alias, model)
 		return 1
 	}
+	ensureVisionFor(cfg, cat, alias) // heal a missing projector before launch
 	rememberLastUsed(cfg, app, alias)
 	// (family-correct sampling is applied for all tiers inside engine.ServerArgs)
 

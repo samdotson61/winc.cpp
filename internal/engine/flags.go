@@ -479,6 +479,9 @@ func dflashActive(cfg *config.Config, modelPath string) bool {
 	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Dflash), "off") {
 		return false
 	}
+	if visionActive(cfg, modelPath) {
+		return false // draft batches break on image embeddings (see mtpActive)
+	}
 	if mtpActive(cfg, modelPath) {
 		return false
 	}
@@ -524,10 +527,66 @@ func dflashReserveMB(cfg *config.Config, modelPath string) int {
 	return 0
 }
 
-// specReserveMB is the total speculative-decoding VRAM allowance for sizing:
-// whichever drafter will engage (MTP or DFlash) contributes its reserve.
+// specReserveMB is the total extra-resident VRAM allowance for sizing beyond
+// the model weights and KV: whichever drafter will engage (MTP or DFlash)
+// contributes its reserve, and so does the vision projector when it will load.
 func specReserveMB(cfg *config.Config, modelPath string) int {
-	return mtpReserveMB(cfg, modelPath) + dflashReserveMB(cfg, modelPath)
+	return mtpReserveMB(cfg, modelPath) + dflashReserveMB(cfg, modelPath) + visionReserveMB(cfg, modelPath)
+}
+
+// VisionArgs returns the multimodal flags: --mmproj with the projector GGUF
+// sitting next to the model (paired by the same family-prefix rule as MTP and
+// DFlash heads), or nil when there is no projector or vision = "off". Without
+// the projector the language model alone answers image requests with a 500
+// ("image input is not supported ... you may need to provide the mmproj") --
+// the model card's vision is real, the file just wasn't loaded.
+func VisionArgs(cfg *config.Config, modelPath string) []string {
+	if !visionActive(cfg, modelPath) {
+		return nil
+	}
+	return []string{"--mmproj", mmprojFor(modelPath)}
+}
+
+func visionActive(cfg *config.Config, modelPath string) bool {
+	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Vision), "off") {
+		return false
+	}
+	return mmprojFor(modelPath) != ""
+}
+
+// mmprojFor finds a vision projector next to a model: a "<Family>-mmproj.gguf"
+// file pairs when the model's filename starts with the head's family prefix
+// (one projector serves every quant AND the MTP variant of its model).
+func mmprojFor(modelPath string) string {
+	base := filepath.Base(modelPath)
+	dir := filepath.Dir(modelPath)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || n == base || !strings.HasSuffix(strings.ToLower(n), "-mmproj.gguf") {
+			continue
+		}
+		family := n[:len(n)-len("-mmproj.gguf")]
+		if family != "" && strings.HasPrefix(strings.ToLower(base), strings.ToLower(family)) {
+			return filepath.Join(dir, n)
+		}
+	}
+	return ""
+}
+
+// visionReserveMB is the projector's VRAM allowance: its weights plus encode
+// compute buffers, nonzero only when vision will actually load.
+func visionReserveMB(cfg *config.Config, modelPath string) int {
+	if !visionActive(cfg, modelPath) {
+		return 0
+	}
+	if p := mmprojFor(modelPath); p != "" {
+		return FileMB(p) + 512
+	}
+	return 0
 }
 
 // SplitMeasured reports whether every detected GPU carries a measured solo
@@ -771,6 +830,15 @@ func mtpActive(cfg *config.Config, modelPath string) bool {
 		return false
 	}
 	if !isMTPFile(modelPath) && mtpHeadFor(modelPath) == "" {
+		return false
+	}
+	// Draft speculation cannot ride with a loaded vision projector: the draft
+	// model can't process image-embedding batches, and llama-server 500s with
+	// "failed to process speculative batch" on EVERY image request (MEASURED,
+	// b10298: no-spec + vision OK, ngram + vision OK, draft-dflash + vision
+	// 500). A vision-active server therefore drops the draft mechanisms and
+	// keeps model-free ngram speculation, which survives images.
+	if visionActive(cfg, modelPath) {
 		return false
 	}
 	// draft-mtp is off on the Metal backend: originally because it crashed during
@@ -1101,6 +1169,7 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 	// Some 2026 templates (Qwen3.5) carry a system-position guard that breaks llama.cpp's
 	// tool-call parser generation -> 400 on every request. Override with a patched copy.
 	args = append(args, ChatTemplateArgs(modelPath)...)
+	args = append(args, VisionArgs(cfg, modelPath)...) // image input works only with the mmproj loaded
 
 	modelMB := FileMB(modelPath)
 	expertsOff := WillOffloadExperts(cfg, hw, modelPath)

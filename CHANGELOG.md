@@ -3,6 +3,30 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.38.0 — 2026-08-07
+
+### Added
+- **Image input works: vision projectors are first-class and automatic.** The
+  catalogue's Qwen3.5/3.6 and Gemma 4 models are natively multimodal, but winc
+  only ever fetched the language-model GGUF — so Claude Code image pastes hit
+  llama-server's 500 ("image input is not supported … you may need to provide
+  the mmproj"). The official `mmproj` projector (vision encoder + projection
+  weights, ~0.6–0.9 GB F16, from each model's own repo) is now in the catalogue
+  for all 31 vision-capable entries and is **downloaded automatically** — with
+  the model, and healed at launch for models downloaded before this existed
+  (`vision = "off"` in `[performance]` is the opt-out). One projector per
+  family, saved as `<Family>-mmproj.gguf`, pairs every quant AND MTP variant at
+  launch via `--mmproj`; sizing reserves its VRAM; team workers stay vision-off
+  (the projector's VRAM belongs to the head).
+- **Draft speculation yields to vision.** MEASURED (b10298): a loaded projector
+  + draft-based speculation (MTP heads, DFlash) 500s on every image request
+  ("failed to process speculative batch" — the draft can't process image
+  embeddings), while model-free ngram speculation survives images. A
+  vision-active server therefore drops the draft mechanisms automatically and
+  keeps ngram; `vision = "off"` restores the full speculation stack.
+  END-TO-END VERIFIED: `winc serve qwen3.5-4b` + the exact Anthropic-API image
+  request Claude Code sends → correct answer through the router.
+
 ## v1.37.0 — 2026-08-07
 
 ### Added

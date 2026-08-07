@@ -68,6 +68,7 @@ func cmdServe(args []string) int {
 		reportMissingModel(alias, model)
 		return 1
 	}
+	ensureVisionFor(cfg, cat, alias) // heal a missing projector before launch
 	hw := platform.DetectHardwareCached()
 	ensureGPUSpeeds(cfg, cat, &hw) // multi-GPU bandwidth weights, measured once per machine
 

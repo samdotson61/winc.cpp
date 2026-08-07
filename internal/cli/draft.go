@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"winc/internal/catalog"
 	"winc/internal/config"
@@ -94,4 +95,40 @@ func offerDFlashHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 		return
 	}
 	ui.Good("DFlash head ready - draft speculation turns on automatically for %s", m.Alias)
+}
+
+// ensureMmproj fetches the vision projector for a model that has one in the
+// catalogue (the official mmproj GGUF from the model's own repo) whenever it
+// isn't already on disk. NOT an offer: vision is capability, not an optional
+// speed-up — a natively-multimodal model without its projector 500s on every
+// image, so the projector is always downloaded alongside the model and healed
+// at launch for models downloaded before this existed. `vision = "off"` is the
+// opt-out. Once it sits next to the model under its family name, every quant
+// and MTP variant pairs it automatically at launch. Vision is NOT Metal-gated:
+// it is not speculation, it is the other half of the model. Best-effort — a
+// failed download warns and never blocks the launch (text keeps working).
+func ensureMmproj(cfg *config.Config, m *catalog.Model) {
+	if m == nil || m.MmprojRepo == "" || m.MmprojFile == "" || m.MmprojSave == "" {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Vision), "off") {
+		return
+	}
+	md := modelsDir(cfg)
+	if fileExists(filepath.Join(md, m.MmprojSave)) {
+		return
+	}
+	ui.Good("Downloading vision projector %s (image input needs it)", m.MmprojSave)
+	ui.Say("  from %s", m.MmprojRepo)
+	if _, err := download.HFDownloadAs(m.MmprojRepo, m.MmprojFile, md, m.MmprojSave, cfg.HuggingFace.Token); err != nil {
+		ui.Warn("projector download failed: %v (text still works; images will 500 until 'winc -d %s' fetches it)", err, m.Alias)
+		return
+	}
+	ui.Good("vision ready - image input works for %s", m.Alias)
+}
+
+// ensureVisionFor is the launch-time heal: resolve the catalogue entry behind
+// whatever the user launched and make sure its projector is present.
+func ensureVisionFor(cfg *config.Config, cat *catalog.Catalog, query string) {
+	ensureMmproj(cfg, cat.Find(query))
 }

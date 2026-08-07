@@ -53,6 +53,7 @@ func cmdDownload(args []string) int {
 		ui.Good("already downloaded: %s", localName)
 		offerMTPHead(cfg, m, autoYes)
 		offerDFlashHead(cfg, m, autoYes)
+		ensureMmproj(cfg, m)
 		mtpTip(cat, m)
 		return 0
 	}
@@ -69,6 +70,7 @@ func cmdDownload(args []string) int {
 	}
 	offerMTPHead(cfg, m, autoYes)
 	offerDFlashHead(cfg, m, autoYes)
+	ensureMmproj(cfg, m)
 	mtpTip(cat, m)
 	return 0
 }

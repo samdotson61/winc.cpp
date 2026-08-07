@@ -368,6 +368,7 @@ end of this section only exist if you want to override a decision.
 | **External drafts: explicit-only** | The dense 0.8B auto-pair is retired — measured a decode **loss** on every backend tested (CUDA 5070 Ti: −43% code / −57% chat at 67% acceptance; Metal: 0% best case; CPU: halved): the draft's own serial generation costs more than batch verification saves. Set `draft_model` in `winc.toml` to force one anyway | No silent slowdown from a "speedup" — measured-no, documented in the CHANGELOG |
 | **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine) | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
 | **ngram speculation (model-free, default on)** | Every non-Metal launch adds `ngram-simple` to the speculative types: drafts come from n-grams already seen in the prompt + generation, verified by the model itself — no draft model, no VRAM, output-exact | Agentic coding constantly re-emits files, diffs and JSON: **4.4–7.2× decode** on re-emission/edit turns (4B 181→1103 tok/s), with **zero measured cost** on fresh generation; `ngram = "off"` opts out |
+| **Vision (image input), automatic** | The catalogue's Qwen3.5/3.6 + Gemma 4 models are natively multimodal; winc downloads each model's official `mmproj` projector automatically (with the model, or healed at launch) and pairs it via `--mmproj` — one projector serves every quant and MTP variant of its family | Paste images into Claude Code on a local model and it just works; without the projector every image 500s. Draft speculation yields on vision servers (measured incompatible with image batches); ngram stays. `vision = "off"` opts out |
 | **DFlash draft heads (Qwen3.5 4B/9B)** | A small per-model drafter head (the z-lab line) offered at download and paired automatically at launch, composed with ngram into one spec-type; MTP models keep their own heads | The one case ngram can't speed up: **fresh generation** — measured **+57% on the 4B** (178→280 tok/s) and **2× on the 9B** (120→240); `dflash = "off"` opts out |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
@@ -418,6 +419,7 @@ draft_model = ""      # "" = off; or a draft GGUF filename to force external dra
 mtp = "auto"          # "auto" (on for MTP models, engine permitting) | "off"
 ngram = "auto"        # "auto" (model-free ngram speculation, non-Metal) | "off"
 dflash = "auto"       # "auto" (DFlash head speculation when the head is downloaded, non-Metal) | "off"
+vision = "auto"       # "auto" (download + load the mmproj projector; image input works) | "off"
 mtp_draft_max = 2     # tokens drafted per step (--spec-draft-n-max)
 
 # Escape hatch: any extra llama-server flags, appended verbatim.
