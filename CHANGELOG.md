@@ -3,6 +3,32 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.36.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
+
+Merge of master **v1.36.0** (MoE expert packing). **`internal/cli/eval.go` is
+byte-identical.** Eval reach: eval serves of a MoE too big for the card gain
+the packed placement automatically — pure speed, no behavior change.
+
+## v1.36.0 — 2026-08-07
+
+### Added
+- **MoE expert packing: auto-offload now fills the GPU before spilling to RAM.**
+  The auto `cpu_moe` path was binary — a MoE that missed full residency by any
+  margin sent EVERY layer's routed experts to RAM (`--cpu-moe`), stranding
+  whatever VRAM the window didn't use (observed live: 8.5/16 GB used, the rest
+  idle, while system RAM sat at 91%). winc now computes an exact per-layer
+  expert size from the GGUF tensor table (the v1.21 offset-delta machinery,
+  extended to `blk.N.ffn_*_exps.*`; shared experts stay in the resident base),
+  budgets the WINDOW first — packing never shrinks the context — and keeps as
+  many layers' experts on the GPU as the leftover fits, offloading only the
+  rest via `--n-cpu-moe`. MEASURED (Qwen3.6-35B-A3B UD-Q4_K_M, 21.6 GB file on
+  a 16 GB 5070 Ti, ctx 32768, b10298): decode **47–49 → 81–83 tok/s (+70%)**,
+  cold pp2048 **232 → 959 tok/s**, VRAM 4.3 → 14.5 GB used. Packed loads pin
+  `-ngl 99`, which is exactly the class the WDDM silent-sysmem placement gate
+  exists for — they are now gated against their REDUCED resident set (base +
+  packed experts), like a dense FFN spill. Explicit `cpu_moe` settings
+  ("on"/"all"/a layer count) are the user's word and are never repacked; the
+  launch prints the split ("packing 24/41 layers on GPU ... --n-cpu-moe 17").
 ## 1.35.1-jobdar.2 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master's post-v1.35.1 numeric version ordering (`versionBehindTag`

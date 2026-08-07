@@ -105,6 +105,85 @@ func WillOffloadExperts(cfg *config.Config, hw platform.Hardware, modelPath stri
 	return resolveCPUMoE(cfg, hw, modelPath, FileMB(modelPath), GpuLayers(cfg, hw)) == "all"
 }
 
+// moePackSafetyMB is extra VRAM held back by the expert-packing budget beyond
+// the standard reserves. Packed loads are pinned (-ngl 99) and an over-budget
+// pin is exactly what the WDDM driver satisfies silently from shared system
+// memory -- the placement gate catches that, but a margin avoids burning a
+// ladder rung to find out.
+const moePackSafetyMB = 512
+
+// MoEPackPlan computes the expert-packing placement for a MoE launch that
+// auto-offloads: instead of --cpu-moe (EVERY layer's routed experts to RAM,
+// stranding whatever VRAM the window doesn't use), keep as many layers'
+// experts as fit ON the GPU and offload only the rest via --n-cpu-moe.
+// The WINDOW is budgeted first -- packing never shrinks the context; experts
+// take only the leftover. Returns (cpuLayers, cpuSpillMB, true) when the plan
+// applies: cfg is auto, auto-offload fired, expert sizing is readable, and at
+// least one layer's experts fit in the leftover. ok=false means launch as
+// before (--cpu-moe). Explicit cpu_moe settings ("on"/"all"/a count) are the
+// user's word and never repacked.
+func MoEPackPlan(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB, ctx int) (cpuLayers, cpuSpillMB int, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Performance.CpuMoe)) {
+	case "", "auto":
+	default:
+		return 0, 0, false
+	}
+	if ctx <= 0 || modelMB <= 0 {
+		return 0, 0, false
+	}
+	if resolveCPUMoE(cfg, hw, modelPath, modelMB, GpuLayers(cfg, hw)) != "all" {
+		return 0, 0, false
+	}
+	expTotalMB, expLayers := MoEExpertStats(modelPath)
+	if expTotalMB <= 0 || expLayers <= 0 {
+		return 0, 0, false
+	}
+	perLayerMB := expTotalMB / expLayers
+	if perLayerMB <= 0 {
+		return 0, 0, false
+	}
+	// Resident base = everything --cpu-moe keeps on the GPU anyway: attention,
+	// shared experts, embeddings, output. KV is sized for the ALREADY-DECIDED
+	// window (the offloaded-experts context path), so packing can't shrink it.
+	baseMB := modelMB - expTotalMB
+	kvMB := 0
+	if f := kvCtxFactor(EffectiveCacheType(cfg, hw, modelPath, modelMB, true), cfg.Performance.FlashAttn); f > 0 {
+		kvMB = (ctx + f - 1) / f
+	}
+	free := hw.VRAMMB - baseMB - kvMB - specReserveMB(cfg, modelPath) - gpuReserveMB(hw, modelMB) - moePackSafetyMB
+	gpuLayers := free / perLayerMB
+	if gpuLayers < 1 {
+		return 0, 0, false
+	}
+	if gpuLayers >= expLayers {
+		gpuLayers = expLayers - 1 // stay in the offload family the sizing assumed
+	}
+	cpuLayers = expLayers - gpuLayers
+	return cpuLayers, cpuLayers * perLayerMB, true
+}
+
+// MoEPackSpillMB is the CPU-side expert bytes (MB) of the active pack plan, or
+// 0 when packing doesn't apply. The placement gate subtracts this from the
+// expected resident set exactly like a dense FFN spill.
+func MoEPackSpillMB(cfg *config.Config, hw platform.Hardware, modelPath string, modelMB, ctx int) int {
+	if _, spill, ok := MoEPackPlan(cfg, hw, modelPath, modelMB, ctx); ok {
+		return spill
+	}
+	return 0
+}
+
+// ForcedFullGPUCtx is ForcedFullGPU with the resolved window supplied: a
+// packed-MoE launch pins -ngl 99 with only PART of the experts resident, so it
+// is exactly the load class the placement gate exists for (a silently
+// sysmem-satisfied pin) and must be gated against its reduced resident set,
+// like a dense FFN spill. Window-independent callers keep ForcedFullGPU.
+func ForcedFullGPUCtx(cfg *config.Config, hw platform.Hardware, modelPath string, ctx int) bool {
+	if _, _, ok := MoEPackPlan(cfg, hw, modelPath, FileMB(modelPath), ctx); ok {
+		return true
+	}
+	return ForcedFullGPU(cfg, hw, modelPath)
+}
+
 // ForcedFullGPU reports whether this launch pins the model fully onto the GPU
 // (the fullyFitsGPU -ngl 99 policy) -- the loads whose VRAM residency the
 // launcher verifies after each attempt, because a pinned load that exceeds free
@@ -1056,7 +1135,16 @@ func ServerArgs(cfg *config.Config, hw platform.Hardware, modelPath string, port
 		args = append(args, "-ngl", "99")
 		args = append(args, FFNSpillArgs(modelPath, cfg.Performance.FFNSpill)...)
 	case cpuMoe == "all":
-		args = append(args, "-ngl", "99", "--cpu-moe")
+		// Pack the leftover: --cpu-moe strands whatever VRAM the window doesn't
+		// use (measured: 12 GB idle on a 16 GB card under the 35B-A3B). Keep as
+		// many layers' experts ON the GPU as fit after the window is budgeted.
+		// MEASURED (35B-A3B UD-Q4_K_M, 5070 Ti, b10298, ctx 32768): decode 47-49
+		// -> 81-83 tok/s (+70%), cold pp2048 232 -> 959 tok/s, VRAM 4.3 -> 14.5 GB.
+		if n, _, ok := MoEPackPlan(cfg, hw, modelPath, modelMB, ctx); ok {
+			args = append(args, "-ngl", "99", "--n-cpu-moe", strconv.Itoa(n))
+		} else {
+			args = append(args, "-ngl", "99", "--cpu-moe")
+		}
 	case cpuMoe != "":
 		args = append(args, "-ngl", "99", "--n-cpu-moe", cpuMoe)
 	case cfg.Performance.GpuLayers == GpuLayersEngine:

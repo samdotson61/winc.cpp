@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -348,15 +349,68 @@ func FFNLayerMB(path string) int {
 	return int(total / int64(blocks) >> 20)
 }
 
+var moeExpertCache sync.Map // modelPath -> moeExpertStats
+
+type moeExpertStats struct {
+	TotalBytes int64 // all blk.*.*_exps.* tensor bytes (routed experts only; shared "shexp" excluded)
+	Layers     int   // number of blocks carrying expert tensors
+}
+
+// MoEExpertStats returns the EXACT on-disk size of a MoE model's routed-expert
+// tensors (blk.N.ffn_*_exps.*) and how many layers carry them, or zeros if
+// unavailable. Shared-expert tensors ("shexp") are excluded — the engine's
+// --cpu-moe/--n-cpu-moe only move the routed experts, and the shared expert
+// runs every token so it must stay in the resident base. This is the byte pool
+// the MoE packing plan can place back on the GPU.
+func MoEExpertStats(path string) (totalMB, layers int) {
+	if v, ok := moeExpertCache.Load(path); ok {
+		s := v.(moeExpertStats)
+		return int(s.TotalBytes >> 20), s.Layers
+	}
+	var s moeExpertStats
+	seen := map[int]bool{}
+	err := walkTensorSizes(path, func(name string, sz int64) {
+		if !strings.HasPrefix(name, "blk.") || !strings.Contains(name, "_exps.") {
+			return
+		}
+		s.TotalBytes += sz
+		if i := strings.IndexByte(name[4:], '.'); i > 0 {
+			if n, err := strconv.Atoi(name[4 : 4+i]); err == nil && !seen[n] {
+				seen[n] = true
+				s.Layers++
+			}
+		}
+	})
+	if err != nil {
+		s = moeExpertStats{}
+	}
+	moeExpertCache.Store(path, s)
+	return int(s.TotalBytes >> 20), s.Layers
+}
+
 func readFFNTotalBytes(path string) (int64, error) {
+	var total int64
+	err := walkTensorSizes(path, func(name string, sz int64) {
+		if strings.HasPrefix(name, "blk.") && strings.Contains(name, ".ffn_") {
+			total += sz
+		}
+	})
+	return total, err
+}
+
+// walkTensorSizes reads a GGUF's tensor table and calls fn(name, bytes) for
+// every tensor, with sizes from offset deltas (no per-quant type table to
+// maintain). Extracted from the v1.21 FFN sizing so MoE expert sizing shares
+// one battle-tested parser.
+func walkTensorSizes(path string, fn func(name string, bytes int64)) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	cr := &countingReader{r: f}
 	r := bufio.NewReaderSize(cr, 1<<20)
@@ -364,28 +418,28 @@ func readFFNTotalBytes(path string) (int64, error) {
 	var magic, version uint32
 	var nTensors, nKV uint64
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
-		return 0, err
+		return err
 	}
 	if magic != ggufMagic {
-		return 0, fmt.Errorf("not a GGUF file")
+		return fmt.Errorf("not a GGUF file")
 	}
 	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
-		return 0, err
+		return err
 	}
 	alignment := int64(32) // GGUF default; overridden by general.alignment
 	for i := uint64(0); i < nKV; i++ {
 		key, err := ggufString(r)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		var vtype uint32
 		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
-			return 0, err
+			return err
 		}
 		if key == "general.alignment" {
 			a, err := ggufUint(r, vtype)
 			if err != nil {
-				return 0, err
+				return err
 			}
 			if a > 0 {
 				alignment = int64(a)
@@ -393,41 +447,38 @@ func readFFNTotalBytes(path string) (int64, error) {
 			continue
 		}
 		if err := ggufSkipValue(r, vtype); err != nil {
-			return 0, err
+			return err
 		}
 	}
 	if nTensors == 0 || nTensors > 1<<20 {
-		return 0, fmt.Errorf("absurd gguf tensor count %d", nTensors)
+		return fmt.Errorf("absurd gguf tensor count %d", nTensors)
 	}
 	type tinfo struct {
 		offset int64
-		ffn    bool
+		name   string
 	}
 	infos := make([]tinfo, 0, nTensors)
 	for i := uint64(0); i < nTensors; i++ {
 		name, err := ggufString(r)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		var nDims uint32
 		if err := binary.Read(r, binary.LittleEndian, &nDims); err != nil {
-			return 0, err
+			return err
 		}
 		if nDims > 8 {
-			return 0, fmt.Errorf("absurd tensor rank %d", nDims)
+			return fmt.Errorf("absurd tensor rank %d", nDims)
 		}
 		// dims (u64 each) + type (u32) are not needed for offset-delta sizing
 		if _, err := io.CopyN(io.Discard, r, int64(nDims)*8+4); err != nil {
-			return 0, err
+			return err
 		}
 		var offset uint64
 		if err := binary.Read(r, binary.LittleEndian, &offset); err != nil {
-			return 0, err
+			return err
 		}
-		infos = append(infos, tinfo{
-			offset: int64(offset),
-			ffn:    strings.HasPrefix(name, "blk.") && strings.Contains(name, ".ffn_"),
-		})
+		infos = append(infos, tinfo{offset: int64(offset), name: name})
 	}
 	// Everything read so far is the header; tensor data starts at the next
 	// alignment boundary. Account for bytes buffered ahead by the bufio layers.
@@ -435,25 +486,21 @@ func readFFNTotalBytes(path string) (int64, error) {
 	dataStart := (headerEnd + alignment - 1) / alignment * alignment
 	dataSize := st.Size() - dataStart
 	if dataSize <= 0 {
-		return 0, fmt.Errorf("gguf data section missing")
+		return fmt.Errorf("gguf data section missing")
 	}
 	// Tensor size = gap to the next tensor's offset (offsets are relative to the
 	// data section). Sort by offset; the last tensor runs to the end of the file.
 	sort.Slice(infos, func(a, b int) bool { return infos[a].offset < infos[b].offset })
-	var total int64
 	for i, t := range infos {
-		if !t.ffn {
-			continue
-		}
 		end := dataSize
 		if i+1 < len(infos) {
 			end = infos[i+1].offset
 		}
 		if end > t.offset {
-			total += end - t.offset
+			fn(t.name, end-t.offset)
 		}
 	}
-	return total, nil
+	return nil
 }
 
 // countingReader counts bytes consumed from the underlying reader.
