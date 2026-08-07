@@ -3,6 +3,29 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.35.1-jobdar.1 — 2026-08-07 (winc-jobdar branch)
+
+Merge of master **v1.35.1** (`winc check` understands ahead-of-tag versions).
+**`internal/cli/eval.go` is byte-identical.** This branch keeps its explicit
+isJobdarBuild gate in front of the new versionBehindTag comparison — a branch
+build derived from an older master must hear "update from the branch," never a
+master-release advertisement.
+
+## v1.35.1 — 2026-08-07
+
+### Fixed
+- **`winc check` no longer advertises a release to builds that already contain
+  it.** v1.35.0's describe-stamped clone rebuilds report versions like
+  `1.35.0-1-gabc1234` — one commit PAST the tag — and the old `!=` comparison
+  read that as "behind," nagging exactly the installs that were most current.
+  `versionBehindTag` now treats a describe suffix of the latest tag, and a
+  `-jobdar.N` derivative of it, as current; genuinely older versions (including
+  describe forms of an older tag) still warn. The winc-jobdar branch keeps its
+  own explicit gate on top: a branch build derived from an older master should
+  hear "update from the branch," never a master-release advertisement.
+- Also in this release: the README caught up to v1.32–v1.35 (symmetric-q4
+  starved KV and the mixed-pair trap, worker scheduler priority, the
+  three-mechanism speculation stack, ngram/dflash config knobs).
 ## 1.35.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.35.0** (DFlash draft heads + honest clone versions).
