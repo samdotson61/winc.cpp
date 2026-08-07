@@ -3,6 +3,43 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.34.0-jobdar.1 — 2026-08-06 (winc-jobdar branch)
+
+Merge of master **v1.34.0** (ngram-simple speculation on by default, non-Metal).
+**`internal/cli/eval.go` is byte-identical.** Reach into eval serves: an eval
+llama-server launched through the standard serve path now also carries
+`--spec-type ngram-simple` — pure decode speedup, output-exact by construction
+(the target model verifies every draft), so eval results are unaffected.
+
+## v1.34.0 — 2026-08-06
+
+### Added
+- **Model-free ngram speculation on by default (non-Metal).** Every serve/agent
+  launch now adds `ngram-simple` to llama-server's `--spec-type`, composed with
+  `draft-mtp` into one comma list when the model has MTP heads. The drafter
+  proposes continuations from n-grams already seen in the prompt + generation —
+  no draft model, no VRAM, no per-model artifacts, and the target model
+  verifies every draft, so output quality is untouched by construction.
+  MEASURED (b10298, 5070 Ti, temp 0 AND 0.7, agent-shaped workloads): **4.4–7.2x
+  decode on file re-emission and scattered-edit tasks** across Qwen3.5-4B
+  (181 → 1103 tok/s), Qwen3.5-9B (123 → 889) and gemma-4-26B-A4B MoE
+  (135 → 871), with NO measurable cost on fresh generation (±1 tok/s) — and it
+  composes: `draft-mtp,ngram-simple` on the 26B-A4B beat baseline (+39% fresh)
+  and either mechanism alone. This is the agentic-coding case exactly: models
+  re-emit file contents, diffs and JSON schemas constantly. The public
+  "ngram speculation is net-negative" result (RTX 3090, Ampere) did NOT
+  reproduce here. Metal keeps it off pending its own measurement leg
+  (precedent: v1.27.0 measured every draft mechanism a loss there); the engine
+  support probe skips it cleanly on older llama-server builds. Opt out with
+  `ngram = "off"` in `[performance]`.
+- Two related eval data points recorded in wincmap for follow-up, NOT shipped:
+  (1) **MTP alone measured a LOSS on the 26B-A4B on b10298** (−17..24% across
+  workloads; v1.7.0 measured +11% in the two-card era) — the combined
+  ngram+MTP config still wins, so defaults are unchanged pending a dedicated
+  re-bench. (2) **DFlash draft heads** (z-lab, GGUFs on HF for 4B/9B/27B/35B/
+  gemma) measured +57% on fresh generation and stack with ngram on the 4B —
+  adoption would need catalog/download plumbing and a provenance decision on
+  community-quantized heads.
 ## 1.33.0-jobdar.1 — 2026-08-06 (winc-jobdar branch)
 
 Merge of master **v1.33.0** (symmetric-q4_0 starved-KV downshift + engine-aware
