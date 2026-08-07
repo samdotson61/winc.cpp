@@ -36,6 +36,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		reportMissingModel(mainAlias, mainQuery)
 		return 1
 	}
+	ensureVisionFor(cfg, cat, mainAlias) // the HEAD gets its projector; workers run vision off
 	rememberLastUsed(cfg, app, mainAlias)
 
 	if _, err := config.EnsureClaudeLocal(); err != nil {
@@ -531,6 +532,7 @@ func startWorker(cfg *config.Config, hw platform.Hardware, serverBin, modelPath,
 		wc.Performance.CacheType = "q8_0"
 		wc.Performance.DraftModel = ""
 		wc.Performance.Mtp = "off"
+		wc.Performance.Vision = "off" // workers are text tools; the projector's VRAM belongs to the head
 		wc.Performance.ExtraServerArgs = nil
 		wc.Reasoning.Mode = "adaptive"
 		wc.General.Port = pnum

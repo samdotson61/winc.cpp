@@ -14,7 +14,7 @@ import "winc/internal/ui"
 // is what stops a jobfaro backend from silently becoming a master release.
 // The suffix also keeps `winc update`'s source rebuild from stamping master's
 // git-describe over it (update.go skips stamping when the literal says jobdar).
-var Version = "1.37.0-jobdar.1"
+var Version = "1.38.0-jobdar.1"
 
 func cmdVersion() int {
 	ui.Say("winc %s", Version)

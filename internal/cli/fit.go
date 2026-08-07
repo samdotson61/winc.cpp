@@ -767,7 +767,7 @@ func launchMemoKey(modelPath string) string {
 // Computed against the ORIGINAL config before the launch mutates it.
 func launchFingerprint(cfg *config.Config, hw platform.Hardware, engineTag string) string {
 	h := fnv.New32a()
-	fmt.Fprintf(h, "%s|%s|%v|%s|%s|%s|%s|%s|%d|%d|%v|%d|%s",
+	fmt.Fprintf(h, "%s|%s|%v|%s|%s|%s|%s|%s|%s|%d|%d|%v|%d|%s",
 		strings.ToLower(strings.TrimSpace(cfg.Performance.Context)),
 		strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType)),
 		cfg.Performance.FlashAttn,
@@ -775,6 +775,7 @@ func launchFingerprint(cfg *config.Config, hw platform.Hardware, engineTag strin
 		strings.ToLower(strings.TrimSpace(cfg.Performance.GpuLayers)),
 		strings.ToLower(strings.TrimSpace(cfg.Performance.Mtp)),
 		strings.ToLower(strings.TrimSpace(cfg.Performance.Dflash)),
+		strings.ToLower(strings.TrimSpace(cfg.Performance.Vision)),
 		strings.TrimSpace(cfg.Performance.DraftModel),
 		engine.ParallelSlots(cfg),
 		hw.VRAMMB, hw.Unified, len(hw.GPUs),

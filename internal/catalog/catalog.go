@@ -40,6 +40,13 @@ type Model struct {
 	DflashRepo string `json:"dflash_repo,omitempty"`
 	DflashFile string `json:"dflash_file,omitempty"`
 	DflashSave string `json:"dflash_save,omitempty"`
+	// Multimodal projector (vision): the separate GGUF holding the vision encoder
+	// + projection weights, from the model's own repo, saved as MmprojSave
+	// ("<Family>-mmproj.gguf") so launch pairing uses the family-prefix rule.
+	// Without it the language model alone 500s on image input.
+	MmprojRepo string `json:"mmproj_repo,omitempty"`
+	MmprojFile string `json:"mmproj_file,omitempty"`
+	MmprojSave string `json:"mmproj_save,omitempty"`
 	Note       string `json:"note"`
 }
 

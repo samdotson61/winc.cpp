@@ -54,3 +54,4 @@ desktop.ini
 .vscode/
 __pycache__/
 *.pyc
+.winc-serve.json
