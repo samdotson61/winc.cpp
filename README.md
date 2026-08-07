@@ -150,7 +150,10 @@ Reasoning models (Qwen3.5, Qwen3.6, ...) can over-think trivial prompts. In **ad
 mode (the default) `winc` runs a tiny in-process router that sets a per-request *thinking
 ceiling* scaled to request size: "hi" answers instantly, while a real coding task gets a
 full budget. Set `mode = "on"` (always think), `"off"` (never), or `"fixed"` for a constant
-budget — those run with **zero proxy hop** (direct to llama-server).
+budget — those run with **zero proxy hop** (direct to llama-server). When the router is in
+the path it also streams **keepalive pings during long prompt processing** (a big first
+message can take 30–60 s of prefill on a large model before the first token; without pings
+Claude Code mistakes the silence for a network failure and retries).
 
 ### Journal — long chats on a small live prompt (context virtualization)
 

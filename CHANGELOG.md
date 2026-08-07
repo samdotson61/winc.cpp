@@ -3,6 +3,34 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.39.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
+
+Merge of master **v1.39.0** (prefill keepalive pings). **`internal/cli/eval.go`
+is byte-identical.** Eval reach: eval calls are small prompts through the raw
+`:8080` server (no router in that path), so eval behavior is unchanged; a
+jobfaro backend used interactively through the router gains the keepalive.
+
+## v1.39.0 — 2026-08-07
+
+### Fixed
+- **First messages no longer trip Claude Code's "check your network" retry
+  loop.** llama-server sends its SSE response headers immediately (measured:
+  10 ms) but the FIRST event only after prompt processing completes — ~44
+  seconds for the agent's ~29k-token system prompt on a 35B. Claude Code
+  treats that first-event silence as a network failure: the server log shows
+  it aborting the request mid-prefill (slot released with no eval), then
+  retrying with a backoff that climbs to minutes. Anthropic's real API never
+  trips this because its streams carry periodic `ping` events — so the router
+  now does the same: while the upstream body is still silent, keepalive frames
+  flow to the client (a real Anthropic `ping` event on `/v1/messages`, a bare
+  SSE comment on OpenAI-compat paths), first after 5 s then every 10 s,
+  stopping permanently at the first upstream byte. Wrapped on the client side
+  of the auto-continuation machinery so its SSE parser never sees a ping.
+  END-TO-END VERIFIED: a 99k-token prompt (21 s prefill) streamed pings at
+  5 s and 15 s, then the untouched real stream through `message_stop`. Also
+  hardened by its own test: the wrapper's EOF path delivers every buffered
+  tail chunk before surfacing the error (the first cut dropped stream tails —
+  caught by the continuation regression test, fixed before ship).
 ## 1.38.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.38.0** (automatic vision projectors). **`internal/cli/eval.go`
