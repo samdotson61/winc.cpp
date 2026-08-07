@@ -50,6 +50,10 @@ func Run(args []string) int {
 		return cmdLogs(rest)
 	case "serve":
 		return cmdServe(rest)
+	case "restart":
+		return cmdRestart(rest)
+	case "stop":
+		return cmdStop()
 	case "journal":
 		return cmdJournal(rest)
 	case "version", "-v", "--version":

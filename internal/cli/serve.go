@@ -77,6 +77,8 @@ func cmdServe(args []string) int {
 		if cfg.Journal.Enabled {
 			ui.Dim("journal: single-model mode only for now; --multi runs without it")
 		}
+		writeServeState(cfg.General.Port, args) // children reaped by job/pdeathsig on stop
+		defer clearServeState()
 		return startMulti(cfg, cat, platform.DetectHardwareCached(), "")
 	}
 
@@ -123,6 +125,9 @@ func cmdServe(args []string) int {
 			ui.Warn("router failed (%v); serving direct", rerr)
 		}
 	}
+
+	writeServeState(port, args, proc.Pid()) // findable by `winc stop` / `winc restart` from any terminal
+	defer clearServeState()
 
 	ui.Good("ready -> set ANTHROPIC_BASE_URL=%s", baseURL)
 	ui.Info("llama-server: %s  (context %d, max output %d)   (Ctrl-C to stop)", serverURL, loadedCtx, engine.ResolveMaxOutput(cfg, loadedCtx))

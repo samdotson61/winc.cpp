@@ -20,6 +20,8 @@ func usage() {
 	ui.Say("        team mode is DEFAULT on a big model: subagents start on a small CPU worker")
 	ui.Say("        and escalate by load; web search is pre-approved; --noteam = single model")
 	ui.Say("  winc serve [--multi]            run the server(s)/router only")
+	ui.Say("  winc restart [model]            stop the running server and start it again (same flags; or a new model)")
+	ui.Say("  winc stop                       stop the running server (started in any terminal)")
 	ui.Say("        [--journal[=off]]         context virtualization: long chats stay fast on a small")
 	ui.Say("        live prompt; old turns are stored + recalled on demand (also for -s)")
 	ui.Say("  winc journal [ls|show|rm|path]  inspect the conversation store (plaintext, local)")
