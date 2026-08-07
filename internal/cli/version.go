@@ -12,7 +12,7 @@ import "winc/internal/ui"
 // The "-jobdar.N" suffix is LOAD-BEARING, not cosmetic: selfUpdatePrebuilt
 // refuses to replace a build whose Version contains "jobdar" (update.go), which
 // is what stops a jobfaro backend from silently becoming a master release.
-var Version = "1.31.0-jobdar.1"
+var Version = "1.32.0-jobdar.1"
 
 func cmdVersion() int {
 	ui.Say("winc %s", Version)

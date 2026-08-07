@@ -3,6 +3,32 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.32.0-jobdar.1 — 2026-08-06 (winc-jobdar branch)
+
+Merge of master **v1.32.0** (team workers launched at reduced scheduler
+priority on non-unified machines). **The eval profile is untouched** —
+`internal/cli/eval.go` is byte-identical, and the change lives entirely in
+team mode (`team.go` worker launch + `internal/server` priority helpers),
+which the `:8080` eval serve never enters.
+
+## v1.32.0 — 2026-08-06
+
+### Changed
+- **Team workers yield the CPU to the main model on discrete-GPU and CPU-only
+  boxes.** Worker llama-servers are now launched at reduced scheduler priority
+  (`BELOW_NORMAL_PRIORITY_CLASS` on Windows, nice +10 elsewhere) whenever the
+  machine is not unified-memory. Background: the v1.28.0 CUDA pass measured
+  concurrent team workers costing the main model **9.8% decode** through
+  host-side CPU contention, and a homogeneous CPU (e.g. the 7700X) has no
+  efficiency cores to pin them to — the unified-memory fix from v1.27.0 does
+  not transfer. The decision was a judgement call, now made: **the main model
+  has preference.** Priority was chosen over a worker thread cap because it
+  only costs the workers anything while the main model's host threads are
+  actually runnable — an idle main model leaves worker throughput untouched.
+  Unified-memory machines keep the measured E-core pin and are unchanged.
+  Best-effort on every platform: if the priority call fails, the worker simply
+  runs at normal priority as before.
+
 ## 1.31.0-jobdar.1 — 2026-07-25 (winc-jobdar branch)
 
 Merge of master **v1.31.0** (released binaries signed with Sigstore build
