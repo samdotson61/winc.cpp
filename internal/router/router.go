@@ -307,6 +307,9 @@ func (r *Router) rewriteOverflow(resp *http.Response) error {
 	}
 	if err == nil {
 		r.maybeContinue(resp)
+		// LAST, so pings are injected on the CLIENT side of the continuation
+		// machinery -- continueStream's SSE parser never sees a ping frame.
+		keepAliveSSE(resp)
 	}
 	return err
 }
