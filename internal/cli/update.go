@@ -313,6 +313,17 @@ func refreshEngine(hw platform.Hardware) {
 	}
 }
 
+// describeVersion returns `git describe --tags` for dir with the "v" prefix
+// stripped (e.g. "1.35.0" at a tag, "1.35.0-2-gabc1234" past one), or "" when
+// git/tags are unavailable. Mirrors the Makefile's VERSION derivation.
+func describeVersion(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "describe", "--tags").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), "v")
+}
+
 func isGitClone(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
@@ -356,7 +367,17 @@ func rebuildFromSource() {
 	}
 	ui.Info("rebuilding winc from updated source...")
 	tmp := exe + ".new"
-	cmd := exec.Command("go", "build", "-ldflags", "-s -w", "-o", tmp, "./cmd/winc")
+	// Stamp the real version like `make release` does (git describe, "v" stripped)
+	// -- an unstamped rebuild keeps version.go's literal, which is only bumped at
+	// releases, so `winc -v` after an update would report the wrong version (a
+	// clone sat at "1.31.0" through three releases this way). winc-jobdar clones
+	// are NEVER stamped: describe reads master's tags (their literal carries the
+	// load-bearing "-jobdar.N" suffix the self-update guard keys on).
+	ldflags := "-s -w"
+	if v := describeVersion(paths.InstallDir()); v != "" && !strings.Contains(Version, "jobdar") {
+		ldflags += " -X winc/internal/cli.Version=" + v
+	}
+	cmd := exec.Command("go", "build", "-ldflags", ldflags, "-o", tmp, "./cmd/winc")
 	cmd.Dir = paths.InstallDir()
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {

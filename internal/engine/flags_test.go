@@ -398,6 +398,75 @@ func TestIsMTPFile(t *testing.T) {
 	}
 }
 
+// DFlash: a "<Family>-DFlash.gguf" head next to a model turns on draft-dflash
+// with the head as the draft model, composed with ngram into one --spec-type.
+// MTP keeps priority (both need --spec-draft-model), an MTP filename never
+// pairs a DFlash head, and dflash="off" disables it.
+func TestDFlashArgs(t *testing.T) {
+	dir := t.TempDir()
+	model := filepath.Join(dir, "Qwen3.5-4B-Q4_K_M.gguf")
+	head := filepath.Join(dir, "Qwen3.5-4B-DFlash.gguf")
+	for _, p := range []string{model, head} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Defaults() // dflash=auto, ngram=auto
+	hw := platform.Hardware{}
+
+	got := strings.Join(SpecArgs(&cfg, hw, model, "", true), " ")
+	for _, want := range []string{"--spec-type draft-dflash,ngram-simple", "--spec-draft-n-max 6", "--spec-draft-model " + head} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dflash launch missing %q: %q", want, got)
+		}
+	}
+	if strings.Count(got, "--spec-type") != 1 {
+		t.Errorf("exactly one --spec-type flag required, got %q", got)
+	}
+	// Another quant of the same family pairs the same head.
+	q8 := filepath.Join(dir, "Qwen3.5-4B-Q8_0.gguf")
+	if err := os.WriteFile(q8, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(SpecArgs(&cfg, hw, q8, "", true), " "); !strings.Contains(got, "draft-dflash") {
+		t.Errorf("q8 quant of the family should pair the head too, got %q", got)
+	}
+	// A different family does not pair it.
+	other := filepath.Join(dir, "Qwen3.5-9B-Q4_K_M.gguf")
+	if err := os.WriteFile(other, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(SpecArgs(&cfg, hw, other, "", true), " "); strings.Contains(got, "dflash") {
+		t.Errorf("9B must not pair a 4B head, got %q", got)
+	}
+	// An MTP model never picks up a DFlash head (MTP owns the draft slot).
+	mtp := filepath.Join(dir, "Qwen3.5-4B-MTP-Q4_K_M.gguf")
+	if err := os.WriteFile(mtp, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(SpecArgs(&cfg, hw, mtp, "", true), " "); strings.Contains(got, "dflash") {
+		t.Errorf("MTP model must keep MTP priority, got %q", got)
+	}
+	// includeMTP=false is the shed-the-draft rung: DFlash is shed with it.
+	if got := strings.Join(SpecArgs(&cfg, hw, model, "", false), " "); strings.Contains(got, "dflash") {
+		t.Errorf("the noMTP rung must shed DFlash too, got %q", got)
+	}
+	// Config off.
+	cfg.Performance.Dflash = "off"
+	if got := strings.Join(SpecArgs(&cfg, hw, model, "", true), " "); strings.Contains(got, "dflash") {
+		t.Errorf("dflash=off must disable it, got %q", got)
+	}
+	// Sizing: an engaged head reserves its weights + draft context.
+	cfg.Performance.Dflash = "auto"
+	if r := specReserveMB(&cfg, model); r < 1024 {
+		t.Errorf("engaged DFlash head should reserve VRAM, got %d", r)
+	}
+	cfg.Performance.Dflash = "off"
+	if r := specReserveMB(&cfg, model); r != 0 {
+		t.Errorf("disabled DFlash should reserve nothing, got %d", r)
+	}
+}
+
 // SpecArgs composes draft-mtp with the model-free ngram-simple drafter into a
 // single --spec-type (llama-server takes one flag; a repeat would drop one).
 func TestSpecArgs(t *testing.T) {
