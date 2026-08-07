@@ -44,13 +44,14 @@ func cmdCheck() int {
 	wg.Wait()
 	ui.Info("winc version    : %s", Version)
 	// A branch build is never "behind" a master release -- it deliberately tracks
-	// a different line, and the version comparison below is true by construction
-	// (1.31.0 != 1.31.0-jobdar.1). Reporting an upgrade here would advertise the
-	// exact action selfUpdatePrebuilt refuses: taking a master release binary
-	// would silently drop the eval profile jobfaro depends on.
+	// a different line. The explicit gate stays even though versionBehindTag also
+	// treats a -jobdar.N derivative of the CURRENT tag as not-behind: a branch
+	// version merged from an OLDER master (1.34.0-jobdar.1 vs v1.35.0) would
+	// still read "behind" there, and the right message for this branch is
+	// "update from the branch", never a master release advertisement.
 	if isJobdarBuild() {
 		ui.Info("winc-jobdar branch build - tracks the winc-jobdar branch, not master releases")
-	} else if wincTag != "" && strings.TrimPrefix(wincTag, "v") != Version {
+	} else if wincTag != "" && versionBehindTag(Version, wincTag) {
 		ui.Warn("newer winc available: %s (you have %s)", wincTag, Version)
 	}
 	ui.Good("llama.cpp latest : %s", latest)
@@ -311,6 +312,17 @@ func refreshEngine(hw platform.Hardware) {
 	} else {
 		ui.Good("engine refreshed")
 	}
+}
+
+// versionBehindTag reports whether a running version is BEHIND the latest
+// release tag. Equal is not behind — and neither is a git-describe suffix of
+// the same tag ("1.35.0-1-gabc" is one commit PAST v1.35.0, not before it;
+// stamped clone rebuilds produce exactly that form). A "-jobdar.N" suffix of
+// the tag is likewise not behind: that branch derives from the same release.
+// A plain != would advertise the release to builds that already contain it.
+func versionBehindTag(v, tag string) bool {
+	t := strings.TrimPrefix(tag, "v")
+	return v != t && !strings.HasPrefix(v, t+"-")
 }
 
 // describeVersion returns `git describe --tags` for dir with the "v" prefix

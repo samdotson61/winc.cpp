@@ -29,3 +29,22 @@ func TestVersionMatchesChangelog(t *testing.T) {
 	}
 	t.Fatal("no '## ' release heading found in CHANGELOG.md")
 }
+
+// versionBehindTag must not advertise a release to builds that already contain
+// it: describe-suffixed clone builds and jobdar derivatives of the same tag.
+func TestVersionBehindTag(t *testing.T) {
+	for _, c := range []struct {
+		v, tag string
+		behind bool
+	}{
+		{"1.34.0", "v1.35.0", true},             // genuinely old
+		{"1.35.0", "v1.35.0", false},            // exact release
+		{"1.35.0-1-gabc1234", "v1.35.0", false}, // one commit PAST the tag
+		{"1.35.0-jobdar.1", "v1.35.0", false},   // branch derivative of the release
+		{"1.34.0-5-gdef", "v1.35.0", true},      // describe of an OLDER tag
+	} {
+		if got := versionBehindTag(c.v, c.tag); got != c.behind {
+			t.Errorf("versionBehindTag(%q, %q) = %v, want %v", c.v, c.tag, got, c.behind)
+		}
+	}
+}
