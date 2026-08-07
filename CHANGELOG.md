@@ -3,6 +3,25 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.37.0 — 2026-08-07
+
+### Added
+- **`winc restart [model]` and `winc stop` — control the running server from any
+  terminal.** `winc serve` now records itself in a pidfile (`.winc-serve.json`:
+  PID, port, the exact invocation, child server PIDs). `winc restart` stops the
+  recorded serve and starts a fresh one in YOUR terminal — with no argument it
+  replays the exact recorded invocation (model and all flags); with a model it
+  starts that instead; with nothing running it simply starts. `winc stop` tears
+  the server down and is idempotent. Safety is absolute and mechanical: every
+  recorded PID carries a **process stamp** (executable name + OS start-time
+  token), and stop refuses to signal any process whose live stamp no longer
+  matches — a recycled PID, even one recycled into a different winc, is never
+  touched; a stale record is cleaned up and reported instead. Children are
+  reaped by the existing job-object (Windows) / parent-death (Linux) machinery
+  plus an explicit stamp-verified sweep (macOS has no parent-death signal).
+  Agent launches (`winc -s ...`) deliberately write no record: their server
+  belongs to the agent's own session and is never restartable from outside.
+
 ## v1.36.0 — 2026-08-07
 
 ### Added

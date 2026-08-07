@@ -77,6 +77,8 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 | `winc -s ... --noteam` | Disable team mode — run a single model |
 | `winc -s ... --reasoning <mode>` | Override reasoning mode for this launch |
 | `winc serve [--multi]` | Run the server(s)/router only (point your own client at it) |
+| `winc restart [model]` | Stop the running server (started in **any** terminal) and start it again here — same flags, or a new model |
+| `winc stop` | Stop the running server; only ever touches stamp-verified processes winc itself started |
 | `winc serve/-s ... --journal[=off]` | Override the journal (context virtualization) for this run |
 | `winc journal [ls\|show\|rm\|path]` | Inspect the conversation journal — plaintext, local, nothing auto-deleted |
 | `winc doctor` | Read-only health snapshot: hardware, engine, models (GGUF check), config, agents, ports, logs |
