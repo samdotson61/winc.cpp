@@ -18,6 +18,11 @@ All notable changes to winc.cpp, newest first. Each release is a single
 - Also in this release: the README caught up to v1.32–v1.35 (symmetric-q4
   starved KV and the mixed-pair trap, worker scheduler priority, the
   three-mechanism speculation stack, ngram/dflash config knobs).
+- Post-tag polish on master (clone installs get it immediately; prebuilt
+  binaries carry it from the next release): the comparison now orders versions
+  NUMERICALLY — a release-commit literal ahead of a not-yet-published tag
+  (1.35.1 while the API still says v1.35.0, the CI window) no longer reads
+  "behind," and 1.9.0 vs 1.10.0 compares 9 < 10 instead of lexicographically.
 
 ## v1.35.0 — 2026-08-07
 
