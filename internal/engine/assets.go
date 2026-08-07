@@ -19,7 +19,12 @@ var llamaBuildRe = regexp.MustCompile(`(?i)version:\s*(\d+)`)
 // InstalledLlamaTag returns the build tag of the installed llama-server (e.g. "b9550"),
 // or "" if it isn't installed or the version can't be read.
 func InstalledLlamaTag() string {
-	bin := LlamaServerPath()
+	return LlamaTagOf(LlamaServerPath())
+}
+
+// LlamaTagOf returns the build tag of the given llama-server binary (e.g.
+// "b9550"), or "" if bin is empty or the version can't be read.
+func LlamaTagOf(bin string) string {
 	if bin == "" {
 		return ""
 	}
@@ -36,8 +41,8 @@ const (
 	llamaRepo        = "ggml-org/llama.cpp"
 	swapRepo         = "mostlygeek/llama-swap"
 	wincRepo         = "samdotson61/winc.cpp"
-	llamaFallbackTag = "b9945" // verified 2026-07-09 (first fallback with the arm64 asset set)
-	swapFallbackTag  = "223"   // verified 2026-06-06 (release tag v223)
+	llamaFallbackTag = "b10298" // verified 2026-08-06 (asset set intact; loads + benches the CUDA roster)
+	swapFallbackTag  = "223"    // verified 2026-06-06 (release tag v223)
 )
 
 // LatestWincTag returns the newest winc.cpp release tag, or "" if it can't be reached.

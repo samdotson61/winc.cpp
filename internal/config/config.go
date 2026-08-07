@@ -195,7 +195,7 @@ gpu_layers = "auto"     # "auto" or integer (-ngl)
 context    = "optimal"
 batch      = "auto"
 flash_attn = true
-cache_type = "auto"     # KV cache: "auto" (q8_0; value side drops to q4_0 when the window is starved) | q8_0 | f16 | q4_0 | "k/v" pair e.g. "q8_0/q4_0". Needs flash_attn.
+cache_type = "auto"     # KV cache: "auto" (q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 | q4_0 | "k/v" pair e.g. "q8_0/q4_0" (mixed pairs are SLOW on CUDA prebuilts - no FA kernel). Needs flash_attn.
 threads    = "auto"
 max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
 

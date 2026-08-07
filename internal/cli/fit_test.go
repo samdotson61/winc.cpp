@@ -15,28 +15,34 @@ import (
 func TestLaunchFingerprint(t *testing.T) {
 	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 28000, GPUs: []platform.GPUDevice{{TotalMB: 16000}, {TotalMB: 12000}}}
 	cfg := config.Defaults()
-	base := launchFingerprint(&cfg, hw)
+	base := launchFingerprint(&cfg, hw, "b9672")
 
 	mode := cfg
 	mode.Performance.Context = "auto" // default is "optimal"
-	if launchFingerprint(&mode, hw) == base {
+	if launchFingerprint(&mode, hw, "b9672") == base {
 		t.Error("context optimal->auto must change the fingerprint")
 	}
 	par := cfg
 	par.Performance.ExtraServerArgs = []string{"--parallel", "2"}
-	if launchFingerprint(&par, hw) == base {
+	if launchFingerprint(&par, hw, "b9672") == base {
 		t.Error("--parallel must change the fingerprint (slot split changes sizing)")
 	}
 	lessVRAM := hw
 	lessVRAM.VRAMMB = 16000
 	lessVRAM.GPUs = hw.GPUs[:1]
-	if launchFingerprint(&cfg, lessVRAM) == base {
+	if launchFingerprint(&cfg, lessVRAM, "b9672") == base {
 		t.Error("a card vanishing must change the fingerprint")
 	}
 	unrelated := cfg
 	unrelated.General.Port = 9999
-	if launchFingerprint(&unrelated, hw) != base {
+	if launchFingerprint(&unrelated, hw, "b9672") != base {
 		t.Error("a non-sizing knob must not invalidate the remembered stepping")
+	}
+	if launchFingerprint(&cfg, hw, "b10298") == base {
+		t.Error("an engine bump must change the fingerprint (memos measured on the old build must re-measure, not replay)")
+	}
+	if launchFingerprint(&cfg, hw, "B9672 ") != base {
+		t.Error("engine tag must be case/space-normalized (same build must still hit the memo)")
 	}
 }
 

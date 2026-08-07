@@ -3,6 +3,41 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.33.0 — 2026-08-06
+
+### Fixed
+- **The starved-KV downshift no longer collapses prompt processing 19x.** Since
+  v1.14.0, `cache_type = "auto"` on a starved card downshifted to the
+  asymmetric `q8_0/q4_0` (key/value) pair — and upstream's prebuilt CUDA
+  binaries ship without flash-attention kernels for MIXED K/V quant types
+  (`GGML_CUDA_FA_ALL_QUANTS` is off), so that pair silently falls back to
+  CPU-side attention. MEASURED (4B, 5070 Ti, both b9672 and b10298 — i.e. a
+  longstanding kernel gap, not a regression): prompt processing 442 tok/s vs
+  8550 for matched q8_0, decode −15%. Worse, 442 still clears the
+  `ppHealthyFloor=150` sysmem gate, so nothing downstream ever caught it. The
+  downshift now picks SYMMETRIC `q4_0` — matched pairs have kernels on every
+  backend: prompt processing restored (8170 tok/s), decode +15% vs the pair,
+  and 2x the q8-sized window instead of ~1.3x. Quality is no longer the
+  blocker it was when the asymmetric design shipped: upstream's Hadamard KV
+  rotation (merged Apr 2026, in every engine winc has pinned since) makes
+  4-bit keys near-lossless — MEASURED perplexity (4B, wikitext-2, 40 chunks):
+  f16 8.2529, q8_0 8.2419, q4_0 8.2764 (+0.3% vs f16, within the estimate's
+  error bars). Explicit `cache_type` values still pass through untouched,
+  including explicit mixed pairs — if you set one on a CUDA prebuilt, know
+  that it walks off this cliff.
+- **Launch memos re-measure after an engine update.** The launch fingerprint
+  now includes the llama-server build tag, so a stored stepping (window, KV
+  cache, placement, decode speed) measured on an older engine misses and
+  re-measures once instead of replaying a possibly-stale placement forever.
+  Existing `.winc-launch` entries all miss once after this update — that is
+  the fix working, not a bug.
+
+### Changed
+- Offline engine fallback tag bumped b9945 → b10298 (verified 2026-08-06:
+  asset set intact, loads and benches the CUDA roster). Baseline check on the
+  5070 Ti: b10298 ≈ b9672 within ±2–4% on pp2048/tg128 at depth 0 and 8192
+  across the 4B / E2B / 9B / 26B-A4B roster — no regression, no windfall.
+
 ## v1.32.0 — 2026-08-06
 
 ### Changed

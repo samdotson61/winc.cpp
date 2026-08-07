@@ -665,12 +665,18 @@ func FFNSpillMB(modelPath string, k int) int {
 }
 
 // EffectiveCacheType resolves cache_type = "auto": q8_0 normally, downshifted to
-// the ASYMMETRIC "q8_0/q4_0" (key cache / value cache) when the q8-sized window
-// would be starved (< StarvedCtxTokens). Keys are far more sensitive to
-// quantization than values (4-bit keys measure ~+10% perplexity -- past the
-// usefulness line for coding -- while 4-bit values are near-lossless), so the
-// downshift halves only the value side: ~1.3x the window at minimal quality cost.
-// Explicit values pass through untouched, including an explicit "k/v" pair.
+// SYMMETRIC "q4_0" when the q8-sized window would be starved (< StarvedCtxTokens):
+// 2x the window at a measured ~+0.3% perplexity (4B, wikitext, b10298 -- within
+// the estimate's error bars; upstream's Hadamard KV rotation, merged Apr 2026,
+// is what retired the old "4-bit keys cost ~+10% PPL" basis for an asymmetric
+// q8_0/q4_0 pair). The asymmetric pair is BANNED as an auto choice: upstream
+// prebuilt CUDA binaries ship without FA kernels for MIXED K/V quant types
+// (GGML_CUDA_FA_ALL_QUANTS off), so q8_0/q4_0 silently falls back to CPU
+// attention -- MEASURED ~19x slower prompt processing (442 vs 8550 tok/s, 4B,
+// 5070 Ti, b9672 AND b10298) and -15% decode, and at 442 PP it still passes the
+// ppHealthyFloor gate, so nothing downstream catches it. Matched pairs have
+// kernels on every backend. Explicit values pass through untouched, including
+// an explicit "k/v" pair (the changelog documents the trap).
 // Quantized KV needs flash attention; without it the cache is f16 regardless.
 func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath string, modelFileMB int, expertsOffloaded bool) string {
 	ct := strings.ToLower(strings.TrimSpace(cfg.Performance.CacheType))
@@ -696,7 +702,7 @@ func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath stri
 	// target: the bump reports a window the KV budget can't actually hold, which
 	// would hide starvation from the exact cards the downshift exists for.
 	if !expertsOffloaded && rawCtxTokens(cfg, hw, "q8_0", modelPath, modelFileMB) < StarvedCtxTokens {
-		return "q8_0/q4_0"
+		return "q4_0"
 	}
 	return "q8_0"
 }
