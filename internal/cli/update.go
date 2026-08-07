@@ -294,14 +294,44 @@ func refreshEngine(hw platform.Hardware) {
 }
 
 // versionBehindTag reports whether a running version is BEHIND the latest
-// release tag. Equal is not behind — and neither is a git-describe suffix of
-// the same tag ("1.35.0-1-gabc" is one commit PAST v1.35.0, not before it;
-// stamped clone rebuilds produce exactly that form). A "-jobdar.N" suffix of
-// the tag is likewise not behind: that branch derives from the same release.
-// A plain != would advertise the release to builds that already contain it.
+// release tag — by NUMERIC X.Y.Z comparison, not string equality. Anything at
+// or past the tag's base version is current: the exact release, a git-describe
+// suffix of it ("1.35.0-1-gabc" is one commit PAST v1.35.0 — stamped clone
+// rebuilds produce that form), a "-jobdar.N" derivative, and a release-commit
+// literal the releases API hasn't published yet ("1.35.1" while the API still
+// says v1.35.0 during the CI window). A plain != advertised the release to
+// every one of those. Unparsable versions fall back to the suffix rules.
 func versionBehindTag(v, tag string) bool {
 	t := strings.TrimPrefix(tag, "v")
+	vb, vok := versionBase(v)
+	tb, tok := versionBase(t)
+	if vok && tok {
+		for i := 0; i < 3; i++ {
+			if vb[i] != tb[i] {
+				return vb[i] < tb[i]
+			}
+		}
+		return false // same base: any suffix (describe / -jobdar.N) is current
+	}
 	return v != t && !strings.HasPrefix(v, t+"-")
+}
+
+// versionBase parses the leading X.Y.Z of a version string ("1.35.0-1-gabc"
+// -> [1 35 0]); ok=false when the front of the string isn't three numbers.
+func versionBase(s string) (base [3]int, ok bool) {
+	head, _, _ := strings.Cut(s, "-")
+	parts := strings.Split(head, ".")
+	if len(parts) != 3 {
+		return base, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return base, false
+		}
+		base[i] = n
+	}
+	return base, true
 }
 
 // describeVersion returns `git describe --tags` for dir with the "v" prefix
