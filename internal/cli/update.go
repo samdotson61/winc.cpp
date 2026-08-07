@@ -43,7 +43,7 @@ func cmdCheck() int {
 	go func() { defer wg.Done(); inst = engine.InstalledLlamaTag() }()
 	wg.Wait()
 	ui.Info("winc version    : %s", Version)
-	if wincTag != "" && strings.TrimPrefix(wincTag, "v") != Version {
+	if wincTag != "" && versionBehindTag(Version, wincTag) {
 		ui.Warn("newer winc available: %s (you have %s)", wincTag, Version)
 	}
 	ui.Good("llama.cpp latest : %s", latest)
@@ -291,6 +291,17 @@ func refreshEngine(hw platform.Hardware) {
 	} else {
 		ui.Good("engine refreshed")
 	}
+}
+
+// versionBehindTag reports whether a running version is BEHIND the latest
+// release tag. Equal is not behind — and neither is a git-describe suffix of
+// the same tag ("1.35.0-1-gabc" is one commit PAST v1.35.0, not before it;
+// stamped clone rebuilds produce exactly that form). A "-jobdar.N" suffix of
+// the tag is likewise not behind: that branch derives from the same release.
+// A plain != would advertise the release to builds that already contain it.
+func versionBehindTag(v, tag string) bool {
+	t := strings.TrimPrefix(tag, "v")
+	return v != t && !strings.HasPrefix(v, t+"-")
 }
 
 // describeVersion returns `git describe --tags` for dir with the "v" prefix
