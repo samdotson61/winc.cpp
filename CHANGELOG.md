@@ -3,6 +3,12 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.35.1-jobdar.2 — 2026-08-07 (winc-jobdar branch)
+
+Merge of master's post-v1.35.1 numeric version ordering (`versionBehindTag`
+compares X.Y.Z numerically; suffix rules kept as fallback). `eval.go`
+byte-identical; check-only behavior.
+
 ## 1.35.1-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.35.1** (`winc check` understands ahead-of-tag versions).
@@ -26,6 +32,11 @@ master-release advertisement.
 - Also in this release: the README caught up to v1.32–v1.35 (symmetric-q4
   starved KV and the mixed-pair trap, worker scheduler priority, the
   three-mechanism speculation stack, ngram/dflash config knobs).
+- Post-tag polish on master (clone installs get it immediately; prebuilt
+  binaries carry it from the next release): the comparison now orders versions
+  NUMERICALLY — a release-commit literal ahead of a not-yet-published tag
+  (1.35.1 while the API still says v1.35.0, the CI window) no longer reads
+  "behind," and 1.9.0 vs 1.10.0 compares 9 < 10 instead of lexicographically.
 ## 1.35.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.35.0** (DFlash draft heads + honest clone versions).

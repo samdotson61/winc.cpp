@@ -42,6 +42,9 @@ func TestVersionBehindTag(t *testing.T) {
 		{"1.35.0-1-gabc1234", "v1.35.0", false}, // one commit PAST the tag
 		{"1.35.0-jobdar.1", "v1.35.0", false},   // branch derivative of the release
 		{"1.34.0-5-gdef", "v1.35.0", true},      // describe of an OLDER tag
+		{"1.35.1", "v1.35.0", false},            // release literal ahead of a not-yet-published tag
+		{"1.36.0-2-gaaa", "v1.35.1", false},     // describe past a NEWER base
+		{"1.9.0", "v1.10.0", true},              // numeric, not lexicographic (9 < 10)
 	} {
 		if got := versionBehindTag(c.v, c.tag); got != c.behind {
 			t.Errorf("versionBehindTag(%q, %q) = %v, want %v", c.v, c.tag, got, c.behind)
