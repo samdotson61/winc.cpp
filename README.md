@@ -64,7 +64,7 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 |---------|--------------|
 | `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
-| `winc -d <alias> [-y]` | Download a catalogue model (offers the MTP head for Gemma 4; `-y` auto-accepts) |
+| `winc -d <alias> [-y]` | Download a catalogue model (offers the MTP head for Gemma 4 and the DFlash head for Qwen3.5 4B/9B; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
 | `winc -s` | Start the **last used** agent on the **last used** model (every successful agent start updates the defaults) |
@@ -200,7 +200,12 @@ RAM** — smallest-first, dropping the largest first, down to just the 0.8B on a
 and only falls back to a single model when not even the smallest worker fits. On a
 small-RAM box (≤16GB) winc also **halves each worker's parallel slots while keeping its
 context window**, so every agent gets double the context — fewer overflows, fewer
-escalations, and less CPU contention on the hardware that feels them most. `--noteam`
+escalations, and less CPU contention on the hardware that feels them most. On
+discrete-GPU and CPU-only machines the workers also run at **reduced scheduler
+priority** (below-normal / nice +10), so under contention the main model's host threads
+always win — measured 9.8% of main-model decode was going to worker contention, and an
+idle main model still leaves worker throughput untouched (unified-memory Macs pin
+workers to the efficiency cores instead — the measured fix there). `--noteam`
 forces a single model; a nano main model stays single automatically.
 
 By default (`subagents = "dynamic"`) every subagent — Task tool **and** Workflow fan-out — is
@@ -353,13 +358,15 @@ end of this section only exist if you want to override a decision.
 | **Multi-GPU** | Detects **every** GPU (not just the first); the memory budget is the **combined** VRAM, and the engine spreads layers across all cards by each one's free VRAM at load | A 16 GB + 12 GB pair is sized as 28 GB — a 22 GB MoE that needed expert-offload on one card runs **fully on GPU** across two, at a much larger context |
 | **MoE expert offload** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU but parks the **expert weights in RAM** (`--cpu-moe`), freeing VRAM for a much larger context | A 35B-A3B runs near GPU speed on 12 GB; on a tight 16 GB fit it trades a little speed for a ~32k→~100k+ context |
 | **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and sets the compaction trigger to leave **max(8k, window/8) tokens of headroom** — room for the in-flight turn *plus* the compaction summary itself. If a session still overflows, the router **trims the oldest transcript messages out of the compaction request** so the summary completes instead of truncating mid-write | Long sessions auto-compact and keep going; no more overflow → broken-summary → overflow death loop |
-| **Flash attention + speed-aware KV cache** | Enables `--flash-attn` and auto-picks the KV type: **f16 when it still reaches the context ceiling** (measured ~9% faster decode / ~11% faster prompt processing than q8, free when the window is capped either way), else **q8_0** to keep the window, else a q8_0/q4_0 downshift when a card is starved | The speed of f16 on roomy setups without ever trading away context on tight ones |
-| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with an asymmetric q8_0/q4_0 KV cache** — keys keep full q8 precision (4-bit keys measurably degrade coding), only values compress — applied to the main *and* MTP draft caches, keeping the widest window that loads, memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
+| **Flash attention + speed-aware KV cache** | Enables `--flash-attn` and auto-picks the KV type: **f16 when it still reaches the context ceiling** (measured ~9% faster decode / ~11% faster prompt processing than q8, free when the window is capped either way), else **q8_0** to keep the window, else a symmetric q4_0 downshift when a card is starved (mixed k/v pairs are never auto-picked: upstream CUDA prebuilts have no flash-attention kernel for them and silently fall back to CPU attention, ~19x slower prompt processing) | The speed of f16 on roomy setups without ever trading away context on tight ones |
+| **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with a symmetric q4_0 KV cache** (~2× the q8 window at a measured ~+0.3% perplexity — the engine's Hadamard KV rotation made 4-bit keys near-lossless) — applied to the main *and* draft caches, keeping the widest window that loads, memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
 | **External drafts: explicit-only** | The dense 0.8B auto-pair is retired — measured a decode **loss** on every backend tested (CUDA 5070 Ti: −43% code / −57% chat at 67% acceptance; Metal: 0% best case; CPU: halved): the draft's own serial generation costs more than batch verification saves. Set `draft_model` in `winc.toml` to force one anyway | No silent slowdown from a "speedup" — measured-no, documented in the CHANGELOG |
 | **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine) | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
+| **ngram speculation (model-free, default on)** | Every non-Metal launch adds `ngram-simple` to the speculative types: drafts come from n-grams already seen in the prompt + generation, verified by the model itself — no draft model, no VRAM, output-exact | Agentic coding constantly re-emits files, diffs and JSON: **4.4–7.2× decode** on re-emission/edit turns (4B 181→1103 tok/s), with **zero measured cost** on fresh generation; `ngram = "off"` opts out |
+| **DFlash draft heads (Qwen3.5 4B/9B)** | A small per-model drafter head (the z-lab line) offered at download and paired automatically at launch, composed with ngram into one spec-type; MTP models keep their own heads | The one case ngram can't speed up: **fresh generation** — measured **+57% on the 4B** (178→280 tok/s) and **2× on the 9B** (120→240); `dflash = "off"` opts out |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
 ### MoE expert offload, in one line
@@ -403,6 +410,8 @@ draft_model = ""      # "" = off; or a draft GGUF filename to force external dra
 
 # Multi-Token Prediction: auto-on for *-mtp model variants (built-in draft heads).
 mtp = "auto"          # "auto" (on for MTP models, engine permitting) | "off"
+ngram = "auto"        # "auto" (model-free ngram speculation, non-Metal) | "off"
+dflash = "auto"       # "auto" (DFlash head speculation when the head is downloaded, non-Metal) | "off"
 mtp_draft_max = 2     # tokens drafted per step (--spec-draft-n-max)
 
 # Escape hatch: any extra llama-server flags, appended verbatim.
@@ -444,18 +453,25 @@ older engines just run without it).
 that doesn't cost window. When f16 still reaches the context ceiling — roomy VRAM, the
 common case for the small models these tiers target — it uses **f16** (measured ~9%
 faster decode / ~11% faster prompt processing than q8, and free because the window is
-capped either way). When f16 would shrink the window it uses **q8_0**, and it drops the
-**value** cache to q4_0 (keys stay q8_0; they're the quantization-sensitive side)
-whenever even the q8_0 window would come up short — the launch probe verifies the wider
-window actually loads. Workers always pin q8_0 — small models suffer most from KV
-quantization. Set `cache_type` to `q8_0` / `f16` / `q4_0` (or any `"k/v"` pair) to force
-a layout.
+capped either way). When f16 would shrink the window it uses **q8_0**, and it drops to **symmetric q4_0**
+(~2× the window at a measured ~+0.3% perplexity — the engine's Hadamard KV rotation made
+4-bit keys near-lossless) whenever even the q8_0 window would come up short — the launch
+probe verifies the wider window actually loads. Auto never picks a MIXED k/v pair:
+upstream CUDA prebuilts ship no flash-attention kernel for mixed types and silently fall
+back to CPU attention (~19× slower prompt processing). Workers always pin q8_0 — small
+models suffer most from KV quantization. Set `cache_type` to `q8_0` / `f16` / `q4_0` to
+force a layout (an explicit `"k/v"` pair still passes through, cliff and all).
 
-**Speculative decoding is CUDA/Vulkan-only.** On Metal it's a measured loss (MTP -8% to
--38% by draft depth; an external draft ~0% for a wasted model load), because the backend
-doesn't get the batch-verification parallelism drafting needs — so winc runs MTP models
-plain there and never auto-pairs a draft. On a dedicated GPU, both stay on (their design
-target).
+**Three speculation mechanisms, composed automatically (CUDA/Vulkan-only).** Every
+launch stacks what the model supports into one spec-type: **MTP heads** (Qwen `*-mtp`
+variants, Gemma 4 external heads), **DFlash heads** (Qwen3.5 4B/9B — measured +57% to
++100% on fresh generation), and **model-free ngram speculation** (default on for every
+model — measured 4.4–7.2× on the file re-emission and edit turns agentic coding is made
+of, at zero cost on fresh output). Drafts are always verified by the main model, so
+output is unaffected by construction. On Metal all of it stays off: speculation there is
+a measured loss (MTP -8% to -38% by draft depth; an external draft ~0% for a wasted
+model load), because the backend doesn't get the batch-verification parallelism drafting
+needs.
 
 Run `winc detect` to see exactly what `winc` resolved for your machine (backend, VRAM,
 context, MoE offload, recommended tier).
