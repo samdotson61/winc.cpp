@@ -111,9 +111,9 @@ func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serv
 		}
 	}
 	args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
-	if !noMTP {
-		args = append(args, engine.MTPArgs(cfg, hw, modelPath, serverBin)...) // MTP variant -> --spec-type draft-mtp (if supported)
-	}
+	// Speculative decoding: draft-mtp (when the model has heads and !noMTP)
+	// composed with the model-free ngram-simple drafter into ONE --spec-type.
+	args = append(args, engine.SpecArgs(cfg, hw, modelPath, serverBin, !noMTP)...)
 	lastBench = benchResult{}
 	proc, err := server.Start(serverBin, args, logPath)
 	if err != nil {

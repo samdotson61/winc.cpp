@@ -398,6 +398,40 @@ func TestIsMTPFile(t *testing.T) {
 	}
 }
 
+// SpecArgs composes draft-mtp with the model-free ngram-simple drafter into a
+// single --spec-type (llama-server takes one flag; a repeat would drop one).
+func TestSpecArgs(t *testing.T) {
+	cfg := config.Defaults() // mtp=auto, ngram=auto
+	hw := platform.Hardware{}
+	// MTP model: the two types merge into one comma list.
+	got := strings.Join(SpecArgs(&cfg, hw, "x-MTP.gguf", "", true), " ")
+	if !strings.Contains(got, "--spec-type draft-mtp,ngram-simple") {
+		t.Errorf("MTP+ngram should merge into one --spec-type, got %q", got)
+	}
+	if strings.Count(got, "--spec-type") != 1 {
+		t.Errorf("exactly one --spec-type flag required, got %q", got)
+	}
+	// Non-MTP model: ngram alone.
+	got = strings.Join(SpecArgs(&cfg, hw, "plain.gguf", "", true), " ")
+	if got != "--spec-type ngram-simple" {
+		t.Errorf("non-MTP model should get ngram-simple alone, got %q", got)
+	}
+	// noMTP launches (includeMTP=false) still get the ngram drafter.
+	got = strings.Join(SpecArgs(&cfg, hw, "x-MTP.gguf", "", false), " ")
+	if got != "--spec-type ngram-simple" {
+		t.Errorf("includeMTP=false should still allow ngram, got %q", got)
+	}
+	// ngram=off restores the pure MTP behavior.
+	cfg.Performance.Ngram = "off"
+	got = strings.Join(SpecArgs(&cfg, hw, "x-MTP.gguf", "", true), " ")
+	if !strings.Contains(got, "--spec-type draft-mtp ") || strings.Contains(got, "ngram") {
+		t.Errorf("ngram=off should yield MTP flags only, got %q", got)
+	}
+	if a := SpecArgs(&cfg, hw, "plain.gguf", "", true); a != nil {
+		t.Errorf("ngram=off + non-MTP model should yield nil, got %v", a)
+	}
+}
+
 func TestMTPArgs(t *testing.T) {
 	// serverBin "" skips the support probe so this stays a pure config/filename test.
 	cfg := config.Defaults() // mtp=auto, mtp_draft_max=2, cache auto (unknown size -> q8_0)

@@ -175,23 +175,27 @@ func IsMTPFile(path string) bool { return isMTPFile(path) }
 
 var (
 	mtpProbeMu sync.Mutex
-	mtpProbe   = map[string]bool{}
+	mtpProbe   = map[string]string{} // bin path -> its --help text
 )
 
-// serverSupportsMTP reports whether a llama-server binary understands the MTP flag.
-// Result is cached per binary path (--help is cheap but we may ask several times).
-func serverSupportsMTP(bin string) bool {
+// serverSupportsMTP / serverSupportsNgram report whether a llama-server binary
+// understands the respective --spec-type. The --help text is cached per binary
+// path (--help is cheap but we may ask several times per launch).
+func serverSupportsMTP(bin string) bool   { return serverHelpContains(bin, "draft-mtp") }
+func serverSupportsNgram(bin string) bool { return serverHelpContains(bin, "ngram-simple") }
+
+func serverHelpContains(bin, needle string) bool {
 	mtpProbeMu.Lock()
 	defer mtpProbeMu.Unlock()
-	if v, ok := mtpProbe[bin]; ok {
-		return v
+	help, ok := mtpProbe[bin]
+	if !ok {
+		cmd := exec.Command(bin, "--help")
+		cmd.Env = mtpProbeEnv(bin)
+		out, _ := cmd.CombinedOutput()
+		help = string(out)
+		mtpProbe[bin] = help
 	}
-	cmd := exec.Command(bin, "--help")
-	cmd.Env = mtpProbeEnv(bin)
-	out, _ := cmd.CombinedOutput()
-	ok := strings.Contains(string(out), "draft-mtp")
-	mtpProbe[bin] = ok
-	return ok
+	return strings.Contains(help, needle)
 }
 
 // mtpProbeEnv makes co-located shared libraries loadable for the --help probe.
@@ -266,6 +270,48 @@ func mtpHeadFor(modelPath string) string {
 		}
 	}
 	return ""
+}
+
+// SpecArgs returns the full speculative-decoding flags for a launch: the MTP
+// flags (when includeMTP and the model has heads) composed with the model-free
+// ngram-simple drafter (when the backend and engine support it). llama-server
+// takes ONE --spec-type flag with a comma list, so the two are merged here
+// rather than appended separately (a repeated flag would drop one of them).
+//
+// ngram-simple drafts from n-grams already seen in the prompt + generation --
+// no draft model, no VRAM, no artifacts. MEASURED (b10298, 5070 Ti, temp 0 AND
+// 0.7, agent-shaped workloads): 4.4-7.2x decode on file re-emission and
+// scattered-edit tasks across Qwen3.5-4B/9B and gemma-4-26B-A4B (MoE), with NO
+// measurable cost on fresh generation -- and it composes: draft-mtp,ngram-simple
+// on the 26B-A4B beat both baseline (+39% fresh) and either type alone.
+// Metal is excluded pending its own measurement leg (precedent: v1.27.0
+// measured every draft-model mechanism a loss there).
+func SpecArgs(cfg *config.Config, hw platform.Hardware, modelPath, serverBin string, includeMTP bool) []string {
+	var args []string
+	if includeMTP {
+		args = MTPArgs(cfg, hw, modelPath, serverBin)
+	}
+	if !ngramActive(cfg, serverBin) {
+		return args
+	}
+	if len(args) >= 2 && args[0] == "--spec-type" {
+		args[1] += ",ngram-simple"
+		return args
+	}
+	return append(args, "--spec-type", "ngram-simple")
+}
+
+// ngramActive reports whether the ngram-simple drafter should engage: config
+// permits, the backend isn't Metal (unmeasured there), and the engine knows the
+// type ("" serverBin skips the probe).
+func ngramActive(cfg *config.Config, serverBin string) bool {
+	if strings.EqualFold(strings.TrimSpace(cfg.Performance.Ngram), "off") {
+		return false
+	}
+	if CurrentBackend() == "metal" {
+		return false
+	}
+	return serverBin == "" || serverSupportsNgram(serverBin)
 }
 
 // MTPArgs returns the Multi-Token-Prediction flags, or nil when the model has no
