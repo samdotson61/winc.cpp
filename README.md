@@ -261,9 +261,9 @@ losslessly drops optional `input_examples`. Set
 | Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b, granite4.2-3b |
-| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, qwen3.5-9b, lfm2.5-8b-a1b (fastest), omnicoder-9b, granite4.2-8b, gemma4-12b, gemma4-e4b |
-| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, muse-glimmer-30b, qwen3.6-27b |
-| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, muse-glimmer-30b-q4, qwen3.6-27b-q5 |
+| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, qwen3.5-9b, lfm2.5-8b-a1b (fastest), granite4.2-8b, gemma4-12b, gemma4-e4b |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, muse-glimmer-30b, gemma4-31b |
+| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, muse-glimmer-30b-q4 |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
 
 The catalogue advertises **only models released in 2026** — the Qwen3.5 / 3.6 / 3.8 and
@@ -328,7 +328,6 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | ★ ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
 | qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
-| omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | older coding specialist — measured weakest |
 | granite4.2-8b | 8B | 5.2 GB | Aug 2026 | — | ~24-34 / ~7-11 | IBM agentic-RL tool-caller (unmeasured here) |
 | gemma4-12b | 12B | 7.1 GB (Q4) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist (8+ GB) |
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
@@ -339,7 +338,8 @@ GPU is ~5-10x faster than CPU. **For coding, prefer the Qwen3.5 line or `ornith-
 MEASURED (same M4 Pro, 5 coding tasks whose hidden tests were validated against
 reference solutions first, each model served through winc with its engine identity
 asserted): `lfm2.5-8b-a1b` **5/5**, `ornith-9b` **5/5**, `qwen3.5-9b` **5/5**,
-`omnicoder-9b` **3/5**. Correctness ties three ways, so the tiebreakers are speed and
+OmniCoder-9B **3/5** (pruned from the catalogue in v1.40.0 on that result). Correctness
+ties three ways, so the tiebreakers are speed and
 verbosity — solving the same task took LFM2.5 **1,033** output tokens, Ornith 2,232,
 and the 9B 6,323. Five tasks is a small sample: read it as "no reason to prefer
 OmniCoder", not as a ranking of the top three.
@@ -450,8 +450,6 @@ model itself — no second model to download or keep in VRAM. For Qwen3.6 it's a
 `--spec-type draft-mtp` automatically when it loads, **after probing that your engine
 supports the flag** (older engines just run without it):
 
-- `winc -d qwen3.6-27b-mtp` / `winc -d qwen3.6-27b-q5-mtp` — the dense 27B coder
-  (~1.4–2.2×; the Q5 build for 24 GB+ GPUs / 32 GB+ Macs)
 - `winc -d qwen3.6-35b-mtp` / `winc -d qwen3.6-35b-q4-mtp` — the 35B MoE
   (~1.15–1.25× — the only speculative speedup that helps a MoE)
 - `winc -d qwen3.5-9b-mtp` — the small-tier 9B, faster than its external 0.8B draft

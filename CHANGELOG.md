@@ -90,6 +90,19 @@ read the one it had. Measured on an M4 Pro (18 GB unified, Metal) with
   left at b9651 on purpose — it is the Jobfaro eval backend and a refresh
   is Sam's call.
 
+### Removed
+- **Nine superseded entries pruned** (44 → 35): the whole `qwen3.6-27b` dense
+  line (`qwen3.6-27b` / `-q5` / `-q6` and the four `-mtp` variants —
+  Qwen3.8-27B is the same architecture with newer weights and the MTP head
+  in every quant, so the separate-MTP-repo pattern for a dense 27B is gone
+  with it), `qwen3.5-35b-a3b` (the Feb-2026 MoE its Apr-2026 successor
+  `qwen3.6-35b` has been the tier default over since v1.2x), and
+  `omnicoder-9b` (MEASURED 3/5 on the coding set in v1.29.0 against 5/5 for
+  `ornith-9b`, the newer tune of the same base). Files already downloaded
+  keep working — `winc <path>` launches any GGUF — and `winc update`
+  repoints a `default_model` that named a pruned alias. The measurements
+  that justified the OmniCoder pruning stay in the README history.
+
 ### Changed
 - **Offline engine fallback pinned to b10621** (was b10298): the build
   upstream's v0.3.0 `nightly-tag.txt` names, verified loading and benching
