@@ -9,12 +9,7 @@ import "winc/internal/ui"
 //
 // No "v" prefix -- the update check compares against tags with the "v"
 // stripped. A plain `go build` keeps this default.
-// The "-jobdar.N" suffix is LOAD-BEARING, not cosmetic: selfUpdatePrebuilt
-// refuses to replace a build whose Version contains "jobdar" (update.go), which
-// is what stops a jobfaro backend from silently becoming a master release.
-// The suffix also keeps `winc update`'s source rebuild from stamping master's
-// git-describe over it (update.go skips stamping when the literal says jobdar).
-var Version = "1.39.0-jobdar.1"
+var Version = "1.40.0-jobdar.1"
 
 func cmdVersion() int {
 	ui.Say("winc %s", Version)

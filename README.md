@@ -260,15 +260,19 @@ losslessly drops optional `input_examples`. Set
 
 | Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
-| `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b |
-| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, qwen3.5-9b, lfm2.5-8b-a1b (fastest), omnicoder-9b, gemma4-12b, gemma4-e4b |
-| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.6-27b |
-| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.6-27b-q5 |
+| `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b, granite4.2-3b |
+| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, qwen3.5-9b, lfm2.5-8b-a1b (fastest), omnicoder-9b, granite4.2-8b, gemma4-12b, gemma4-e4b |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, muse-glimmer-30b, qwen3.6-27b |
+| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, muse-glimmer-30b-q4, qwen3.6-27b-q5 |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
 
-The catalogue advertises **only models released in 2026** — the Qwen3.5 / Qwen3.6 and
-Gemma 4 lines, with full tool-calling down to 0.8B. It's refreshed over time via
-`winc update` (see below), so older rosters are pruned as better models land.
+The catalogue advertises **only models released in 2026** — the Qwen3.5 / 3.6 / 3.8 and
+Gemma 4 lines, Meta's Muse Glimmer and IBM's Granite 4.2, with full tool-calling down to
+0.8B. It's refreshed over time via `winc update` (see below), so older rosters are pruned
+as better models land. Entries the maintainer has not yet run through winc's coding set
+say so in their `winc ls` note (the Aug 2026 additions — Qwen3.8-27B, Muse Glimmer,
+Granite 4.2 — are published-benchmark picks until measured; the tier defaults are
+unchanged). Muse Glimmer needs an engine from b10353 or later (`winc update`).
 
 > **Apple Silicon note:** unified memory is shared with the OS and the GPU can only use
 > ~75% of it, so winc budgets ~72% of your RAM when picking a tier — e.g. a 24 GB Mac
@@ -315,6 +319,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | gemma4-e2b | 2.3B eff | 2.9 GB | Mar 2026 | ~44 | ~50-70 / ~12-20 | general, multimodal |
 | qwen3.5-2b | 2B | 1.2 GB | Feb 2026 | — | ~80-110 / ~22-36 | fastest small coder |
 | qwen3.5-0.8b | 0.8B | 0.5 GB | Mar 2026 | — | ~120-160 / ~40-60 | phones / edge |
+| granite4.2-3b | 3B | 2.2 GB | Aug 2026 | — | ~55-75 / ~14-22 | IBM edge tool-caller, thinking switch (unmeasured here) |
 
 **`small` — 6-8 GB (RTX 3050 / RX 6600-class) or 8-16 GB unified**
 
@@ -324,6 +329,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
 | omnicoder-9b | 9B | 5.9 GB | Mar 2026 | strong | ~22-32 / ~6-10 | older coding specialist — measured weakest |
+| granite4.2-8b | 8B | 5.2 GB | Aug 2026 | — | ~24-34 / ~7-11 | IBM agentic-RL tool-caller (unmeasured here) |
 | gemma4-12b | 12B | 7.1 GB (Q4) | Jun 2026 | ~72 | ~20-30 / ~5-9 | newest; multimodal generalist (8+ GB) |
 | gemma4-e4b | 4.5B eff | 5.0 GB | Apr 2026 | ~52 | ~30-45 / ~9-15 | fast, multimodal |
 
@@ -449,6 +455,12 @@ supports the flag** (older engines just run without it):
 - `winc -d qwen3.6-35b-mtp` / `winc -d qwen3.6-35b-q4-mtp` — the 35B MoE
   (~1.15–1.25× — the only speculative speedup that helps a MoE)
 - `winc -d qwen3.5-9b-mtp` — the small-tier 9B, faster than its external 0.8B draft
+
+**Qwen3.8 bakes its MTP head into every standard quant** — there is no separate `-mtp`
+variant. winc reads `nextn_predict_layers` from the GGUF metadata (not the filename) and
+turns `draft-mtp` on for `qwen3.8-27b` / `-q4` / `-q5` wherever MTP is active (CUDA,
+Vulkan, CPU; off on Metal like every other speculation), so a downloaded Qwen3.8 file is
+already the fast variant.
 
 **Gemma 4 ships its MTP heads as a separate small file** (0.1–0.5 GB) instead of
 baking them in. `winc -d <gemma model>` offers the head alongside the model; once

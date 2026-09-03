@@ -163,6 +163,63 @@ func readExpertCount(path string) (int, error) {
 	return 0, nil // read cleanly, no expert_count key -> dense
 }
 
+var mtpLayersCache sync.Map // modelPath -> int (0 = none / unreadable)
+
+// MTPLayers returns the count of Multi-Token-Prediction layers baked into a
+// GGUF ("<arch>.nextn_predict_layers"), or 0 when the model has none or the
+// metadata can't be read. Qwen3.8 ships its MTP head inside every standard
+// quant (no separate "-MTP" repo), so the filename says nothing -- the
+// metadata does. Read once per path; the header walk is cheap and cached.
+func MTPLayers(path string) int {
+	if v, ok := mtpLayersCache.Load(path); ok {
+		return v.(int)
+	}
+	n, err := readMTPLayers(path)
+	if err != nil || n < 0 {
+		n = 0
+	}
+	mtpLayersCache.Store(path, n)
+	return n
+}
+
+func readMTPLayers(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<16)
+
+	var magic, version uint32
+	var nTensors, nKV uint64
+	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
+		return 0, err
+	}
+	if magic != ggufMagic {
+		return 0, fmt.Errorf("not a GGUF file")
+	}
+	if err := readLE(r, &version, &nTensors, &nKV); err != nil {
+		return 0, err
+	}
+	for i := uint64(0); i < nKV; i++ {
+		key, err := ggufString(r)
+		if err != nil {
+			return 0, err
+		}
+		var vtype uint32
+		if err := binary.Read(r, binary.LittleEndian, &vtype); err != nil {
+			return 0, err
+		}
+		if strings.HasSuffix(key, ".nextn_predict_layers") {
+			return ggufUint(r, vtype)
+		}
+		if err := ggufSkipValue(r, vtype); err != nil {
+			return 0, err
+		}
+	}
+	return 0, nil
+}
+
 var trainedCtxCache sync.Map // modelPath -> int (0 = unknown)
 
 // TrainedContext returns the context length the model was trained for, from GGUF

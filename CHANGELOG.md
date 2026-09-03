@@ -3,6 +3,110 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.40.0-jobdar.1 — 2026-09-03 (winc-jobdar branch)
+
+Merge of master **v1.40.0** (Aug-2026 catalogue wave + engine-scheme fixes).
+**`internal/cli/eval.go` is byte-identical.** Eval reach: the eval profile
+names its model explicitly (`qwen3.5-4b`), so the seven new catalogue entries
+and the metadata-first MTP detection are inert for eval results (the eval
+serve pins q8_0 KV, greedy, no speculation). The engine fixes DO reach a
+jobfaro install: `winc check` / `winc update` resolve upstream's new
+versioned releases again and read the new `--version` line correctly; the
+installed engine is never replaced without confirmation.
+
+## v1.40.0 — 2026-09-03
+
+Catalogue refresh for the August 2026 open-weight wave, plus the two engine
+fixes the wave forced: upstream llama.cpp changed both its release scheme and
+its `--version` line, and a stock v1.39.0 could no longer install an engine or
+read the one it had. Measured on an M4 Pro (18 GB unified, Metal) with
+`llama-bench -ngl 99 -fa 1 -p 512,4096 -n 128 -d 0,8192 -r 2`.
+
+### Added
+- **`qwen3.8-27b` / `-q4` / `-q5` — Alibaba's Qwen3.8-27B (Aug 14, Apache
+  2.0) joins `mid` and `large`** as Unsloth Dynamic 3.0 quants (UD-Q3_K_XL
+  12.2 GB, UD-Q4_K_M 15.3 GB, UD-Q5_K_M 18.4 GB). Same Gated-DeltaNet hybrid
+  and tokenizer as Qwen3.6 (GGUF arch `qwen35`, 262144 trained context,
+  vision projector in the same repo), so the existing engine already loads
+  it. The difference that matters to winc: **the MTP head is baked into
+  every standard quant** (`nextn_predict_layers = 1`, verified on the
+  UD-Q3_K_XL and UD-Q4_K_M headers; only sub-Q2 rungs drop it) — there is no
+  `-MTP` repo and no `mtp` cross-link, so the entries sit in the memory tiers
+  directly. Published +33–39% decode with MTP on consumer GPUs; the tier
+  defaults stay on the 35B MoE until it's measured on winc's coding set. The
+  `qwen3.6-27b` rungs stay in place, now noted as superseded.
+- **`muse-glimmer-30b` / `-q4` — Meta's Muse Glimmer 30B (Aug 2026, Apache
+  2.0)** in `mid` (UD-Q3_K_XL 12.4 GB) and `large` (UD-Q4_K_XL 14.8 GB): a
+  28B dense text decoder + 2B vision encoder (arch `muse-glimmer`, 131072
+  trained context — clamped automatically), published SWE-bench Verified
+  76.0 / Pro 51.2. It ships its own **DFlash drafter head** (2.6B, block 16)
+  and projector in the same repo; both are catalogued with family-prefix
+  saves so the download flow offers the head and launch pairing finds it.
+  **Needs engine b10353+** (day-0 upstream support) — the note says so, and
+  `winc update` now resolves to a newer build (below). Gets a Gemma-shaped
+  sampling profile (temp 1.0 / top-k 64 / top-p 0.95, per Meta's card).
+- **`granite4.2-8b` (`small`) and `granite4.2-3b` (`nano`) — IBM Granite
+  4.2 (Aug 25, Apache 2.0)**, dense, native tool calling trained by agentic
+  RL, thinking on/off switch. Text-only with their own tokenizer (`gpt2` /
+  `granite-docling`, 100352 vocab — no draft pairing, no projector). GGUF
+  metadata says 131072 context although IBM advertises 512K; winc trusts
+  the file. Placed behind the measured picks in both tiers (bake-off
+  candidates, not defaults). bartowski quants — Unsloth has none.
+- **Baked-in MTP is detected from metadata, not the filename.** `isMTPFile`
+  now reads `<arch>.nextn_predict_layers` first (cached per path) and falls
+  back to the `-MTP-` name convention only for files not on disk yet. A
+  Qwen3.8 file — or any renamed or custom GGUF with heads — gets
+  `--spec-type draft-mtp` where MTP is active, its head block is excluded
+  from the FFN-spill block count, and the MTP draft context is budgeted.
+  Unit-tested on synthetic headers (baked vs plain vs name-only).
+
+### Fixed
+- **Engine install and update work again against upstream's new release
+  scheme.** Since llama.cpp 0.2.0 (2026-08-21) GitHub's `/releases/latest`
+  returns a VERSIONED release (`v0.3.0`) whose only asset is
+  `nightly-tag.txt` naming the bNNNN build it blesses; every per-commit
+  bNNNN release is now a prerelease, so `/latest` never returns one. winc
+  built its download URLs from that tag (`llama-v0.3.0-bin-…` — 404 on every
+  backend), so a fresh `winc setup` could not install an engine and
+  `winc check` advertised `v0.3.0` as the latest engine. winc now follows
+  the pointer: read `nightly-tag.txt`, fetch THAT release for the asset
+  digests, cache the resolution for the run. The pre-August bNNNN `/latest`
+  form still works unchanged, and an unreadable pointer falls back to the
+  pinned tag exactly like an offline lookup. LIVE-VERIFIED: `winc check`
+  reports `llama.cpp latest : b10621` (the blessed build behind v0.3.0).
+- **The installed-engine version is read correctly from new builds.** The
+  new engines print `version: 0.3.0-dev (build 10790, commit …)` instead of
+  `version: 10790 (…)`; the old regex took the leading digits and read every
+  new engine as **b0**, which would have made `winc check` and `winc update`
+  report a refresh forever. The parser now prefers an explicit `build N` and
+  keeps the old form as fallback; both shapes are unit-tested.
+- **Engine bump measured and pinned — quality-neutral on Metal.** Three
+  engines on the same two models (Ornith-1.0-9B Q4_K_M, Qwen3.5-4B Q4_K_M):
+  b9651 (installed) / b10621 (upstream's blessed build) / b10790 (this
+  morning's head, carrying the new sparse-flash-attention Metal kernels).
+  9B pp512 **342.9 / 343.2 / 342.9**, tg128 **35.8 / 35.8 / 35.9**, tg128 at
+  8k depth **33.8 / 34.0 / 34.1**; 4B pp512 **615.9 / 615.5 / 618.4**, tg128
+  **53.2 / 54.4 / 53.0**, tg128 at 8k depth **49.8 / 50.5 / 50.5**. Every
+  cell is within run-to-run noise (the one ±21 outlier is b10790's 9B pp512
+  at depth, a warm-up artifact). So on Apple Silicon the bump buys model
+  support (Muse Glimmer, Kimi-K3, Nemotron-3-Puzzle) and server features
+  (`reasoning_effort` passthrough, multimodal slot save/restore, `--video-*`
+  input), not speed — the sparse-FA prefill path is a large-KV win that
+  these short benches don't exercise. Both new engines still expose every
+  flag winc probes for (`draft-mtp`, `ngram-simple`, `draft-dflash`,
+  `--mmproj`, `--spec-draft-n-max`, `--reasoning-budget`). The offline
+  fallback pin moves **b10298 → b10621**, matching the online resolution so
+  offline and online installs agree; the CUDA-side re-proof (MTP on Qwen3.8,
+  DFlash on Muse) is a Windows-box item. This Mac's installed engine was
+  left at b9651 on purpose — it is the Jobfaro eval backend and a refresh
+  is Sam's call.
+
+### Changed
+- **Offline engine fallback pinned to b10621** (was b10298): the build
+  upstream's v0.3.0 `nightly-tag.txt` names, verified loading and benching
+  the Metal roster (above).
+
+
 ## 1.39.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.39.0** (prefill keepalive pings). **`internal/cli/eval.go`

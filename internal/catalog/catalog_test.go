@@ -228,3 +228,76 @@ func TestCustomModelMerge(t *testing.T) {
 		t.Fatal("custom model not merged")
 	}
 }
+
+// Qwen3.8 bakes its MTP head into every standard quant (GGUF metadata
+// nextn_predict_layers=1, verified on the UD-Q3_K_XL / UD-Q4_K_M files) -- so
+// unlike the Qwen3.5/3.6 lines there is NO separate "-MTP" variant, no `mtp`
+// cross-link, and the local filename must NOT carry an MTP tag (detection is
+// metadata-first at launch). Guards a future contributor from "fixing" it back
+// into the variant pattern.
+func TestQwen38BakedMTP(t *testing.T) {
+	c := Load(nil)
+	n := 0
+	for _, m := range c.Models {
+		if !strings.HasPrefix(m.Alias, "qwen3.8-27b") {
+			continue
+		}
+		n++
+		if m.Mtp != "" || m.Save != "" || strings.Contains(strings.ToLower(m.LocalFile()), "mtp") {
+			t.Errorf("%s: Qwen3.8 must be a standard entry with the head baked in (mtp=%q save=%q)", m.Alias, m.Mtp, m.Save)
+		}
+		if m.Tier == "mtp" {
+			t.Errorf("%s: Qwen3.8 belongs in a memory tier, not the mtp tier", m.Alias)
+		}
+		if m.MmprojSave != "Qwen3.8-27B-mmproj.gguf" {
+			t.Errorf("%s: projector must share the family prefix, got %q", m.Alias, m.MmprojSave)
+		}
+	}
+	if n < 3 {
+		t.Errorf("expected at least 3 qwen3.8-27b rungs, found %d", n)
+	}
+}
+
+// Muse Glimmer ships a DFlash drafter head and a projector in its own repo;
+// every entry must carry both triples (all-or-nothing, family-prefix saves)
+// so the download flow offers the head and launch pairing finds it.
+func TestMuseGlimmerHeads(t *testing.T) {
+	c := Load(nil)
+	n := 0
+	for _, m := range c.Models {
+		if !strings.Contains(m.Repo, "Muse-Glimmer") {
+			continue
+		}
+		n++
+		if m.DflashRepo == "" || m.DflashFile == "" || m.DflashSave != "Muse-Glimmer-30B-DFlash.gguf" {
+			t.Errorf("%s: incomplete DFlash triple (%q %q %q)", m.Alias, m.DflashRepo, m.DflashFile, m.DflashSave)
+		}
+		if m.MmprojSave != "Muse-Glimmer-30B-mmproj.gguf" {
+			t.Errorf("%s: projector save %q must use the family prefix", m.Alias, m.MmprojSave)
+		}
+		if !strings.HasPrefix(m.File, "Muse-Glimmer-30B") {
+			t.Errorf("%s: file %q must start with the family prefix for head pairing", m.Alias, m.File)
+		}
+	}
+	if n < 2 {
+		t.Errorf("expected at least 2 Muse Glimmer rungs, found %d", n)
+	}
+}
+
+// Granite 4.2 is text-only with its own tokenizer: no projector, no draft.
+func TestGraniteEntries(t *testing.T) {
+	c := Load(nil)
+	want := map[string]string{"granite4.2-3b": "nano", "granite4.2-8b": "small"}
+	for alias, tier := range want {
+		m := c.Find(alias)
+		if m == nil {
+			t.Fatalf("%s missing", alias)
+		}
+		if m.Tier != tier {
+			t.Errorf("%s tier = %q, want %q", alias, m.Tier, tier)
+		}
+		if m.Draft != "" || m.MmprojRepo != "" || m.DflashRepo != "" {
+			t.Errorf("%s: text-only own-tokenizer model must not declare draft/projector/dflash", alias)
+		}
+	}
+}

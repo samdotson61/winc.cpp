@@ -99,6 +99,15 @@
   },
   {
    "tier": "nano",
+   "alias": "granite4.2-3b",
+   "name": "Granite 4.2 3B Q4_K_M",
+   "size": "2.2 GB",
+   "repo": "bartowski/granite-4.2-3b-GGUF",
+   "file": "granite-4.2-3b-Q4_K_M.gguf",
+   "note": "IBM Aug 2026 dense (Apache 2.0): the edge member of the family - native tool calling, thinking switch, 131K ctx. Text-only. Unmeasured here; qwen3.5-4b stays the nano default"
+  },
+  {
+   "tier": "nano",
    "alias": "qwen3.5-2b-q8",
    "name": "Qwen3.5-2B Q8_0",
    "size": "1.9 GB",
@@ -172,6 +181,15 @@
    "file": "Tesslate_OmniCoder-9B-Q4_K_M.gguf",
    "draft": "qwen3.5-0.8b",
    "note": "Agentic-coding specialist (Mar 2026, Qwen3.5-9B tune), published +61% Terminal-Bench vs base. MEASURED here at 3/5 on winc's coding set - the weakest of the four small-tier coders tested (wrong tokenizer output; a TTLCache with no get method). Prefer ornith-9b unless you have a reason not to"
+  },
+  {
+   "tier": "small",
+   "alias": "granite4.2-8b",
+   "name": "Granite 4.2 8B Q4_K_M",
+   "size": "5.2 GB",
+   "repo": "bartowski/granite-4.2-8b-GGUF",
+   "file": "granite-4.2-8b-Q4_K_M.gguf",
+   "note": "IBM Aug 2026 dense (Apache 2.0): native tool calling trained by agentic RL in sandboxed environments, thinking on/off switch + low-effort mode, 131K ctx (GGUF metadata; IBM advertises 512K). Text-only, own tokenizer (no draft pairing). Unmeasured here - a bake-off candidate against ornith-9b, not a default"
   },
   {
    "tier": "small",
@@ -255,13 +273,40 @@
   },
   {
    "tier": "mid",
+   "alias": "qwen3.8-27b",
+   "name": "Qwen3.8-27B UD-Q3_K_XL (dense, MTP baked in)",
+   "size": "12.2 GB",
+   "repo": "unsloth/Qwen3.8-27B-GGUF",
+   "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+   "note": "Alibaba's Aug 2026 successor to Qwen3.6-27B: same Gated-DeltaNet hybrid, 262K ctx, vision, Apache 2.0, Unsloth Dynamic 3.0 quant. The MTP head is BAKED INTO this file (metadata nextn_predict_layers=1; no -MTP repo) - winc reads it and adds --spec-type draft-mtp on CUDA/Vulkan/CPU (off on Metal, measured loss). Published: +33-39% decode with MTP on consumer GPUs. NOT yet measured on winc's coding set. Supersedes qwen3.6-27b at this rung",
+   "mmproj_repo": "unsloth/Qwen3.8-27B-GGUF",
+   "mmproj_file": "mmproj-F16.gguf",
+   "mmproj_save": "Qwen3.8-27B-mmproj.gguf"
+  },
+  {
+   "tier": "mid",
+   "alias": "muse-glimmer-30b",
+   "name": "Muse Glimmer 30B UD-Q3_K_XL (dense)",
+   "size": "12.4 GB",
+   "repo": "unsloth/Muse-Glimmer-30B-GGUF",
+   "file": "Muse-Glimmer-30B-UD-Q3_K_XL.gguf",
+   "dflash_repo": "unsloth/Muse-Glimmer-30B-GGUF",
+   "dflash_file": "dflash-kquant.gguf",
+   "dflash_save": "Muse-Glimmer-30B-DFlash.gguf",
+   "note": "Meta's Aug 2026 return to open weights (Apache 2.0): 28B text decoder + 2B vision encoder, 131K trained ctx, published SWE-bench Verified 76.0 / Pro 51.2. Ships its own DFlash drafter head (2.6B, block 16) and projector - winc fetches both. NEEDS ENGINE b10353+ (day-0 support; 'winc update' refreshes). NOT yet measured on winc's coding set",
+   "mmproj_repo": "unsloth/Muse-Glimmer-30B-GGUF",
+   "mmproj_file": "mmproj-kquant.gguf",
+   "mmproj_save": "Muse-Glimmer-30B-mmproj.gguf"
+  },
+  {
+   "tier": "mid",
    "alias": "qwen3.6-27b",
    "name": "Qwen3.6-27B Q3_K_M (dense)",
    "size": "13.6 GB",
    "repo": "unsloth/Qwen3.6-27B-GGUF",
    "file": "Qwen3.6-27B-Q3_K_M.gguf",
    "mtp": "qwen3.6-27b-mtp",
-   "note": "Top 2026 dense coder (Apr 2026). 77.2% SWE-bench, highest quality, slower than the MoE",
+   "note": "Top 2026 dense coder (Apr 2026). 77.2% SWE-bench, highest quality, slower than the MoE. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
@@ -307,13 +352,52 @@
   },
   {
    "tier": "large",
+   "alias": "qwen3.8-27b-q4",
+   "name": "Qwen3.8-27B UD-Q4_K_M (dense, MTP baked in)",
+   "size": "15.3 GB",
+   "repo": "unsloth/Qwen3.8-27B-GGUF",
+   "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+   "note": "Alibaba's Aug 2026 successor to Qwen3.6-27B: same Gated-DeltaNet hybrid, 262K ctx, vision, Apache 2.0, Unsloth Dynamic 3.0 quant. The MTP head is BAKED INTO this file (metadata nextn_predict_layers=1; no -MTP repo) - winc reads it and adds --spec-type draft-mtp on CUDA/Vulkan/CPU (off on Metal, measured loss). Published: +33-39% decode with MTP on consumer GPUs. NOT yet measured on winc's coding set. Unsloth's recommended rung for 20-24 GB GPUs / 28 GB+ Macs",
+   "mmproj_repo": "unsloth/Qwen3.8-27B-GGUF",
+   "mmproj_file": "mmproj-F16.gguf",
+   "mmproj_save": "Qwen3.8-27B-mmproj.gguf"
+  },
+  {
+   "tier": "large",
+   "alias": "qwen3.8-27b-q5",
+   "name": "Qwen3.8-27B UD-Q5_K_M (dense, MTP baked in)",
+   "size": "18.4 GB",
+   "repo": "unsloth/Qwen3.8-27B-GGUF",
+   "file": "Qwen3.8-27B-UD-Q5_K_M.gguf",
+   "note": "Alibaba's Aug 2026 successor to Qwen3.6-27B: same Gated-DeltaNet hybrid, 262K ctx, vision, Apache 2.0, Unsloth Dynamic 3.0 quant. The MTP head is BAKED INTO this file (metadata nextn_predict_layers=1; no -MTP repo) - winc reads it and adds --spec-type draft-mtp on CUDA/Vulkan/CPU (off on Metal, measured loss). Published: +33-39% decode with MTP on consumer GPUs. NOT yet measured on winc's coding set. Higher-quality rung for 24 GB+ GPUs / 32 GB+ Macs",
+   "mmproj_repo": "unsloth/Qwen3.8-27B-GGUF",
+   "mmproj_file": "mmproj-F16.gguf",
+   "mmproj_save": "Qwen3.8-27B-mmproj.gguf"
+  },
+  {
+   "tier": "large",
+   "alias": "muse-glimmer-30b-q4",
+   "name": "Muse Glimmer 30B UD-Q4_K_XL (dense)",
+   "size": "14.8 GB",
+   "repo": "unsloth/Muse-Glimmer-30B-GGUF",
+   "file": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+   "dflash_repo": "unsloth/Muse-Glimmer-30B-GGUF",
+   "dflash_file": "dflash-kquant.gguf",
+   "dflash_save": "Muse-Glimmer-30B-DFlash.gguf",
+   "note": "Meta's Aug 2026 return to open weights (Apache 2.0): 28B text decoder + 2B vision encoder, 131K trained ctx, published SWE-bench Verified 76.0 / Pro 51.2. Ships its own DFlash drafter head (2.6B, block 16) and projector - winc fetches both. NEEDS ENGINE b10353+ (day-0 support; 'winc update' refreshes). NOT yet measured on winc's coding set. Unsloth's recommended rung (leaves room for the 131K window + DFlash head)",
+   "mmproj_repo": "unsloth/Muse-Glimmer-30B-GGUF",
+   "mmproj_file": "mmproj-kquant.gguf",
+   "mmproj_save": "Muse-Glimmer-30B-mmproj.gguf"
+  },
+  {
+   "tier": "large",
    "alias": "qwen3.6-27b-q5",
    "name": "Qwen3.6-27B Q5_K_M (dense)",
    "size": "19.5 GB",
    "repo": "unsloth/Qwen3.6-27B-GGUF",
    "file": "Qwen3.6-27B-Q5_K_M.gguf",
    "mtp": "qwen3.6-27b-q5-mtp",
-   "note": "Top dense 2026 coder at high quant. Best quality, slower than the MoE",
+   "note": "Top dense 2026 coder at high quant. Best quality, slower than the MoE. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
@@ -339,7 +423,7 @@
    "repo": "unsloth/Qwen3.6-27B-GGUF",
    "file": "Qwen3.6-27B-Q6_K.gguf",
    "mtp": "qwen3.6-27b-q6-mtp",
-   "note": "The dense coder at near-lossless quant, for 28 GB+ VRAM / 36 GB+ Macs",
+   "note": "The dense coder at near-lossless quant, for 28 GB+ VRAM / 36 GB+ Macs. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
@@ -405,7 +489,7 @@
    "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
    "file": "Qwen3.6-27B-Q3_K_M.gguf",
    "save": "Qwen3.6-27B-MTP-Q3_K_M.gguf",
-   "note": "The top dense coder with built-in MTP heads (~1.4-2.2x decode) - recovers much of the MoE's speed edge at the 27B's quality. Auto --spec-type draft-mtp",
+   "note": "The top dense coder with built-in MTP heads (~1.4-2.2x decode) - recovers much of the MoE's speed edge at the 27B's quality. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
@@ -418,7 +502,7 @@
    "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
    "file": "Qwen3.6-27B-Q4_K_M.gguf",
    "save": "Qwen3.6-27B-MTP-Q4_K_M.gguf",
-   "note": "The Q4 dense 27B with MTP heads, for 20-24 GB GPUs / 28 GB+ Macs - lighter than the Q5, leaving more room for context. Auto --spec-type draft-mtp",
+   "note": "The Q4 dense 27B with MTP heads, for 20-24 GB GPUs / 28 GB+ Macs - lighter than the Q5, leaving more room for context. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
@@ -431,7 +515,7 @@
    "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
    "file": "Qwen3.6-27B-Q5_K_M.gguf",
    "save": "Qwen3.6-27B-MTP-Q5_K_M.gguf",
-   "note": "The Q5 dense 27B with MTP heads, for 24 GB+ GPUs / 32 GB+ Macs. Auto --spec-type draft-mtp",
+   "note": "The Q5 dense 27B with MTP heads, for 24 GB+ GPUs / 32 GB+ Macs. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
@@ -470,7 +554,7 @@
    "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
    "file": "Qwen3.6-27B-Q6_K.gguf",
    "save": "Qwen3.6-27B-MTP-Q6_K.gguf",
-   "note": "The near-lossless dense coder with MTP heads, for 28 GB+ VRAM. Auto --spec-type draft-mtp",
+   "note": "The near-lossless dense coder with MTP heads, for 28 GB+ VRAM. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
    "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
