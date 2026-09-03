@@ -65,7 +65,7 @@ func cmdDownload(args []string) int {
 		return 1
 	}
 	ui.Good("done: %s", localName)
-	if engine.IsMTPFile(localName) {
+	if engine.IsMTPFile(target) {
 		ui.Good("MTP variant - winc turns on --spec-type draft-mtp automatically at launch")
 	}
 	offerMTPHead(cfg, m, autoYes)

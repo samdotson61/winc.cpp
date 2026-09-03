@@ -243,9 +243,17 @@ func MainEscalationOK(cfg *config.Config, hw platform.Hardware, modelPath string
 	return hw.VRAMMB-mb-gpuReserveMB(hw, mb) >= mainEscalationHeadroomMB
 }
 
-// isMTPFile reports whether a GGUF is a Multi-Token-Prediction variant (winc saves
-// those with "-MTP-" in the local name; upstream MTP repos use "mtp" too).
+// isMTPFile reports whether a GGUF carries baked-in Multi-Token-Prediction
+// heads. Metadata first: "<arch>.nextn_predict_layers" > 0 is authoritative
+// (Qwen3.8 bakes the head into every standard quant, so nothing in the
+// filename says MTP). The name convention stays as the fallback for a file
+// that isn't on disk yet (a catalogue entry before download): winc saves the
+// Qwen3.5/3.6 MTP variants with "-MTP-" in the local name, and upstream MTP
+// repos use "mtp" too.
 func isMTPFile(path string) bool {
+	if MTPLayers(path) > 0 {
+		return true
+	}
 	return strings.Contains(strings.ToLower(filepath.Base(path)), "mtp")
 }
 
@@ -718,6 +726,9 @@ func FamilySamplingArgs(modelPath string) []string {
 		return []string{"--temp", "0.7", "--top-p", "0.8", "--top-k", "20", "--min-p", "0.0", "--presence-penalty", "1.0"}
 	case strings.Contains(name, "gemma"):
 		// Gemma 3 / 4 recommended: temp 1.0 / top-k 64 / top-p 0.95.
+		return []string{"--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0"}
+	case strings.Contains(name, "muse-glimmer"):
+		// Meta's Muse Glimmer card: temp 1.0 / top-p 0.95 / top-k 64 (same shape as Gemma).
 		return []string{"--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0"}
 	default:
 		return nil

@@ -13,8 +13,28 @@ import (
 	"winc/internal/platform"
 )
 
-// llamaBuildRe parses llama-server's "version: NNNN (hash)" line into the build number.
-var llamaBuildRe = regexp.MustCompile(`(?i)version:\s*(\d+)`)
+// llamaBuildRe parses llama-server's version line into the build number. Two
+// upstream formats: the classic "version: 9651 (e3bb1add8)" and, since the
+// versioned-release scheme (llama.cpp 0.2.0, 2026-08-21), "version: 0.3.0-dev
+// (build 10790, commit 8c1a25166)". The explicit "build N" wins when present;
+// a bare "version: N" is the old form. Matching the leading digits of "0.3.0"
+// would have read every new engine as build 0.
+var (
+	llamaBuildRe   = regexp.MustCompile(`(?i)\bbuild\s+(\d+)`)
+	llamaVersionRe = regexp.MustCompile(`(?i)version:\s*(\d+)\s*\(`)
+)
+
+// llamaBuildTag extracts the "bNNNN" tag from a llama-server --version output,
+// or "" when neither format is present.
+func llamaBuildTag(out []byte) string {
+	if m := llamaBuildRe.FindSubmatch(out); m != nil {
+		return "b" + string(m[1])
+	}
+	if m := llamaVersionRe.FindSubmatch(out); m != nil {
+		return "b" + string(m[1])
+	}
+	return ""
+}
 
 // InstalledLlamaTag returns the build tag of the installed llama-server (e.g. "b9550"),
 // or "" if it isn't installed or the version can't be read.
@@ -31,17 +51,14 @@ func LlamaTagOf(bin string) string {
 	cmd := exec.Command(bin, "--version")
 	cmd.Env = mtpProbeEnv(bin) // make co-located shared libs loadable
 	out, _ := cmd.CombinedOutput()
-	if m := llamaBuildRe.FindSubmatch(out); m != nil {
-		return "b" + string(m[1])
-	}
-	return ""
+	return llamaBuildTag(out)
 }
 
 const (
 	llamaRepo        = "ggml-org/llama.cpp"
 	swapRepo         = "mostlygeek/llama-swap"
 	wincRepo         = "samdotson61/winc.cpp"
-	llamaFallbackTag = "b10298" // verified 2026-08-06 (asset set intact; loads + benches the CUDA roster)
+	llamaFallbackTag = "b10621" // verified 2026-09-03 (the v0.3.0 nightly-tag pick; asset set intact; loads + benches the Metal roster flat vs b9651)
 	swapFallbackTag  = "223"    // verified 2026-06-06 (release tag v223)
 )
 
@@ -110,8 +127,113 @@ func latestRelease(repo, fallback string) releaseInfo {
 }
 
 // LatestLlamaTag / LatestSwapTag expose the newest upstream release tags.
-func LatestLlamaTag() string { return latestTag(llamaRepo, llamaFallbackTag) }
+func LatestLlamaTag() string { return latestLlamaRelease().Tag }
 func LatestSwapTag() string  { return latestTag(swapRepo, swapFallbackTag) }
+
+// nightlyTagAsset is the pointer file a versioned llama.cpp release carries.
+const nightlyTagAsset = "nightly-tag.txt"
+
+// latestLlamaRelease resolves the engine build to install. Since llama.cpp
+// 0.2.0 (2026-08-21) upstream's /releases/latest is a VERSIONED release
+// ("v0.3.0") whose only asset is nightly-tag.txt naming the bNNNN build it
+// blesses; the per-commit bNNNN releases (the ones carrying the binaries) are
+// all prereleases, so /latest never returns them any more. Following the
+// pointer keeps winc on upstream's recommended build instead of the newest
+// commit, and the pointed-at release supplies the asset digests. A pointer
+// that can't be read falls back to the pinned tag with no digests, exactly
+// like an offline lookup. A bNNNN /latest (the pre-August scheme) still works
+// unchanged.
+func latestLlamaRelease() releaseInfo {
+	rel := latestRelease(llamaRepo, llamaFallbackTag)
+	if isBuildTag(rel.Tag) {
+		return rel
+	}
+	key := llamaRepo + "#resolved"
+	releaseMu.Lock()
+	ri, ok := releaseCache[key]
+	releaseMu.Unlock()
+	if ok {
+		return ri
+	}
+	tag := readNightlyTag(rel.Tag)
+	if !isBuildTag(tag) {
+		return releaseInfo{Tag: llamaFallbackTag}
+	}
+	ri = releaseByTag(llamaRepo, tag)
+	releaseMu.Lock()
+	releaseCache[key] = ri
+	releaseMu.Unlock()
+	return ri
+}
+
+// isBuildTag reports whether a tag is a per-commit llama.cpp build ("b10790").
+func isBuildTag(tag string) bool {
+	if len(tag) < 2 || tag[0] != 'b' {
+		return false
+	}
+	for _, c := range tag[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// readNightlyTag downloads a versioned release's nightly-tag.txt and returns
+// its trimmed content ("" on any failure).
+func readNightlyTag(versionTag string) string {
+	c := &http.Client{Timeout: 10 * time.Second}
+	resp, err := c.Get("https://github.com/" + llamaRepo + "/releases/download/" + versionTag + "/" + nightlyTagAsset)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	buf := make([]byte, 64)
+	n, _ := resp.Body.Read(buf)
+	return parseNightlyTag(buf[:n])
+}
+
+// parseNightlyTag extracts the build tag from nightly-tag.txt content.
+func parseNightlyTag(b []byte) string {
+	tag := strings.TrimSpace(string(b))
+	if i := strings.IndexAny(tag, " \t\r\n"); i >= 0 {
+		tag = tag[:i]
+	}
+	return tag
+}
+
+// releaseByTag fetches one release's asset digests by tag. On failure the tag
+// is kept and the digests are empty (download proceeds unverified, as offline).
+func releaseByTag(repo, tag string) releaseInfo {
+	c := &http.Client{Timeout: 10 * time.Second}
+	resp, err := c.Get("https://api.github.com/repos/" + repo + "/releases/tags/" + tag)
+	if err != nil {
+		return releaseInfo{Tag: tag}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return releaseInfo{Tag: tag}
+	}
+	var r struct {
+		Assets []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&r) != nil {
+		return releaseInfo{Tag: tag}
+	}
+	ri := releaseInfo{Tag: tag, Digests: map[string]string{}}
+	for _, a := range r.Assets {
+		if a.Digest != "" {
+			ri.Digests[a.Name] = a.Digest
+		}
+	}
+	return ri
+}
 
 // WincAsset resolves the latest winc release's download URL and published
 // sha256 digest for the named asset (digest "" when unpublished). ok=false
@@ -136,7 +258,7 @@ type LlamaAsset struct {
 // hardware, best backend first, always ending in a CPU fallback that exists.
 // NOTE: there is no prebuilt Linux CUDA archive (source build only).
 func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
-	rel := latestRelease(llamaRepo, llamaFallbackTag)
+	rel := latestLlamaRelease()
 	tag := rel.Tag
 	base := "https://github.com/" + llamaRepo + "/releases/download/" + tag + "/"
 	mk := func(backend, archive string, files ...string) LlamaAsset {
