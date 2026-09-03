@@ -141,7 +141,7 @@
    "repo": "unsloth/Ornith-1.0-9B-GGUF",
    "file": "Ornith-1.0-9B-Q4_K_M.gguf",
    "draft": "qwen3.5-0.8b",
-   "note": "RECOMMENDED. Best small CODER measured here (Jun 2026, MIT, Qwen3.5-9B post-train that writes its own RL scaffold). Published SWE-bench Verified 69.4 / Terminal-Bench 2.1 43.1, above Gemma 4-31B. MEASURED: 5/5 on winc's coding set vs omnicoder-9b's 3/5, and it answers in a third the tokens of the 9B; decode is identical to the 9B (31 tok/s), so it costs nothing to prefer",
+   "note": "RECOMMENDED. Best small CODER measured here (Jun 2026, MIT, Qwen3.5-9B post-train that writes its own RL scaffold). Published SWE-bench Verified 69.4 / Terminal-Bench 2.1 43.1, above Gemma 4-31B. MEASURED: 5/5 on winc's coding set vs OmniCoder-9B's 3/5 (since pruned), and it answers in a third the tokens of the 9B; decode is identical to the 9B (31 tok/s), so it costs nothing to prefer",
    "mmproj_repo": "unsloth/Ornith-1.0-9B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Ornith-1.0-9B-mmproj.gguf"
@@ -171,16 +171,6 @@
    "repo": "unsloth/LFM2.5-8B-A1B-GGUF",
    "file": "LFM2.5-8B-A1B-UD-Q4_K_M.gguf",
    "note": "FASTEST in this tier by a wide margin: 8.5B total but ~1.5B active. MEASURED (M4 Pro Metal): 129 tok/s decode + 1373 tok/s prompt = 3.8x the 9B's decode at slightly LESS memory. Native tool calling, 128K ctx. Published tool-choice (BFCLv3 64.4) trails the Qwen coders (71.1) - take it for speed, not the hardest agent work. Custom LFM license, not Apache"
-  },
-  {
-   "tier": "small",
-   "alias": "omnicoder-9b",
-   "name": "OmniCoder-9B Q4_K_M (coder)",
-   "size": "5.9 GB",
-   "repo": "bartowski/Tesslate_OmniCoder-9B-GGUF",
-   "file": "Tesslate_OmniCoder-9B-Q4_K_M.gguf",
-   "draft": "qwen3.5-0.8b",
-   "note": "Agentic-coding specialist (Mar 2026, Qwen3.5-9B tune), published +61% Terminal-Bench vs base. MEASURED here at 3/5 on winc's coding set - the weakest of the four small-tier coders tested (wrong tokenizer output; a TTLCache with no get method). Prefer ornith-9b unless you have a reason not to"
   },
   {
    "tier": "small",
@@ -261,18 +251,6 @@
   },
   {
    "tier": "mid",
-   "alias": "qwen3.5-35b-a3b",
-   "name": "Qwen3.5-35B-A3B UD-IQ3_S (MoE)",
-   "size": "13.6 GB",
-   "repo": "unsloth/Qwen3.5-35B-A3B-GGUF",
-   "file": "Qwen3.5-35B-A3B-UD-IQ3_S.gguf",
-   "note": "Stable Feb-2026 MoE; same 3B-active speed as 3.6, strong coding + tools",
-   "mmproj_repo": "unsloth/Qwen3.5-35B-A3B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.5-35B-A3B-mmproj.gguf"
-  },
-  {
-   "tier": "mid",
    "alias": "qwen3.8-27b",
    "name": "Qwen3.8-27B UD-Q3_K_XL (dense, MTP baked in)",
    "size": "12.2 GB",
@@ -297,19 +275,6 @@
    "mmproj_repo": "unsloth/Muse-Glimmer-30B-GGUF",
    "mmproj_file": "mmproj-kquant.gguf",
    "mmproj_save": "Muse-Glimmer-30B-mmproj.gguf"
-  },
-  {
-   "tier": "mid",
-   "alias": "qwen3.6-27b",
-   "name": "Qwen3.6-27B Q3_K_M (dense)",
-   "size": "13.6 GB",
-   "repo": "unsloth/Qwen3.6-27B-GGUF",
-   "file": "Qwen3.6-27B-Q3_K_M.gguf",
-   "mtp": "qwen3.6-27b-mtp",
-   "note": "Top 2026 dense coder (Apr 2026). 77.2% SWE-bench, highest quality, slower than the MoE. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
   },
   {
    "tier": "mid",
@@ -391,19 +356,6 @@
   },
   {
    "tier": "large",
-   "alias": "qwen3.6-27b-q5",
-   "name": "Qwen3.6-27B Q5_K_M (dense)",
-   "size": "19.5 GB",
-   "repo": "unsloth/Qwen3.6-27B-GGUF",
-   "file": "Qwen3.6-27B-Q5_K_M.gguf",
-   "mtp": "qwen3.6-27b-q5-mtp",
-   "note": "Top dense 2026 coder at high quant. Best quality, slower than the MoE. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
-  },
-  {
-   "tier": "large",
    "alias": "qwen3.6-35b-q5",
    "name": "Qwen3.6-35B-A3B UD-Q5_K_XL (MoE)",
    "size": "26.6 GB",
@@ -414,19 +366,6 @@
    "mmproj_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-35B-mmproj.gguf"
-  },
-  {
-   "tier": "large",
-   "alias": "qwen3.6-27b-q6",
-   "name": "Qwen3.6-27B Q6_K (dense)",
-   "size": "22.5 GB",
-   "repo": "unsloth/Qwen3.6-27B-GGUF",
-   "file": "Qwen3.6-27B-Q6_K.gguf",
-   "mtp": "qwen3.6-27b-q6-mtp",
-   "note": "The dense coder at near-lossless quant, for 28 GB+ VRAM / 36 GB+ Macs. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
   },
   {
    "tier": "large",
@@ -483,45 +422,6 @@
   },
   {
    "tier": "mtp",
-   "alias": "qwen3.6-27b-mtp",
-   "name": "Qwen3.6-27B Q3_K_M (dense, MTP)",
-   "size": "13.8 GB",
-   "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
-   "file": "Qwen3.6-27B-Q3_K_M.gguf",
-   "save": "Qwen3.6-27B-MTP-Q3_K_M.gguf",
-   "note": "The top dense coder with built-in MTP heads (~1.4-2.2x decode) - recovers much of the MoE's speed edge at the 27B's quality. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
-  },
-  {
-   "tier": "mtp",
-   "alias": "qwen3.6-27b-q4-mtp",
-   "name": "Qwen3.6-27B Q4_K_M (dense, MTP)",
-   "size": "17.1 GB",
-   "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
-   "file": "Qwen3.6-27B-Q4_K_M.gguf",
-   "save": "Qwen3.6-27B-MTP-Q4_K_M.gguf",
-   "note": "The Q4 dense 27B with MTP heads, for 20-24 GB GPUs / 28 GB+ Macs - lighter than the Q5, leaving more room for context. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
-  },
-  {
-   "tier": "mtp",
-   "alias": "qwen3.6-27b-q5-mtp",
-   "name": "Qwen3.6-27B Q5_K_M (dense, MTP)",
-   "size": "19.8 GB",
-   "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
-   "file": "Qwen3.6-27B-Q5_K_M.gguf",
-   "save": "Qwen3.6-27B-MTP-Q5_K_M.gguf",
-   "note": "The Q5 dense 27B with MTP heads, for 24 GB+ GPUs / 32 GB+ Macs. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
-  },
-  {
-   "tier": "mtp",
    "alias": "qwen3.5-9b-mtp",
    "name": "Qwen3.5-9B Q4_K_M (dense, MTP)",
    "size": "5.9 GB",
@@ -545,19 +445,6 @@
    "mmproj_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.6-35B-mmproj.gguf"
-  },
-  {
-   "tier": "mtp",
-   "alias": "qwen3.6-27b-q6-mtp",
-   "name": "Qwen3.6-27B Q6_K (dense, MTP)",
-   "size": "22.9 GB",
-   "repo": "unsloth/Qwen3.6-27B-MTP-GGUF",
-   "file": "Qwen3.6-27B-Q6_K.gguf",
-   "save": "Qwen3.6-27B-MTP-Q6_K.gguf",
-   "note": "The near-lossless dense coder with MTP heads, for 28 GB+ VRAM. Auto --spec-type draft-mtp. Superseded by the qwen3.8-27b line (same architecture, newer weights)",
-   "mmproj_repo": "unsloth/Qwen3.6-27B-GGUF",
-   "mmproj_file": "mmproj-F16.gguf",
-   "mmproj_save": "Qwen3.6-27B-mmproj.gguf"
   }
  ]
 }

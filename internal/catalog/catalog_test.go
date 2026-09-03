@@ -139,7 +139,7 @@ func TestMoEDefaultsForMidAndLarge(t *testing.T) {
 func TestDraftFor(t *testing.T) {
 	c := Load(nil)
 	// Dense small coders -> the shared tiny Qwen3.5 draft (same tokenizer family).
-	for _, target := range []string{"qwen3.5-9b", "omnicoder-9b"} {
+	for _, target := range []string{"qwen3.5-9b", "ornith-9b"} {
 		if d := c.DraftFor(c.Find(target)); d == nil || d.Alias != "qwen3.5-0.8b" {
 			t.Errorf("%s draft = %v, want qwen3.5-0.8b", target, d)
 		}
@@ -161,14 +161,12 @@ func TestDraftFor(t *testing.T) {
 
 func TestMTPVariants(t *testing.T) {
 	c := Load(nil)
-	// Standard Qwen models (MoE and dense) point at their MTP variant.
+	// Standard Qwen3.5/3.6 models with a separate MTP repo point at their MTP
+	// variant (the dense 27B line moved to Qwen3.8, whose heads are baked in).
 	for std, want := range map[string]string{
 		"qwen3.6-35b":    "qwen3.6-35b-mtp",
 		"qwen3.6-35b-q4": "qwen3.6-35b-q4-mtp",
 		"qwen3.6-35b-q5": "qwen3.6-35b-q5-mtp",
-		"qwen3.6-27b":    "qwen3.6-27b-mtp",
-		"qwen3.6-27b-q5": "qwen3.6-27b-q5-mtp",
-		"qwen3.6-27b-q6": "qwen3.6-27b-q6-mtp",
 		"qwen3.5-9b":     "qwen3.5-9b-mtp",
 	} {
 		m := c.Find(std)
