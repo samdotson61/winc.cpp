@@ -227,32 +227,33 @@ func TestCustomModelMerge(t *testing.T) {
 	}
 }
 
-// Qwen3.8 bakes its MTP head into every standard quant (GGUF metadata
+// Qwen3.8 and Ornith-1.5 bake the MTP head into every standard quant (GGUF metadata
 // nextn_predict_layers=1, verified on the UD-Q3_K_XL / UD-Q4_K_M files) -- so
 // unlike the Qwen3.5/3.6 lines there is NO separate "-MTP" variant, no `mtp`
 // cross-link, and the local filename must NOT carry an MTP tag (detection is
 // metadata-first at launch). Guards a future contributor from "fixing" it back
 // into the variant pattern.
-func TestQwen38BakedMTP(t *testing.T) {
+func TestBakedMTPEntries(t *testing.T) {
 	c := Load(nil)
 	n := 0
 	for _, m := range c.Models {
-		if !strings.HasPrefix(m.Alias, "qwen3.8-27b") {
+		baked := strings.HasPrefix(m.Alias, "qwen3.8-27b") || strings.HasPrefix(m.Alias, "ornith-1.5-")
+		if !baked {
 			continue
 		}
 		n++
 		if m.Mtp != "" || m.Save != "" || strings.Contains(strings.ToLower(m.LocalFile()), "mtp") {
-			t.Errorf("%s: Qwen3.8 must be a standard entry with the head baked in (mtp=%q save=%q)", m.Alias, m.Mtp, m.Save)
+			t.Errorf("%s: baked-MTP model must be a standard entry (mtp=%q save=%q)", m.Alias, m.Mtp, m.Save)
 		}
 		if m.Tier == "mtp" {
-			t.Errorf("%s: Qwen3.8 belongs in a memory tier, not the mtp tier", m.Alias)
+			t.Errorf("%s: baked-MTP model belongs in a memory tier, not the mtp tier", m.Alias)
 		}
-		if m.MmprojSave != "Qwen3.8-27B-mmproj.gguf" {
-			t.Errorf("%s: projector must share the family prefix, got %q", m.Alias, m.MmprojSave)
+		if m.MmprojSave == "" || !strings.HasSuffix(m.MmprojSave, "-mmproj.gguf") {
+			t.Errorf("%s: projector must use the family-prefix save name, got %q", m.Alias, m.MmprojSave)
 		}
 	}
-	if n < 3 {
-		t.Errorf("expected at least 3 qwen3.8-27b rungs, found %d", n)
+	if n < 6 {
+		t.Errorf("expected at least 6 baked-MTP rungs (qwen3.8 + ornith-1.5), found %d", n)
 	}
 }
 

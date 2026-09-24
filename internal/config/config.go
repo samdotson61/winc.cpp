@@ -221,7 +221,7 @@ vision = "auto"              # "auto" | "off" - load the mmproj vision projector
 mtp_draft_max = 2            # tokens drafted per step (--spec-draft-n-max); 2 is a good default
 
 # Advanced escape hatch: extra llama-server flags appended verbatim.
-extra_server_args = []       # e.g. ["--mlock"] or ["--prio", "2"] or ["--n-cpu-moe", "16"]
+extra_server_args = []       # e.g. ["--prio", "2"] or ["--n-cpu-moe", "16"]  (llama.cpp 0.4.1 dropped --mmap/--mlock/--direct-io)
 
 [multi]                  # llama-swap, only with ` + "`winc -s ... --multi`" + `
 enabled = false

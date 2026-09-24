@@ -3,6 +3,78 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.41.0 — 2026-09-24
+
+Second catalogue pass of the season: the late-August / early-September small
+and mid releases, each read from its GGUF header and run through a functional
+gate on this Mac before entry. Measured on an M4 Pro (18 GB unified, Metal,
+engine b11146): `llama-bench -ngl 99 -fa 1 -p 512 -n 128 -d 0,8192 -r 2` for
+speed; for behaviour, direct `llama-server` (winc out of the loop, engine
+identity asserted from the process list) driven through `/v1/messages` with
+a tool_use + tool_result round trip, a strict-JSON reply, and two coding
+tasks executed against hidden asserts (`parse_duration`, `LRUCache`) with
+reasoning off. Two tasks is a gate, not a ranking.
+
+### Added
+- **`ornith-1.5-9b` — Ornith AI's Aug 19 successor to the small-tier default
+  (MIT, `qwen35` arch, same 248320-token Qwen3.5 tokenizer, 262K ctx, vision
+  projector in the repo).** Published SWE-bench Verified **70.6** (1.0: 69.4)
+  / Terminal-Bench 2.1 **46.2** (43.1). The MTP head is **baked into every
+  quant** (`nextn_predict_layers = 1`) and v1.40.0's metadata detection
+  picks it up unchanged. MEASURED: decode **38.8 vs 37.5 tok/s** for 1.0
+  (36.7 vs 35.8 at 8k depth), tools and JSON pass, **but 1/2 on the coding
+  gate** (its LRU cache referenced an undefined `Node` class) against 1.0's
+  **2/2** — and with reasoning left on it also failed `parse_duration` after
+  5,114 tokens where 1.0 passed in 960. Placed SECOND; `ornith-9b` keeps the
+  default on the evidence, exactly as v1.30.0 promoted it. A five-task
+  bake-off is the open item before either is pruned.
+- **`ornith-1.5-35b-a3b` (`large`, official Q4_K_M 21.9 GB) and
+  `ornith-1.5-35b-a3b-iq3` (`mid`, bartowski IQ3_XXS 15.3 GB)** — the MoE
+  member (MIT, `qwen35moe`, 256 experts / 3B active, MTP baked in, vision).
+  Published SWE-bench Verified **79.0** / Terminal-Bench **67.8** / SWE-bench
+  Pro **59.6** against `qwen3.6-35b`'s 73.4 / 52.5 / 49.5 on the same base
+  architecture — the strongest published numbers in either tier. UNMEASURED
+  here (a 35B is beyond this Mac's gate budget), so `qwen3.6-35b` keeps both
+  defaults; the entries say so.
+- **`spark-x2.5-4b` and `spark-x2.5-1.7b` (`nano`)** — iFlytek/SparkLLM's
+  Sep 1 release (Apache 2.0, `spark2_5` arch: 1 full-attention layer per 3
+  sliding-window, **1,048,576-token trained context** read from the header,
+  own 131072-token vocabulary, text-only, thinking on by default). Published
+  BFCL-V4 65.1 / SWE-bench Pro 44.4 for the 4B. MEASURED (4B): **72.6 tok/s
+  decode vs `qwen3.5-4b`'s 53.5 (+36%), 64.3 vs 44.8 at 8k depth**, prefill
+  650 vs 619; tools and JSON pass; **1/2 on the coding gate — the same score
+  as `qwen3.5-4b`** (each failed a different task), so the 4B default stays
+  and Spark is the speed pick. With thinking left on it exhausted an
+  8,000-token budget on one task without emitting code; the note says to
+  run it with reasoning off or a budget. **Needs engine b10828+** (upstream
+  support landed Sep 6): the note says so and the pinned fallback (below)
+  now clears it. The 1.7B is unmeasured.
+
+### Changed
+- **Offline engine fallback pinned to b11146** (was b10621): the build
+  upstream's v0.5.0 `nightly-tag.txt` names (Sep 23). MEASURED on the same
+  two models as v1.40.0: **9B decode 37.5 vs 35.8 tok/s (+5%)**, 8k-depth
+  35.8 vs 34.0; 4B flat within noise. Between the two pins upstream also
+  fixed the Gated-DeltaNet normalization for Qwen3.5/3.6/3.8 (0.4.1, a
+  correctness fix for most of this catalogue), added Metal MoE/SSM fusion
+  (0.5.0), CUDA graphs for MTP drafting, and Spark2.5 / Maple / Hy4
+  architectures. Every flag winc probes for is still present. **Removed
+  upstream in 0.4.1: `--mmap`, `--mlock`, `--direct-io`** — winc never
+  passed them, but the `winc.toml` example for `extra_server_args` suggested
+  `--mlock`; it now suggests `--prio` and says why.
+- README tier table and low-end roster rows carry the five new entries with
+  their measured or published figures.
+
+### Watched, not added
+- **Maple-Preview 20B-A1B** (DeepGrove, MIT, ternary MoE, 5.3 GB, 218 tok/s
+  on an M4 mini per its authors): upstream support is **CPU-only** as of
+  0.5.0 (Metal/CUDA to follow), so a winc launch with `-ngl 99` has no
+  measured behaviour yet. Revisit when a GPU backend lands.
+- **Unsloth Dynamic 3.0**: still only Qwen3.8-27B (and the big MoEs) have a
+  v3 set; the Qwen3.5 / Gemma 4 rungs winc ships are unchanged upstream.
+- **LFM2.5 QAD** (Liquid's quantization-aware-distilled Q4_0 builds): sizes
+  230M–2.6B only; the catalogued 8B-A1B has no QAD build.
+
 ## v1.40.0 — 2026-09-03
 
 Catalogue refresh for the August 2026 open-weight wave, plus the two engine

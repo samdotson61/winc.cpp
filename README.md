@@ -260,10 +260,10 @@ losslessly drops optional `input_examples`. Set
 
 | Tier | Target | Examples (2026 roster) |
 |------|--------|----------|
-| `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, gemma4-e2b, qwen3.5-2b, qwen3.5-0.8b, granite4.2-3b |
-| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, qwen3.5-9b, lfm2.5-8b-a1b (fastest), granite4.2-8b, gemma4-12b, gemma4-e4b |
-| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, muse-glimmer-30b, gemma4-31b |
-| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, muse-glimmer-30b-q4 |
+| `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, spark-x2.5-4b (fastest), gemma4-e2b, qwen3.5-2b, spark-x2.5-1.7b, qwen3.5-0.8b, granite4.2-3b |
+| `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, ornith-1.5-9b, qwen3.5-9b, lfm2.5-8b-a1b (fastest), granite4.2-8b, gemma4-12b, gemma4-e4b |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, muse-glimmer-30b, gemma4-31b, ornith-1.5-35b-a3b-iq3 |
+| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, muse-glimmer-30b-q4, ornith-1.5-35b-a3b |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
 
 The catalogue advertises **only models released in 2026** — the Qwen3.5 / 3.6 / 3.8 and
@@ -271,8 +271,9 @@ Gemma 4 lines, Meta's Muse Glimmer and IBM's Granite 4.2, with full tool-calling
 0.8B. It's refreshed over time via `winc update` (see below), so older rosters are pruned
 as better models land. Entries the maintainer has not yet run through winc's coding set
 say so in their `winc ls` note (the Aug 2026 additions — Qwen3.8-27B, Muse Glimmer,
-Granite 4.2 — are published-benchmark picks until measured; the tier defaults are
-unchanged). Muse Glimmer needs an engine from b10353 or later (`winc update`).
+Granite 4.2, plus Sep 2026's Ornith-1.5 and Spark-X2.5 — are published-benchmark picks
+until measured; the tier defaults are unchanged). Muse Glimmer needs an engine from
+b10353 or later and Spark-X2.5 from b10828 or later (`winc update`).
 
 > **Apple Silicon note:** unified memory is shared with the OS and the GPU can only use
 > ~75% of it, so winc budgets ~72% of your RAM when picking a tier — e.g. a 24 GB Mac
@@ -316,8 +317,10 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | Model | Params | Size | Released | LiveCodeBench~ | tok/s (4-6 GB GPU / CPU) | Best for |
 |---|---|---|---|---|---|---|
 | ★ qwen3.5-4b | 4B | 2.6 GB | Feb 2026 | ~56 | ~45-65 / ~10-18 | best tiny **coder + tools** |
+| spark-x2.5-4b | 4B | 2.6 GB | Sep 2026 | SWE-Pro 44.4 | ~60-90 / ~14-24 | **fastest 4B** (+36% measured), 1M ctx; engine b10828+ |
 | gemma4-e2b | 2.3B eff | 2.9 GB | Mar 2026 | ~44 | ~50-70 / ~12-20 | general, multimodal |
 | qwen3.5-2b | 2B | 1.2 GB | Feb 2026 | — | ~80-110 / ~22-36 | fastest small coder |
+| spark-x2.5-1.7b | 1.7B | 1.1 GB | Sep 2026 | — | ~90-130 / ~26-42 | 1M ctx on a phone-class model (unmeasured) |
 | qwen3.5-0.8b | 0.8B | 0.5 GB | Mar 2026 | — | ~120-160 / ~40-60 | phones / edge |
 | granite4.2-3b | 3B | 2.2 GB | Aug 2026 | — | ~55-75 / ~14-22 | IBM edge tool-caller, thinking switch (unmeasured here) |
 
@@ -326,6 +329,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | Model | Params | Size | Released | LiveCodeBench~ | tok/s (6-8 GB GPU / CPU) | Best for |
 |---|---|---|---|---|---|---|
 | ★ ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
+| ornith-1.5-9b | 9B | 5.8 GB | Aug 2026 | SWE-bench 70.6 | ~22-32 / ~6-10 | 1.0's successor, MTP baked in; measured 1/2 vs 1.0's 2/2 on the mini gate |
 | qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
 | granite4.2-8b | 8B | 5.2 GB | Aug 2026 | — | ~24-34 / ~7-11 | IBM agentic-RL tool-caller (unmeasured here) |
@@ -456,7 +460,7 @@ supports the flag** (older engines just run without it):
 
 **Qwen3.8 bakes its MTP head into every standard quant** — there is no separate `-mtp`
 variant. winc reads `nextn_predict_layers` from the GGUF metadata (not the filename) and
-turns `draft-mtp` on for `qwen3.8-27b` / `-q4` / `-q5` wherever MTP is active (CUDA,
+turns `draft-mtp` on for `qwen3.8-27b` / `-q4` / `-q5` and the `ornith-1.5-*` line wherever MTP is active (CUDA,
 Vulkan, CPU; off on Metal like every other speculation), so a downloaded Qwen3.8 file is
 already the fast variant.
 
