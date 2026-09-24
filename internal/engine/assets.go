@@ -58,7 +58,7 @@ const (
 	llamaRepo        = "ggml-org/llama.cpp"
 	swapRepo         = "mostlygeek/llama-swap"
 	wincRepo         = "samdotson61/winc.cpp"
-	llamaFallbackTag = "b10621" // verified 2026-09-03 (the v0.3.0 nightly-tag pick; asset set intact; loads + benches the Metal roster flat vs b9651)
+	llamaFallbackTag = "b11146" // verified 2026-09-24 (the v0.5.0 nightly-tag pick; asset set intact; loads + benches the Metal roster, +5% 9B decode vs b10621; needed for spark2_5)
 	swapFallbackTag  = "223"    // verified 2026-06-06 (release tag v223)
 )
 

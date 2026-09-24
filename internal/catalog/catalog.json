@@ -40,6 +40,15 @@
   },
   {
    "tier": "nano",
+   "alias": "spark-x2.5-4b",
+   "name": "Spark-X2.5-4B Q4_K_M",
+   "size": "2.6 GB",
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "file": "Spark-X2.5-4B-Q4_K_M.gguf",
+   "note": "iFlytek/SparkLLM Sep 1 2026 (Apache 2.0): 4B with a 1M-token native context (hybrid 1 full : 3 sliding-window attention), BFCL-V4 65.1 / SWE-bench Pro 44.4, thinking on by default. NEEDS ENGINE b10828+ (arch spark2_5; 'winc update'). MEASURED (M4 Pro, b11146): 72.6 tok/s decode vs qwen3.5-4b's 53.5 (+36%), 64.3 vs 44.8 at 8k depth; tools + JSON pass; 1/2 on the two-task coding gate - the same score as qwen3.5-4b, which stays the default. Text-only, own tokenizer. With thinking left on it ran an 8000-token budget dry on one task: prefer reasoning off or a budget for agent use"
+  },
+  {
+   "tier": "nano",
    "alias": "gemma4-e2b",
    "name": "Gemma 4 E2B-IT Q4_K_M",
    "size": "2.9 GB",
@@ -87,6 +96,15 @@
    "mmproj_repo": "unsloth/Qwen3.5-2B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.5-2B-mmproj.gguf"
+  },
+  {
+   "tier": "nano",
+   "alias": "spark-x2.5-1.7b",
+   "name": "Spark-X2.5-1.7B Q4_K_M",
+   "size": "1.1 GB",
+   "repo": "XHToken/Spark-X2.5-1.7B-GGUF",
+   "file": "Spark-X2.5-1.7B-Q4_K_M.gguf",
+   "note": "The 1.7B member of Spark-X2.5 (Sep 2026, Apache 2.0): 1M-token context on a phone-class model, tool calling. NEEDS ENGINE b10828+. Unmeasured here; qwen3.5-2b stays the pick for coding"
   },
   {
    "tier": "nano",
@@ -145,6 +163,18 @@
    "mmproj_repo": "unsloth/Ornith-1.0-9B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Ornith-1.0-9B-mmproj.gguf"
+  },
+  {
+   "tier": "small",
+   "alias": "ornith-1.5-9b",
+   "name": "Ornith-1.5-9B Q4_K_M (agentic coder, MTP baked in)",
+   "size": "5.8 GB",
+   "repo": "ornith-ai/Ornith-1.5-9B-GGUF",
+   "file": "Ornith-1.5-9B-Q4_K_M.gguf",
+   "note": "Ornith AI's Aug 19 2026 successor to ornith-9b (MIT, same Qwen3.5 base + tokenizer, 262K ctx, vision): now generates its own tasks AND scaffolds. Published SWE-bench Verified 70.6 / Terminal-Bench 2.1 46.2 / GPQA 86.4. MTP head baked in (nextn_predict_layers=1; winc detects it). MEASURED (M4 Pro, b11146): decode 38.8 vs 37.5 tok/s for 1.0; tools + JSON pass; but 1/2 on a two-task coding gate (reasoning off; an undefined Node class in the LRU task) against 1.0's 2/2 - so ornith-9b keeps the default until a fuller bake-off",
+   "mmproj_repo": "ornith-ai/Ornith-1.5-9B-GGUF",
+   "mmproj_file": "mmproj-Ornith-1.5-9B-BF16.gguf",
+   "mmproj_save": "Ornith-1.5-9B-mmproj.gguf"
   },
   {
    "tier": "small",
@@ -290,6 +320,18 @@
    "mmproj_save": "gemma-4-31B-it-mmproj.gguf"
   },
   {
+   "tier": "mid",
+   "alias": "ornith-1.5-35b-a3b-iq3",
+   "name": "Ornith-1.5-35B-A3B IQ3_XXS (MoE, MTP baked in)",
+   "size": "15.3 GB",
+   "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+   "file": "Ornith-1.5-35B-A3B-IQ3_XXS.gguf",
+   "note": "Ornith AI's Aug 2026 MoE (MIT, Qwen3.5-35B-A3B base + tokenizer, 3B active, 262K ctx, vision, MTP head baked in - winc detects it). Published SWE-bench Verified 79.0 / Terminal-Bench 2.1 67.8 / SWE-bench Pro 59.6 - above qwen3.6-35b's 73.4 / 52.5 / 49.5 on the same base architecture. NOT yet measured here (a 35B is beyond this Mac's coding-gate budget); qwen3.6-35b keeps the tier default until it is. bartowski imatrix IQ3_XXS rung for 16 GB GPUs / 24 GB Macs (the official repo has no sub-Q4 build)",
+   "mmproj_repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+   "mmproj_file": "mmproj-Ornith-1.5-35B-BF16.gguf",
+   "mmproj_save": "Ornith-1.5-35B-mmproj.gguf"
+  },
+  {
    "tier": "large",
    "alias": "qwen3.6-35b-q4",
    "name": "Qwen3.6-35B-A3B UD-Q4_K_M (MoE)",
@@ -353,6 +395,18 @@
    "mmproj_repo": "unsloth/Muse-Glimmer-30B-GGUF",
    "mmproj_file": "mmproj-kquant.gguf",
    "mmproj_save": "Muse-Glimmer-30B-mmproj.gguf"
+  },
+  {
+   "tier": "large",
+   "alias": "ornith-1.5-35b-a3b",
+   "name": "Ornith-1.5-35B-A3B Q4_K_M (MoE, MTP baked in)",
+   "size": "21.9 GB",
+   "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+   "file": "Ornith-1.5-35B-Q4_K_M.gguf",
+   "note": "Ornith AI's Aug 2026 MoE (MIT, Qwen3.5-35B-A3B base + tokenizer, 3B active, 262K ctx, vision, MTP head baked in - winc detects it). Published SWE-bench Verified 79.0 / Terminal-Bench 2.1 67.8 / SWE-bench Pro 59.6 - above qwen3.6-35b's 73.4 / 52.5 / 49.5 on the same base architecture. NOT yet measured here (a 35B is beyond this Mac's coding-gate budget); qwen3.6-35b keeps the tier default until it is. Official Q4_K_M for 24 GB+ GPUs / 32 GB+ Macs",
+   "mmproj_repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+   "mmproj_file": "mmproj-Ornith-1.5-35B-BF16.gguf",
+   "mmproj_save": "Ornith-1.5-35B-mmproj.gguf"
   },
   {
    "tier": "large",
