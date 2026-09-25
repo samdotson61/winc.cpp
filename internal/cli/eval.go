@@ -133,12 +133,12 @@ const evalEvalThresholdMB = 5120
 // 5 GB+: the Qwen 4B anchor leads (also 12/12, the quality ceiling here), then
 // gemma4-e2b, then the 2B.
 //
-// RE-CHECKED 2026-07-21 on the current decomposed Jobfaro rubric (6-posting
+// RE-CHECKED 2026-07-21 on the current decomposed Jobdar rubric (6-posting
 // harness, 5070 Ti): the first pass served WITHOUT the production stack (no
 // schema grammar, plain sampling) and measured the 2B-Q4 at 1/6 valid JSON —
 // which turned out to be a HARNESS ARTIFACT. Re-measured the same day under
 // the REAL production shape (this profile's --reasoning off + --temp 0
-// --top-k 1, PLUS jobfaro's response_format=json_schema and max_tokens 700):
+// --top-k 1, PLUS jobdar's response_format=json_schema and max_tokens 700):
 // the 2B is 6/6 valid JSON, 5/6 correct — including BOTH senior/mid reject
 // traps — answering in 219-342 tokens; the same server without the schema
 // drops to 3/6 JSON. Mechanism: schema-less serving lets Qwen3.5 verbalize

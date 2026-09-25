@@ -2,11 +2,11 @@ package cli
 
 import "testing"
 
-// The winc-jobdar branch is jobfaro's inference backend. Its whole reason to
+// The winc-jobdar branch is jobdar's inference backend. Its whole reason to
 // exist is that `winc serve --eval` stays stable here while master moves, so
 // the one thing that must never happen is a jobdar binary quietly replacing
 // itself with a master release build -- that would drop the eval profile under
-// a running jobfaro install with no error and no visible version change beyond
+// a running jobdar install with no error and no visible version change beyond
 // a suffix disappearing.
 //
 // The only thing standing between that and a user is isJobdarBuild(), keyed on
@@ -31,7 +31,7 @@ func TestIsJobdarBuildRecognisesBranchVersions(t *testing.T) {
 			Version = v
 			if !isJobdarBuild() {
 				t.Fatalf("isJobdarBuild() = false for %q; the self-update guard is disarmed and a "+
-					"master release would overwrite this jobfaro backend", v)
+					"master release would overwrite this jobdar backend", v)
 			}
 		})
 	}

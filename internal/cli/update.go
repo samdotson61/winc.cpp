@@ -142,7 +142,7 @@ func liveOnPath(dir string) bool {
 
 // isJobdarBuild reports whether this binary was built from the winc-jobdar
 // branch, which is identified solely by the "-jobdar.N" suffix its version.go
-// carries. This is the single predicate protecting jobfaro's backend: the
+// carries. This is the single predicate protecting jobdar's backend: the
 // branch exists to hold the `winc serve --eval` profile stable, and any path
 // that would swap this binary for a master release must consult it first.
 // The branch is never tagged, so there is no jobdar release to update TO --
