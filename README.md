@@ -64,7 +64,7 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 |---------|--------------|
 | `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
-| `winc -d <alias> [-y]` | Download a catalogue model (vision projector downloads automatically for multimodal models; offers the MTP head for Gemma 4 and the DFlash head for Qwen3.5 4B/9B; `-y` auto-accepts) |
+| `winc -d <alias> [-y] [--eval]` | Download a catalogue model (vision projector downloads automatically for multimodal models; offers the MTP head for Gemma 4 and the DFlash head for Qwen3.5 4B/9B; `-y` auto-accepts; `--eval` fetches the model only — what `serve --eval` loads) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
 | `winc -r <model> [-y]` | Delete a downloaded model |
 | `winc -s` | Start the **last used** agent on the **last used** model (every successful agent start updates the defaults) |

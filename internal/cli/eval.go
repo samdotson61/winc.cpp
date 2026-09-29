@@ -95,6 +95,17 @@ func applyEvalProfile(cfg *config.Config) {
 	cfg.Performance.CacheType = "q8_0"
 	cfg.Performance.Mtp = "off"
 	cfg.Performance.DraftModel = ""
+	// Scoring is text-only and speculation-free. Vision OFF: a downloaded mmproj
+	// was loaded into every eval server (~0.7 GB of memory for nothing). DFlash
+	// and ngram OFF with it, and they MUST go together: while the projector was
+	// loaded, dflashActive yielded to vision and llama-server itself disabled
+	// speculation for the multimodal model -- so the bench-validated eval path
+	// never speculated. Vision off alone turned ngram-simple ON (measured on
+	// Windows: 4% draft acceptance on eval JSON -- pure overhead) and would have
+	// engaged DFlash wherever a head sits next to the model.
+	cfg.Performance.Vision = "off"
+	cfg.Performance.Dflash = "off"
+	cfg.Performance.Ngram = "off"
 	cfg.Reasoning.Mode = "off"
 	cfg.Performance.GreedySampling = true // deterministic scoring: argmax, not agent sampling
 }

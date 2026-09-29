@@ -38,6 +38,49 @@ func TestApplyEvalProfileServerArgs(t *testing.T) {
 	}
 }
 
+// A real eval install has the model's vision projector and DFlash head sitting
+// next to it (plain `winc -d` fetches both). The eval profile must load
+// NEITHER: scoring is text-only (the projector was ~0.7 GB of memory for
+// nothing), and draft speculation is off for evals. The two are coupled --
+// dflashActive yields to vision -- so turning vision off without DFlash would
+// have switched draft speculation ON. The control run proves the files ARE
+// detected, so the eval assertions can't pass vacuously.
+func TestEvalProfileLoadsNoProjectorOrDraftHead(t *testing.T) {
+	dir := t.TempDir()
+	model := filepath.Join(dir, "Qwen3.5-4B-Q4_K_M.gguf")
+	for _, f := range []string{model, filepath.Join(dir, "Qwen3.5-4B-mmproj.gguf"), filepath.Join(dir, "Qwen3.5-4B-DFlash.gguf")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hw := platform.Hardware{OS: "windows", GPUVendor: "nvidia", VRAMMB: 16384, GPUs: []platform.GPUDevice{{TotalMB: 16384}}}
+
+	plain := config.Defaults()
+	if s := strings.Join(engine.ServerArgs(&plain, hw, model, 8099, "", 0), " "); !strings.Contains(s, "--mmproj") {
+		t.Fatalf("control: default config should load the projector found next to the model: %s", s)
+	}
+
+	cfg := config.Defaults()
+	applyEvalProfile(&cfg)
+	s := strings.Join(engine.ServerArgs(&cfg, hw, model, 8099, "", 0), " ")
+	for _, never := range []string{"--mmproj", "--spec-", "DFlash", "draft"} {
+		if strings.Contains(s, never) {
+			t.Errorf("eval args must not contain %q: %s", never, s)
+		}
+	}
+	// Speculation flags are appended at launch by SpecArgs (MTP/DFlash + ngram),
+	// not ServerArgs -- check exactly what the launch would add.
+	if d := engine.SpecArgs(&cfg, hw, model, "", true); d != nil {
+		t.Errorf("eval profile must not speculate (no DFlash, no ngram): %v", d)
+	}
+	// The trap, proven: vision off with DFlash left on engages draft speculation.
+	trap := config.Defaults()
+	trap.Performance.Vision = "off"
+	if engine.DFlashArgs(&trap, hw, model, "") == nil {
+		t.Error("control: vision off alone should engage DFlash (else this test can't see the coupling)")
+	}
+}
+
 // Tier auto-pick: low end leads with gemma4-e2b (the measured-best sub-3GB eval
 // judge), 5GB+ leads with the Qwen 4B anchor; each falls back through its
 // tier-ordered preference to whatever is downloaded.

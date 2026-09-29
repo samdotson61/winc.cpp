@@ -3,6 +3,29 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.41.0-jobdar.2 — 2026-09-29 (winc-jobdar branch)
+
+**The eval install fetches and loads only what scoring uses.** Found on Jobdar
+Desktop's first real Windows run: its one-click setup promises a 2.7 GB model,
+but `winc -d qwen3.5-4b` also pulled the DFlash head (0.69 GB — the head prompt
+defaults to yes when non-interactive) and the vision projector (0.67 GB), and
+`serve --eval` then loaded the projector into every eval server.
+
+- **`applyEvalProfile` turns vision, DFlash and ngram off.** Scoring is
+  text-only and speculation-free. The three are coupled: while the projector
+  was loaded, `dflashActive` yielded to vision and llama-server disabled
+  speculation for the multimodal model, so the bench-validated eval path never
+  speculated. Vision off alone turned `ngram-simple` ON (measured on Windows:
+  4% draft acceptance on eval JSON — pure overhead) and would engage DFlash
+  wherever a head sits next to the model.
+  `TestEvalProfileLoadsNoProjectorOrDraftHead` pins all three against the
+  real launch flags (`ServerArgs` + `SpecArgs`, with model, projector and head
+  on disk; controls prove the files are detected and the vision-only trap is
+  real); verified to FAIL with any one of the three settings removed.
+- **`winc -d <alias> --eval`** downloads the model only — no MTP head, DFlash
+  head or projector. Jobdar's managed setup passes it. Older winc builds ignore
+  the extra argument, so the flag is safe to send.
+
 ## 1.41.0-jobdar.1 — 2026-09-24 (winc-jobdar branch)
 
 Merge of master **v1.41.0** (Sep-2026 catalogue pass). **`internal/cli/eval.go`

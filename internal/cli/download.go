@@ -14,17 +14,25 @@ import (
 
 func cmdDownload(args []string) int {
 	autoYes := false
+	// --eval: fetch only what `winc serve --eval` loads -- the model itself. Its
+	// MTP/DFlash heads and vision projector are never used by the eval profile
+	// (applyEvalProfile turns all three off), and non-interactively the head
+	// prompts default to yes: Jobdar Desktop's one-click setup was pulling ~1.4 GB
+	// of extras on top of the 2.7 GB model it tells the user about.
+	evalOnly := false
 	var pos []string
 	for _, a := range args {
 		switch a {
 		case "-y", "--yes":
 			autoYes = true
+		case "--eval":
+			evalOnly = true
 		default:
 			pos = append(pos, a)
 		}
 	}
 	if len(pos) == 0 {
-		ui.Err("usage: winc -d <alias> [-y]   or   winc -d <repo> <file>")
+		ui.Err("usage: winc -d <alias> [-y] [--eval]   or   winc -d <repo> <file>")
 		return 1
 	}
 	cfg := loadConfig()
@@ -51,10 +59,12 @@ func cmdDownload(args []string) int {
 	target := filepath.Join(md, localName)
 	if fileExists(target) {
 		ui.Good("already downloaded: %s", localName)
-		offerMTPHead(cfg, m, autoYes)
-		offerDFlashHead(cfg, m, autoYes)
-		ensureMmproj(cfg, m)
-		mtpTip(cat, m)
+		if !evalOnly {
+			offerMTPHead(cfg, m, autoYes)
+			offerDFlashHead(cfg, m, autoYes)
+			ensureMmproj(cfg, m)
+			mtpTip(cat, m)
+		}
 		return 0
 	}
 	ui.Good("Downloading %s", localName)
@@ -67,6 +77,9 @@ func cmdDownload(args []string) int {
 	ui.Good("done: %s", localName)
 	if engine.IsMTPFile(target) {
 		ui.Good("MTP variant - winc turns on --spec-type draft-mtp automatically at launch")
+	}
+	if evalOnly {
+		return 0
 	}
 	offerMTPHead(cfg, m, autoYes)
 	offerDFlashHead(cfg, m, autoYes)
