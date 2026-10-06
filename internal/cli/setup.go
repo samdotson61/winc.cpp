@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"winc/internal/agent"
 	"winc/internal/catalog"
 	"winc/internal/config"
 	"winc/internal/download"
@@ -12,13 +13,13 @@ import (
 	"winc/internal/ui"
 )
 
-// cmdSetup is the first-run wizard: detect -> engine -> model -> PATH. Idempotent;
-// safe to re-run.
+// cmdSetup is the first-run wizard: detect -> engine -> model -> Claude Code ->
+// PATH. Idempotent; safe to re-run.
 func cmdSetup() int {
 	cfg := loadConfig() // writes default winc.toml if missing
 	cat := catalog.Load(cfg.CustomModels)
 
-	ui.Step(1, 6, "Detecting hardware")
+	ui.Step(1, 7, "Detecting hardware")
 	hw := platform.DetectHardware()
 	ui.Say("  OS=%s/%s  RAM=%d MB  GPU=%s %s  VRAM=%d MB", hw.OS, hw.Arch, hw.RAMMB, hw.GPUVendor, hw.GPUName, hw.VRAMMB)
 	tier := catalog.VramTier(hw.MemoryBudgetMB())
@@ -59,7 +60,23 @@ func cmdSetup() int {
 		ui.Say("  no catalogue model for tier %q; use 'winc -d <alias>'", tier)
 	}
 
-	ui.Step(6, 6, "PATH")
+	ui.Step(6, 7, "Coding agent: Claude Code")
+	// The agent is the other half of the product; a fresh machine used to leave
+	// this wizard with nothing to launch. Native install, same release bucket and
+	// checksums as the official one-liners, offered -- never forced.
+	if p, ok := agent.Resolve("claude"); ok {
+		if v := claudeVersion(p); v != "" {
+			ui.Good("Claude Code: %s (%s)", p, v)
+		} else {
+			ui.Good("Claude Code: %s", p)
+		}
+	} else if ui.Interactive() && ui.Confirm("Claude Code is not installed. Install it now (official release, sha256-verified, ~250 MB)?", true) {
+		installClaude("")
+	} else {
+		ui.Say("  not installed - any time:  winc install claude   (or 'winc -s claude <model>' offers it)")
+	}
+
+	ui.Step(7, 7, "PATH")
 	dir := paths.InstallDir()
 	// Gate on the LIVE PATH, not the recorded rc entries: an install that wrote
 	// .bashrc before fish support existed "looks recorded" forever while fish

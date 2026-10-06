@@ -42,6 +42,8 @@ func Run(args []string) int {
 		return cmdUninstall(rest)
 	case "setup":
 		return cmdSetup()
+	case "-i", "install":
+		return cmdInstall(rest)
 	case "detect":
 		return cmdDetect()
 	case "doctor":

@@ -71,6 +71,12 @@ func cmdStart(args []string) int {
 		ui.Err("unknown app %q (use claude, opencode, openclaw, or cli)", app)
 		return 1
 	}
+	// Gate on the agent BEFORE loading a model: a missing Claude Code is offered
+	// for install right here (the launch then finds it without a new terminal);
+	// a declined install stops cleanly instead of after a 30 s model load.
+	if app != "cli" && !ensureAgent(app) {
+		return 1
+	}
 
 	// Launches use the cached hardware identity (live free-VRAM probe only);
 	// `winc detect` / doctor still run the full probe and refresh the cache.
@@ -162,9 +168,6 @@ func cmdStart(args []string) int {
 		reportJournal(cfg, r)
 	}
 
-	if !agent.Available(app) {
-		ui.Warn("%s not found on PATH - install it, then re-run.", app)
-	}
 	slots := agent.Slots{Sonnet: alias, Opus: alias, Haiku: alias}
 	env := agent.Env(baseURL, slots, maxOut, loadedCtx, "", "")
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)

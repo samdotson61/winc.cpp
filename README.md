@@ -45,8 +45,10 @@ not require it. Signing starts with v1.31.0 — earlier releases have no attesta
 Either way, `winc setup` detects your hardware, downloads the right prebuilt llama.cpp backend
 (CUDA / Metal / Vulkan / ROCm / CPU — with **native ARM builds** on Windows-on-ARM and ARM
 Linux, Adreno OpenCL included, never x64-under-emulation) + llama-swap, picks a model for your
-memory tier, and adds `winc` to your PATH. It's idempotent and fully portable — move the folder
-anywhere and it still works (no baked paths).
+memory tier, **installs Claude Code if you don't have it** (the official release, SHA256-verified
+against Anthropic's manifest — see [Installing Claude Code](#installing-claude-code)), and adds
+`winc` to your PATH. It's idempotent and fully portable — move the folder anywhere and it still
+works (no baked paths).
 
 Then start coding on a local model:
 
@@ -62,7 +64,8 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 
 | Command | What it does |
 |---------|--------------|
-| `winc setup` | First-run wizard: detect -> engine -> model -> PATH |
+| `winc setup` | First-run wizard: detect -> engine -> model -> Claude Code -> PATH |
+| `winc install [claude] [stable\|latest\|<version>]` | Install Claude Code (alias `winc -i`): the official release binary, SHA256-verified, then its own `claude install`; `winc -s claude` offers this automatically when the agent is missing |
 | `winc ls` | Downloaded models, then the catalogue (tiered, `[installed]` marked) |
 | `winc -d <alias> [-y]` | Download a catalogue model (vision projector downloads automatically for multimodal models; offers the MTP head for Gemma 4 and the DFlash head for Qwen3.5 4B/9B; `-y` auto-accepts) |
 | `winc -d <repo> <file>` | Download any GGUF from HuggingFace |
@@ -544,11 +547,37 @@ Linux) so a hard kill can't leave a stray server holding your GPU.
 
 ---
 
+## Installing Claude Code
+
+You don't need Claude Code before winc. `winc setup` checks for it (PATH plus every supported
+installer's location: `~/.local/bin`, npm, WinGet, Homebrew, apt/dnf) and offers to install it;
+`winc -s claude <model>` makes the same offer **before** loading a model, and `winc install claude`
+does it on demand. The install is the official one with no shell script in between: winc reads
+the current version from Anthropic's release bucket, downloads that release's binary for your
+platform with its own resumable downloader, **verifies size and SHA256 against the release
+`manifest.json`** (a mismatch is discarded, never run), then runs the binary's own
+`claude install` — which places it under `~/.local/share/claude`, links `~/.local/bin/claude`
+and registers the native install so Claude Code's background auto-updater keeps it current.
+Where that installer leaves the PATH entry to you, winc records `~/.local/bin` itself with the
+same method it uses for its own folder (user PATH on Windows; bash/zsh/profile and fish on
+macOS/Linux). `winc install claude stable` (or an exact version) picks the
+release channel. If the native path fails, winget (Windows) or Homebrew (macOS) is offered,
+then the manual commands are printed. Prompts only appear on a real terminal; scripts get the
+printed command and a non-zero exit.
+
+The freshly installed `claude` launches from the same winc run — winc resolves the agent to a
+path rather than relying on the PATH your shell started with. `winc doctor` shows which install
+it found and its version.
+
+---
+
 ## Running alongside cloud Claude Code
 
 `winc -s` sets `CLAUDE_CONFIG_DIR` to a sandboxed `.claude-local/` folder, so your local
 instance never touches your logged-in cloud Claude Code. Use Opus in one terminal and a
-local model in another.
+local model in another. The Claude Code **binary** is shared (there is one install per
+machine, and `winc install claude` is that same official install); only the configuration,
+login and permissions are separate.
 
 ---
 

@@ -46,6 +46,11 @@ func Err(format string, a ...any)  { fmt.Fprintln(os.Stderr, col(red, "[x] ")+ms
 func Info(format string, a ...any) { fmt.Println(col(cyan, "[.] ") + msg(format, a...)) }
 func Dim(format string, a ...any)  { fmt.Println(col(dim, msg(format, a...))) }
 
+// Interactive reports whether stdin is a terminal -- i.e. a person is there to
+// answer a prompt. Scripts and CI pipes get the default path, never a hang or
+// a silent yes to something that changes the machine.
+func Interactive() bool { return stdinIsTerminal() }
+
 // Prompt asks a question and returns the trimmed reply.
 func Prompt(question string) string {
 	fmt.Print(question + " ")

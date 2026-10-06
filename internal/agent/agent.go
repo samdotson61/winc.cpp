@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"winc/internal/paths"
 )
@@ -128,31 +129,36 @@ func command(app string) (name string, args []string, ok bool) {
 	return "", nil, false
 }
 
-// Available reports whether the agent's launcher is on PATH.
+// Available reports whether the agent's launcher can be found (PATH or a known
+// install location -- see Resolve).
 func Available(app string) bool {
-	name, _, ok := command(app)
-	if !ok {
-		return false
-	}
-	if _, err := exec.LookPath(name); err == nil {
-		return true
-	}
-	// Windows npm shims (claude.cmd) are found by LookPath via PATHEXT; if not,
-	// cmd /c may still resolve them, so don't hard-fail on Windows.
-	return runtime.GOOS == "windows"
+	_, ok := Resolve(app)
+	return ok
 }
 
 // Launch runs the agent interactively (inherits stdio), blocking until it exits.
+// The launcher is resolved to a path first (PATH, then the installers' known
+// locations), so an agent installed in this same winc run -- before the shell
+// saw its PATH entry -- still starts.
 func Launch(app string, env []string) error {
-	name, args, ok := command(app)
+	_, args, ok := command(app)
 	if !ok {
 		return fmt.Errorf("unknown app %q (use claude, opencode, or openclaw)", app)
 	}
+	path, found := Resolve(app)
+	if !found {
+		if app == "claude" {
+			return fmt.Errorf("Claude Code is not installed - run: winc install claude")
+		}
+		return fmt.Errorf("%s is not installed - install it, then re-run", app)
+	}
 	var c *exec.Cmd
-	if runtime.GOOS == "windows" {
-		c = exec.Command("cmd", append([]string{"/c", name}, args...)...)
-	} else {
-		c = exec.Command(name, args...)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cmd", ".bat":
+		// npm shims are batch files; only cmd.exe can run those.
+		c = exec.Command("cmd", append([]string{"/c", path}, args...)...)
+	default:
+		c = exec.Command(path, args...)
 	}
 	c.Env = env
 	c.Stdin = os.Stdin
