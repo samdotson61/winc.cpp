@@ -40,6 +40,7 @@ func cmdLs() int {
 
 	ui.Say("")
 	ui.Say("Available to download (alias  ~size  model):")
+	ui.Say("  %s %s", catalog.MTPVisionBadge, catalog.MTPVisionWarning)
 	for _, tier := range catalog.TierOrder {
 		models := cat.ByTier(tier)
 		if len(models) == 0 {
@@ -51,6 +52,9 @@ func cmdLs() int {
 			mark := ""
 			if fileExists(filepath.Join(md, m.LocalFile())) {
 				mark = "  [installed]"
+			}
+			if m.HasMTP() {
+				mark = "  " + catalog.MTPVisionBadge + mark
 			}
 			ui.Say("  %-20s %9s  %s%s", m.Alias, m.Size, m.Name, mark)
 		}

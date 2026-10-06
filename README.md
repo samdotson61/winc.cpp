@@ -329,7 +329,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | Model | Params | Size | Released | LiveCodeBench~ | tok/s (6-8 GB GPU / CPU) | Best for |
 |---|---|---|---|---|---|---|
 | ★ ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
-| ornith-1.5-9b | 9B | 5.8 GB | Aug 2026 | SWE-bench 70.6 | ~22-32 / ~6-10 | 1.0's successor, MTP baked in; measured 1/2 vs 1.0's 2/2 on the mini gate |
+| ornith-1.5-9b | 9B | 5.8 GB | Aug 2026 | SWE-bench 70.6 | ~22-32 / ~6-10 | 1.0's successor, MTP baked in (**no vision with MTP**); measured 1/2 vs 1.0's 2/2 on the mini gate |
 | qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
 | granite4.2-8b | 8B | 5.2 GB | Aug 2026 | — | ~24-34 / ~7-11 | IBM agentic-RL tool-caller (unmeasured here) |
@@ -379,7 +379,7 @@ end of this section only exist if you want to override a decision.
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
 | **External drafts: explicit-only** | The dense 0.8B auto-pair is retired — measured a decode **loss** on every backend tested (CUDA 5070 Ti: −43% code / −57% chat at 67% acceptance; Metal: 0% best case; CPU: halved): the draft's own serial generation costs more than batch verification saves. Set `draft_model` in `winc.toml` to force one anyway | No silent slowdown from a "speedup" — measured-no, documented in the CHANGELOG |
-| **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine) | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
+| **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine). **No vision with MTP**: a loaded image projector turns MTP off (`vision = "off"` keeps MTP, drops image input) — every MTP surface (`winc ls`, download, launch) says so | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
 | **ngram speculation (model-free, default on)** | Every non-Metal launch adds `ngram-simple` to the speculative types: drafts come from n-grams already seen in the prompt + generation, verified by the model itself — no draft model, no VRAM, output-exact | Agentic coding constantly re-emits files, diffs and JSON: **4.4–7.2× decode** on re-emission/edit turns (4B 181→1103 tok/s), with **zero measured cost** on fresh generation; `ngram = "off"` opts out |
 | **Vision (image input), automatic** | The catalogue's Qwen3.5/3.6 + Gemma 4 models are natively multimodal; winc downloads each model's official `mmproj` projector automatically (with the model, or healed at launch) and pairs it via `--mmproj` — one projector serves every quant and MTP variant of its family | Paste images into Claude Code on a local model and it just works; without the projector every image 500s. Draft speculation yields on vision servers (measured incompatible with image batches); ngram stays. `vision = "off"` opts out |
 | **DFlash draft heads (Qwen3.5 4B/9B)** | A small per-model drafter head (the z-lab line) offered at download and paired automatically at launch, composed with ngram into one spec-type; MTP models keep their own heads | The one case ngram can't speed up: **fresh generation** — measured **+57% on the 4B** (178→280 tok/s) and **2× on the 9B** (120→240); `dflash = "off"` opts out |
@@ -457,6 +457,14 @@ supports the flag** (older engines just run without it):
 - `winc -d qwen3.6-35b-mtp` / `winc -d qwen3.6-35b-q4-mtp` — the 35B MoE
   (~1.15–1.25× — the only speculative speedup that helps a MoE)
 - `winc -d qwen3.5-9b-mtp` — the small-tier 9B, faster than its external 0.8B draft
+
+> **No vision with MTP.** Draft speculation and a loaded vision projector cannot run
+> together (measured, b10298: the draft can't process image-embedding batches and
+> llama-server 500s on every image request), so a vision-active server drops MTP and
+> DFlash and keeps only ngram. The projector downloads automatically, which means **an
+> MTP model runs without its MTP speedup by default**. Set `vision = "off"` in
+> `[performance]` to keep MTP — you give up image input. `winc ls` marks every
+> MTP-capable model `[MTP: no vision]`, and the launch log says when MTP yielded.
 
 **Qwen3.8 bakes its MTP head into every standard quant** — there is no separate `-mtp`
 variant. winc reads `nextn_predict_layers` from the GGUF metadata (not the filename) and

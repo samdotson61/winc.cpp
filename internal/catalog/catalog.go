@@ -24,16 +24,17 @@ var catalogJSON []byte
 const sourceURL = "https://raw.githubusercontent.com/samdotson61/winc.cpp/master/internal/catalog/catalog.json"
 
 type Model struct {
-	Tier    string `json:"tier"`
-	Alias   string `json:"alias"`
-	Name    string `json:"name"`
-	Size    string `json:"size"`
-	Repo    string `json:"repo"`
-	File    string `json:"file"`               // filename in the HF repo to download
-	Save    string `json:"save,omitempty"`     // local filename to save as (default: File); used to disambiguate MTP variants
-	Draft   string `json:"draft,omitempty"`    // alias of a same-tokenizer draft model (speculative decoding); "" = none
-	Mtp     string `json:"mtp,omitempty"`      // alias of this model's Multi-Token-Prediction variant (heads baked in); "" = none
-	MtpHead string `json:"mtp_head,omitempty"` // repo path of a separate MTP drafter head fetched alongside (Gemma 4); "" = none
+	Tier     string `json:"tier"`
+	Alias    string `json:"alias"`
+	Name     string `json:"name"`
+	Size     string `json:"size"`
+	Repo     string `json:"repo"`
+	File     string `json:"file"`                // filename in the HF repo to download
+	Save     string `json:"save,omitempty"`      // local filename to save as (default: File); used to disambiguate MTP variants
+	Draft    string `json:"draft,omitempty"`     // alias of a same-tokenizer draft model (speculative decoding); "" = none
+	Mtp      string `json:"mtp,omitempty"`       // alias of this model's Multi-Token-Prediction variant (heads baked in); "" = none
+	MtpHead  string `json:"mtp_head,omitempty"`  // repo path of a separate MTP drafter head fetched alongside (Gemma 4); "" = none
+	MtpBaked bool   `json:"mtp_baked,omitempty"` // MTP head baked into every standard quant (Qwen3.8, Ornith-1.5): detected from GGUF metadata at launch, flagged here so listings can warn before download
 	// DFlash drafter head: a small per-model GGUF from its OWN HF repo (z-lab line),
 	// saved locally as DflashSave ("<Family>-DFlash.gguf") so launch pairing can use
 	// the same family-prefix rule as MTP heads. All three set together or not at all.
@@ -231,4 +232,29 @@ func VramTier(mb int) string {
 	default:
 		return "nano"
 	}
+}
+
+// MTPVisionWarning is the one trap every MTP surface must state. Draft speculation
+// and a loaded vision projector are mutually exclusive at launch (MEASURED b10298:
+// the draft can't process image-embedding batches and llama-server 500s on every
+// image request), so a vision-active server drops MTP/DFlash and keeps only ngram.
+// Because the projector downloads automatically, an MTP model runs WITHOUT its MTP
+// speedup by default; vision = "off" keeps MTP and gives up image input.
+const MTPVisionWarning = `NO VISION with MTP: a loaded image projector turns MTP off (vision = "off" in winc.toml keeps MTP, drops image input)`
+
+// MTPVisionBadge is the short listing marker for the same trap.
+const MTPVisionBadge = "[MTP: no vision]"
+
+// DFlashVisionWarning is the DFlash-head form of the same trap (same mechanism).
+const DFlashVisionWarning = `NO VISION with DFlash: a loaded image projector turns the draft head off (vision = "off" keeps it, drops image input)`
+
+// HasMTP reports whether a catalogue entry can run MTP speculation in any form:
+// a *-mtp variant (the mtp tier), a baked-in head (Qwen3.8 / Ornith-1.5), or a
+// separately-downloaded Gemma 4 head. Every such entry carries the vision trap.
+func (m *Model) HasMTP() bool {
+	if m == nil {
+		return false
+	}
+	return m.Tier == "mtp" || m.MtpBaked || m.MtpHead != "" ||
+		strings.Contains(strings.ToLower(m.LocalFile()), "mtp")
 }

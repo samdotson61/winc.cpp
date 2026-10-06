@@ -3,6 +3,37 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.41.1-jobdar.1 — 2026-10-06 (winc-jobdar branch)
+
+**Merge of master v1.41.1 (the "NO VISION with MTP" warning).** Inert for the
+eval profile: `applyEvalProfile` already runs vision OFF, so the new launch
+warning ("MTP speculation is OFF for this launch") never fires under
+`serve --eval` and `winc -d <alias> --eval` fetches no projector to warn about.
+The eval model (qwen3.5-4b) has no MTP, so nothing changes in what Jobdar
+Desktop loads or scores. Catalogue gains the `mtp_baked` flag on the Qwen3.8 /
+Ornith-1.5 entries and the mtp-tier text; `winc ls` on a jobdar build shows the
+`[MTP: no vision]` badges like master. eval.go byte-identical.
+
+## v1.41.1 — 2026-10-06
+
+### Changed
+- **Every MTP surface now says "NO VISION".** Draft speculation and a loaded vision
+  projector are mutually exclusive at launch (v1.38: the draft can't process
+  image batches, measured 500s), and the projector downloads automatically — so
+  an MTP build silently ran WITHOUT its MTP speedup whenever vision was on, which
+  is the default. Now it is said out loud wherever MTP appears: `winc ls` marks
+  every MTP-capable entry `[MTP: no vision]` (the `*-mtp` tier, the baked-head
+  Qwen3.8 / Ornith-1.5 line via a new `mtp_baked` catalogue flag, Gemma 4 heads)
+  and prints the trap once above the list; `winc detect`'s faster-variant / MTP
+  drafter lines carry the badge; `winc -d` of an MTP variant, the Gemma MTP-head
+  offer (before the question and after the download) and the MTP-variant tip all
+  warn; the DFlash-head download gets the same note for its own head; and the
+  LAUNCH log warns once when an MTP-capable model is about to start with the
+  projector loaded ("MTP speculation is OFF for this launch"). The fix is
+  `vision = "off"` in `[performance]` (keeps MTP, drops image input) — the toml
+  template comments on `mtp`/`vision` now say so. README: feature row, MTP
+  section call-out, ornith-1.5-9b row. Behaviour unchanged; this release is the
+  warning.
 ## 1.41.0-jobdar.2 — 2026-09-29 (winc-jobdar branch)
 
 **The eval install fetches and loads only what scoring uses.** Found on Jobdar

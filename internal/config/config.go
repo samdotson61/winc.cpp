@@ -225,10 +225,11 @@ draft_model = ""             # e.g. "Qwen3.5-0.8B-Q4_K_M.gguf"; blank = off
 # Multi-Token Prediction (MTP): built-in speculative decoding baked into *-MTP model
 # variants (e.g. qwen3.6-35b-mtp). Auto-enabled when an MTP GGUF is loaded AND the
 # engine supports it; harmlessly skipped otherwise. ~1.4-2.2x on dense, ~1.2x on MoE.
-mtp = "auto"                 # "auto" (on for MTP models) | "off"
+mtp = "auto"                 # "auto" (on for MTP models) | "off".  NO VISION with MTP: a loaded image projector turns MTP off - see vision below
 ngram = "auto"               # "auto" | "off" - model-free ngram speculation: big decode win when output repeats prompt content (file edits); no VRAM cost; non-Metal
 dflash = "auto"              # "auto" | "off" - DFlash draft-head speculation when a head GGUF sits next to the model (winc offers the download); non-Metal
-vision = "auto"              # "auto" | "off" - load the mmproj vision projector when downloaded (winc offers it); image input in Claude Code works only with it
+vision = "auto"              # "auto" | "off" - load the mmproj vision projector when downloaded (winc offers it); image input in Claude Code works only with it.
+                             # A loaded projector turns MTP/DFlash speculation OFF (the draft can't process image batches): set "off" to keep MTP on an MTP model (no image input then)
 mtp_draft_max = 2            # tokens drafted per step (--spec-draft-n-max); 2 is a good default
 
 # Advanced escape hatch: extra llama-server flags appended verbatim.

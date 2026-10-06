@@ -5,7 +5,7 @@
   "mid": "16 GB VRAM / 24 GB unified",
   "large": "24 GB+ VRAM / 32-64 GB unified",
   "xl": "96 GB+ unified (Apple)",
-  "mtp": "faster Multi-Token-Prediction variants (auto --spec-type draft-mtp)"
+  "mtp": "faster Multi-Token-Prediction variants (auto --spec-type draft-mtp) - NO VISION: a loaded image projector turns MTP off"
  },
  "models": [
   {
@@ -167,6 +167,7 @@
   {
    "tier": "small",
    "alias": "ornith-1.5-9b",
+   "mtp_baked": true,
    "name": "Ornith-1.5-9B Q4_K_M (agentic coder, MTP baked in)",
    "size": "5.8 GB",
    "repo": "ornith-ai/Ornith-1.5-9B-GGUF",
@@ -282,6 +283,7 @@
   {
    "tier": "mid",
    "alias": "qwen3.8-27b",
+   "mtp_baked": true,
    "name": "Qwen3.8-27B UD-Q3_K_XL (dense, MTP baked in)",
    "size": "12.2 GB",
    "repo": "unsloth/Qwen3.8-27B-GGUF",
@@ -322,6 +324,7 @@
   {
    "tier": "mid",
    "alias": "ornith-1.5-35b-a3b-iq3",
+   "mtp_baked": true,
    "name": "Ornith-1.5-35B-A3B IQ3_XXS (MoE, MTP baked in)",
    "size": "15.3 GB",
    "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
@@ -360,6 +363,7 @@
   {
    "tier": "large",
    "alias": "qwen3.8-27b-q4",
+   "mtp_baked": true,
    "name": "Qwen3.8-27B UD-Q4_K_M (dense, MTP baked in)",
    "size": "15.3 GB",
    "repo": "unsloth/Qwen3.8-27B-GGUF",
@@ -372,6 +376,7 @@
   {
    "tier": "large",
    "alias": "qwen3.8-27b-q5",
+   "mtp_baked": true,
    "name": "Qwen3.8-27B UD-Q5_K_M (dense, MTP baked in)",
    "size": "18.4 GB",
    "repo": "unsloth/Qwen3.8-27B-GGUF",
@@ -399,6 +404,7 @@
   {
    "tier": "large",
    "alias": "ornith-1.5-35b-a3b",
+   "mtp_baked": true,
    "name": "Ornith-1.5-35B-A3B Q4_K_M (MoE, MTP baked in)",
    "size": "21.9 GB",
    "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
