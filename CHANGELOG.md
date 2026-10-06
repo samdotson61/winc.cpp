@@ -3,6 +3,23 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.42.0-jobdar.2 — 2026-10-06 (winc-jobdar branch)
+
+### Fixed
+- **`winc stop` / `winc restart` now see `winc serve --eval`.** The eval path
+  never wrote the v1.37 pidfile (`.winc-serve.json`), so from another terminal
+  `winc stop` answered "no winc server is running (nothing recorded)" while the
+  eval server kept the port, and jobdar's backend could only be stopped by
+  hand (found live while vetting 1.42.0-jobdar.1). `serve --eval` now records
+  itself exactly like a plain `serve` -- own PID + process stamp, the engine
+  child, the winc.toml port and the full invocation -- once the router owns the
+  port (a failed bind records nothing). `winc stop` kills only the stamp-
+  verified processes and sweeps the engine; `winc restart` replays
+  `serve --eval <model>` verbatim. E2E on the 5070 Ti box: serve --eval
+  qwen3.5-4b on a scratch port, stop from another shell -> process gone, port
+  free, record removed; a second stop reports nothing running; restart
+  replayed the eval profile.
+
 ## 1.42.0-jobdar.1 — 2026-10-06 (winc-jobdar branch)
 
 **Merge of master v1.42.0 ("winc installs Claude Code").** Inert for the eval

@@ -236,7 +236,9 @@ func promptDownloadEvalModel(cfg *config.Config, cat *catalog.Catalog, hw platfo
 }
 
 // cmdServeEval runs the eval profile until Ctrl-C.
-func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
+// args is the full `winc serve` argument list (--eval included) so `winc
+// restart` replays this exact invocation.
+func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string, args []string) int {
 	applyEvalProfile(cfg)
 	hw := platform.DetectHardwareCached()
 	applyEvalTier(cfg, hw)
@@ -311,6 +313,14 @@ func cmdServeEval(cfg *config.Config, cat *catalog.Catalog, pos []string) int {
 		return 1
 	}
 	defer r.Stop()
+	// Same pidfile a plain `winc serve` leaves (v1.37): without it `winc stop`
+	// / `winc restart` from another terminal said "nothing recorded" for an eval
+	// server and jobdar's backend could only be stopped by hand (found live at
+	// 1.42.0-jobdar.1). Written only once the router owns the port, so a failed
+	// bind records nothing; the engine child is listed so a hard kill of this
+	// process still sweeps it. clearServeState is idempotent.
+	writeServeState(cfg.General.Port, args, proc.Pid())
+	defer clearServeState()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)

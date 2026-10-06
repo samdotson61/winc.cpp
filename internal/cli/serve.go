@@ -62,7 +62,7 @@ func cmdServe(args []string) int {
 			ui.Dim("journal: off for --eval (single-shot requests)")
 			cfg.Journal.Enabled = false
 		}
-		return cmdServeEval(cfg, cat, pos)
+		return cmdServeEval(cfg, cat, pos, args)
 	}
 	model := cfg.General.DefaultModel
 	if len(pos) >= 1 {
