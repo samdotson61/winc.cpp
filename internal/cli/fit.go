@@ -116,6 +116,7 @@ func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serv
 		}
 	}
 	args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
+	warnMTPYieldsToVision(cfg, modelPath, noMTP)
 	// Speculative decoding: draft-mtp (when the model has heads and !noMTP)
 	// composed with the model-free ngram-simple drafter into ONE --spec-type.
 	args = append(args, engine.SpecArgs(cfg, hw, modelPath, serverBin, !noMTP)...)
@@ -985,4 +986,30 @@ func backendLabel(b string) string {
 		return "installed engine"
 	}
 	return b + " backend"
+}
+
+// mtpVisionWarned keeps the vision-vs-MTP launch warning to one line per run
+// (the context ladder relaunches the server several times).
+var mtpVisionWarned bool
+
+// warnMTPYieldsToVision says out loud when an MTP-capable model is about to
+// launch WITHOUT its MTP speedup because a vision projector is loaded (the
+// draft can't process image batches -- see engine.mtpActive). Silent before:
+// the user downloaded an MTP build for speed and never learned it wasn't on.
+func warnMTPYieldsToVision(cfg *config.Config, modelPath string, noMTP bool) {
+	if mtpVisionWarned || !mtpYieldsToVision(cfg, modelPath, noMTP) {
+		return
+	}
+	mtpVisionWarned = true
+	ui.Warn("vision projector loaded - MTP speculation is OFF for this launch (%s)", catalog.MTPVisionWarning)
+}
+
+// mtpYieldsToVision is the pure gate behind the warning: MTP would engage for this
+// model (heads present, mtp != "off", not Metal, not a no-MTP retry) but a vision
+// projector is loaded, so engine.mtpActive will decline it.
+func mtpYieldsToVision(cfg *config.Config, modelPath string, noMTP bool) bool {
+	if noMTP || strings.EqualFold(strings.TrimSpace(cfg.Performance.Mtp), "off") || engine.CurrentBackend() == "metal" {
+		return false
+	}
+	return engine.MTPCapable(modelPath) && engine.VisionActive(cfg, modelPath)
 }

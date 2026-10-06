@@ -85,3 +85,12 @@ func FitVerdictFull(cfg *config.Config, modelPath string, ctx int, cacheType str
 
 // MTPActive reports whether MTP will engage for this model (sizing-level check).
 func MTPActive(cfg *config.Config, modelPath string) bool { return mtpActive(cfg, modelPath) }
+
+// VisionActive reports whether a vision projector will load for this model
+// (one sits next to it and vision != "off").
+func VisionActive(cfg *config.Config, modelPath string) bool { return visionActive(cfg, modelPath) }
+
+// MTPCapable reports whether the model could run MTP at all (baked heads or a
+// paired head file) -- before the vision / backend / config gates that
+// mtpActive applies. The launch warning uses it to say WHY MTP is off.
+func MTPCapable(modelPath string) bool { return isMTPFile(modelPath) || mtpHeadFor(modelPath) != "" }

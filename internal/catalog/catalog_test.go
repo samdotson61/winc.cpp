@@ -300,3 +300,34 @@ func TestGraniteEntries(t *testing.T) {
 		}
 	}
 }
+
+// Every entry that can run MTP in any form (the *-mtp tier, a baked head, a Gemma
+// head file) carries the vision trap -- HasMTP is what the listings badge with
+// MTPVisionBadge, so it must cover exactly those entries and no others.
+func TestHasMTPCoversEveryMTPSurface(t *testing.T) {
+	c := Load(nil)
+	n := 0
+	for i := range c.Models {
+		m := &c.Models[i]
+		baked := strings.HasPrefix(m.Alias, "qwen3.8-27b") || strings.HasPrefix(m.Alias, "ornith-1.5-")
+		if baked && !m.MtpBaked {
+			t.Errorf("%s: baked-MTP model must set mtp_baked (listings can't read GGUF metadata before download)", m.Alias)
+		}
+		if m.MtpBaked && !baked {
+			t.Errorf("%s: mtp_baked set on a model that isn't a known baked-MTP line", m.Alias)
+		}
+		want := m.Tier == "mtp" || m.MtpHead != "" || m.MtpBaked
+		if got := m.HasMTP(); got != want {
+			t.Errorf("%s: HasMTP() = %v, want %v (tier=%q mtp_head=%q mtp_baked=%v)", m.Alias, got, want, m.Tier, m.MtpHead, m.MtpBaked)
+		}
+		if want {
+			n++
+		}
+	}
+	if n < 10 {
+		t.Fatalf("only %d MTP-capable entries found - the catalogue has the mtp tier, Qwen3.8/Ornith-1.5 and every Gemma 4 model", n)
+	}
+	if !strings.Contains(MTPVisionWarning, "NO VISION") || !strings.Contains(MTPVisionBadge, "no vision") {
+		t.Fatalf("the warning text must lead with the trap: %q / %q", MTPVisionWarning, MTPVisionBadge)
+	}
+}

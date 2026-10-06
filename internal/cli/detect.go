@@ -86,11 +86,11 @@ func cmdDetect() int {
 		}
 		if def.Mtp != "" {
 			if v := cat.Find(def.Mtp); v != nil {
-				ui.Say("  Faster variant: %s (MTP; winc -d %s)", v.Alias, v.Alias)
+				ui.Say("  Faster variant: %s (MTP; winc -d %s)  %s", v.Alias, v.Alias, catalog.MTPVisionBadge)
 			}
 		}
 		if def.MtpHead != "" {
-			ui.Say("  MTP drafter   : separate head file, auto-paired at launch ('winc -d %s' fetches it)", def.Alias)
+			ui.Say("  MTP drafter   : separate head file, auto-paired at launch ('winc -d %s' fetches it)  %s", def.Alias, catalog.MTPVisionBadge)
 		}
 	}
 	ui.Say("")

@@ -48,8 +48,10 @@ func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 	local := filepath.Base(m.MtpHead)
 	if fileExists(filepath.Join(md, local)) {
 		ui.Info("MTP ready: %s pairs with its drafter head automatically at launch", m.Alias)
+		ui.Warn("%s", catalog.MTPVisionWarning)
 		return
 	}
+	ui.Warn("%s", catalog.MTPVisionWarning)
 	q := fmt.Sprintf("%s ships a small MTP drafter head - also download it to speed up decoding (~1.5x)?", m.Alias)
 	if !autoYes && !ui.Confirm(q, true) {
 		ui.Dim("skipped - run 'winc -d %s' anytime to fetch it", m.Alias)
@@ -62,6 +64,7 @@ func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 		return
 	}
 	ui.Good("MTP head ready - multi-token prediction turns on automatically for %s", m.Alias)
+	ui.Warn("%s", catalog.MTPVisionWarning)
 }
 
 // offerDFlashHead prompts to also fetch the small DFlash drafter head for a
@@ -95,6 +98,7 @@ func offerDFlashHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 		return
 	}
 	ui.Good("DFlash head ready - draft speculation turns on automatically for %s", m.Alias)
+	ui.Warn("%s", catalog.DFlashVisionWarning)
 }
 
 // ensureMmproj fetches the vision projector for a model that has one in the
