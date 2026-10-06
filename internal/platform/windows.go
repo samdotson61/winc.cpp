@@ -125,6 +125,11 @@ func AddToPath(dir string) error {
 	return setUserPath(next)
 }
 
+// AddDirToPath adds ANY directory to the user PATH -- on Windows the same
+// registry-backed edit as AddToPath (no winc-specific extras here). Used for
+// Claude Code's ~\.local\bin after an install.
+func AddDirToPath(dir string) error { return AddToPath(dir) }
+
 // RemoveFromPath removes dir from the user PATH (idempotent).
 func RemoveFromPath(dir string) error {
 	cur := userPath()

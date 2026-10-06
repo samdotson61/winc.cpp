@@ -3,6 +3,72 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.42.0-jobdar.1 — 2026-10-06 (winc-jobdar branch)
+
+**Merge of master v1.42.0 ("winc installs Claude Code").** Inert for the eval
+profile: `winc serve --eval` launches no agent, so the new pre-launch agent
+gate, the install offer and the PATH recording never run under it, and the
+jobdar desktop's `winc_manager` contract (`serve --eval` on the winc.toml
+port, `/v1/messages` + `/v1/chat/completions`) is untouched. `winc install
+claude` is available on branch builds like any other command. The jobdar
+self-update guard still fires (`Version` keeps the suffix; pinned by
+`update_jobdar_test.go`). eval.go byte-identical; full suite green.
+
+## v1.42.0 — 2026-10-06
+
+### Added
+- **winc installs Claude Code.** The agent is the other half of the product,
+  and until now a fresh machine finished `winc setup` with nothing to launch:
+  `winc -s claude` printed "not found on PATH - install it, then re-run" (on
+  Windows not even that — the check unconditionally passed) and sent the user
+  off to a shell one-liner. Now `winc install claude` (alias `winc -i`) does
+  what the official `install.sh` / `install.ps1` do, with no shell script in
+  between: read the current version from Anthropic's release bucket, fetch
+  that release's `manifest.json`, download the platform binary (winc's own
+  resumable, stall-guarded downloader), **verify its size and SHA256 against
+  the manifest** (a mismatch is discarded, never run), then hand the binary
+  its own `claude install [stable|latest|<version>]` — which places it under
+  `~/.local/share/claude`, links `~/.local/bin/claude` and registers the
+  native install so Claude Code's background auto-updater takes over. That
+  installer does NOT put `~/.local/bin` on PATH when it isn't already
+  (observed live with 2.1.292 on Windows: "add it by opening System
+  Properties → Environment Variables"; on Linux it prints the export line
+  for you to paste), so winc records the directory itself with the PATH
+  method it already uses for its own folder on every platform — the user
+  PATH on Windows, marked blocks in `.bashrc`/`.zshrc`/`.profile` plus the
+  fish `conf.d` drop-in on macOS/Linux (new `platform.AddDirToPath`; the fish
+  drop-in now APPENDS a second directory instead of being rewritten whole,
+  which would have dropped winc's own entry). Skipped when the directory is
+  already live or recorded. Platform keys follow the bucket's Node naming
+  (`darwin-arm64`, `linux-x64[-musl]`, `win32-x64`, ...; musl detected by
+  the loader, like upstream). If the native path fails, winget (Windows) or
+  Homebrew (macOS) is offered, then the manual commands are printed.
+- **Offered where it is missing, never forced.** `winc setup` gains a step
+  (6 of 7, "Coding agent: Claude Code") that reports the found install and
+  version or offers the install; `winc -s claude <model>` now checks for the
+  agent **before** loading a model and offers the install on the spot, so a
+  declined install stops cleanly instead of after a 30 s load and a confusing
+  "'claude' is not recognized". Prompts appear only on a real terminal
+  (`GetConsoleMode` on Windows — the NUL device passes the portable
+  char-device test and would otherwise auto-answer "yes" from a pipe; found
+  live); scripts and CI get the printed hint and exit 1.
+- **Launches resolve the agent to a path.** PATH first, then every supported
+  installer's location (`~/.local/bin`, npm's `%APPDATA%\npm\claude.cmd`,
+  WinGet's `Links`, Homebrew's prefixes, `/usr/bin`, `~/.npm-global`), so a
+  Claude Code installed moments ago — whose PATH entry this process never
+  inherited — starts in the same winc run without a new terminal. `winc
+  doctor` lists the resolved path and `claude --version`, with the install
+  command when it is missing. The old Windows `cmd /c claude` indirection is
+  kept only for `.cmd` npm shims; native binaries exec directly.
+- Tests: platform-key table, install-target validation, a fake release bucket
+  (verified download, digest mismatch discards the file, garbage `latest`
+  rejected, missing platform), Resolve finding `~/.local/bin` with an empty
+  PATH, and an opt-in live gate (`WINC_LIVE=1`) that downloads the real
+  release and asks it for its version — passed against 2.1.291. E2E on the
+  5070 Ti box: `winc install claude` into a throwaway home with a stripped
+  PATH fetched + verified 2.1.292, `claude install` placed
+  `.local\bin\claude.exe`, the launcher answered `--version`, `winc doctor`
+  resolved it with no PATH entry, and the temp binary was gone afterwards.
 ## 1.41.1-jobdar.1 — 2026-10-06 (winc-jobdar branch)
 
 **Merge of master v1.41.1 (the "NO VISION with MTP" warning).** Inert for the

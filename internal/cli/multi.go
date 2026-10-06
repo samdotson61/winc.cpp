@@ -124,9 +124,6 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 
 	slots := resolveSlots(cfg, models)
 	ui.Good("model slots: sonnet=%s  opus=%s  haiku=%s", slots.Sonnet, slots.Opus, slots.Haiku)
-	if !agent.Available(app) {
-		ui.Warn("%s not found on PATH - install it, then re-run.", app)
-	}
 	sonnetPath := models[slots.Sonnet]
 	ctxWin := engine.ResolveContext(cfg, hw, sonnetPath, engine.FileMB(sonnetPath), engine.WillOffloadExperts(cfg, hw, sonnetPath))
 	maxOut := engine.ResolveMaxOutput(cfg, ctxWin)

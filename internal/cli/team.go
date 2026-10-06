@@ -296,9 +296,6 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	default: // haiku / sonnet single-tier
 		ui.Good("team ready  main=%s  all subagents -> %s", mainAlias, disp.subagentModel)
 	}
-	if !agent.Available(app) {
-		ui.Warn("%s not found on PATH - install it, then re-run.", app)
-	}
 	env := agent.Env(baseURL, slots, maxOut, headCtx, mainAlias, disp.subagentModel) // pin main + force subagents onto the worker(s)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env); err != nil {

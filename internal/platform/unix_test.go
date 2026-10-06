@@ -80,3 +80,50 @@ func TestPathAllShells(t *testing.T) {
 		t.Error("rc cleanup failed")
 	}
 }
+
+// A second directory (Claude Code's ~/.local/bin after `winc install claude`)
+// must be ADDED beside winc's own entries, never replace them -- the fish
+// drop-in used to be rewritten whole -- and must not get the winc symlink.
+func TestAddDirToPathBesideWinc(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin")
+	winc := "/opt/winc"
+	claude := filepath.Join(home, ".local", "bin")
+	if err := AddToPath(winc); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddDirToPath(claude); err != nil {
+		t.Fatal(err)
+	}
+	fish, _ := os.ReadFile(filepath.Join(home, ".config", "fish", "conf.d", "winc.fish"))
+	if !strings.Contains(string(fish), winc) || !strings.Contains(string(fish), claude) {
+		t.Errorf("fish drop-in must hold BOTH dirs:\n%s", fish)
+	}
+	rc, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
+	if !strings.Contains(string(rc), winc) || !strings.Contains(string(rc), claude) {
+		t.Errorf(".zshrc must hold BOTH dirs:\n%s", rc)
+	}
+	if !OnPath(claude) || !OnPath(winc) {
+		t.Error("both dirs must now count as on PATH")
+	}
+	if err := AddDirToPath(claude); err != nil {
+		t.Fatal(err)
+	}
+	fish2, _ := os.ReadFile(filepath.Join(home, ".config", "fish", "conf.d", "winc.fish"))
+	if strings.Count(string(fish2), claude) != strings.Count(string(fish), claude) {
+		t.Error("AddDirToPath must be idempotent in the fish drop-in")
+	}
+	// winc's symlink still points at winc, and ~/.local/bin never gets a
+	// self-referential one.
+	link := filepath.Join(home, ".local", "bin", "winc")
+	if cur, err := os.Readlink(link); err != nil || cur != filepath.Join(winc, "winc") {
+		t.Errorf("winc symlink disturbed: %q err=%v", cur, err)
+	}
+	if err := AddToPath(claude); err != nil { // winc itself living in ~/.local/bin
+		t.Fatal(err)
+	}
+	if cur, _ := os.Readlink(link); cur == link {
+		t.Error("~/.local/bin/winc must never be a symlink to itself")
+	}
+}

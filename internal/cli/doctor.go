@@ -10,13 +10,13 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+	"winc/internal/agent"
 
 	"winc/internal/config"
 	"winc/internal/download"
@@ -152,11 +152,21 @@ func doctorReport(cfg *config.Config) []string {
 	}
 
 	add("")
-	add("agents on PATH:")
+	add("agents (PATH + known install locations):")
 	for _, a := range []string{"claude", "opencode", "openclaw"} {
-		if p, err := exec.LookPath(a); err == nil {
+		p, ok := agent.Resolve(a)
+		switch {
+		case ok && a == "claude":
+			if v := claudeVersion(p); v != "" {
+				add("  %-9s %s  (%s)", a+":", p, v)
+			} else {
+				add("  %-9s %s", a+":", p)
+			}
+		case ok:
 			add("  %-9s %s", a+":", p)
-		} else {
+		case a == "claude":
+			add("  %-9s not found - install with: winc install claude", a+":")
+		default:
 			add("  %-9s not found", a+":")
 		}
 	}

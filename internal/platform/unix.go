@@ -74,10 +74,13 @@ func localBinLink() string {
 	return filepath.Join(home, ".local", "bin", "winc")
 }
 
-// AddToPath records dir for every shell the user might log into: a marked
-// export line in the POSIX rc files, a fish conf.d drop-in (fish reads none of
-// the POSIX files), and a ~/.local/bin symlink. Idempotent.
-func AddToPath(dir string) error {
+// AddDirToPath records ANY directory for every shell the user might log into:
+// a marked export line in the POSIX rc files and a block in the fish conf.d
+// drop-in (fish reads none of the POSIX files). Idempotent per directory, and
+// a second directory is APPENDED to the fish drop-in rather than replacing
+// winc's own block (the pre-1.42 write-whole-file would have clobbered it).
+// Used for winc's folder (via AddToPath) and for Claude Code's ~/.local/bin.
+func AddDirToPath(dir string) error {
 	block := "\n" + pathMarker + "\nexport PATH=\"" + dir + ":$PATH\"\n"
 	for _, f := range rcFiles() {
 		if b, err := os.ReadFile(f); err == nil &&
@@ -95,11 +98,25 @@ func AddToPath(dir string) error {
 		if b, err := os.ReadFile(fp); err != nil || !strings.Contains(string(b), dir) {
 			if os.MkdirAll(filepath.Dir(fp), 0o755) == nil {
 				fish := pathMarker + "\nif not contains \"" + dir + "\" $PATH\n    set -gx PATH \"" + dir + "\" $PATH\nend\n"
-				_ = os.WriteFile(fp, []byte(fish), 0o644)
+				if fh, err := os.OpenFile(fp, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+					_, _ = fh.WriteString(fish)
+					_ = fh.Close()
+				}
 			}
 		}
 	}
-	if lb := localBinLink(); lb != "" {
+	return nil
+}
+
+// AddToPath records winc's OWN directory the way AddDirToPath does, plus a
+// ~/.local/bin/winc symlink (works in shells whose rc files winc doesn't
+// know about). Idempotent. Never pointed at ~/.local/bin itself: the symlink
+// would then be its own target.
+func AddToPath(dir string) error {
+	if err := AddDirToPath(dir); err != nil {
+		return err
+	}
+	if lb := localBinLink(); lb != "" && filepath.Join(dir, "winc") != lb {
 		target := filepath.Join(dir, "winc")
 		cur, lerr := os.Readlink(lb)
 		_, serr := os.Lstat(lb)
