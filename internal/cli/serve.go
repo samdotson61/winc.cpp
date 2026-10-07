@@ -99,7 +99,7 @@ func cmdServe(args []string) int {
 	// whenever the journal is on -- not only in adaptive reasoning mode.
 	baseURL := serverURL
 	if cfg.Reasoning.Mode == "adaptive" || cfg.Journal.Enabled {
-		if r, rerr := router.Start(cfg, serverURL, loadedCtx); rerr == nil {
+		if r, rerr := router.Start(cfg, serverURL, loadedCtx, ""); rerr == nil {
 			defer r.Stop()
 			baseURL = r.BaseURL()
 			reportJournal(cfg, r)

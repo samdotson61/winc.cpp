@@ -293,7 +293,7 @@ func TestJournalRoundtripHeaderAndTrim(t *testing.T) {
 	}))
 	defer up.Close()
 	cfg := journalTestConfig(t)
-	rt, err := Start(cfg, up.URL, 0)
+	rt, err := Start(cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestJournalDormantOnBigWindow(t *testing.T) {
 	defer up.Close()
 	cfg := journalTestConfig(t)
 	cfg.Journal.BudgetTokens = "auto"
-	rt, err := Start(cfg, up.URL, 131072)
+	rt, err := Start(cfg, up.URL, 131072, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestJournalFollowsConfigDefault(t *testing.T) {
 	}))
 	defer up.Close()
 	cfg := config.Defaults()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestJournalFollowsConfigDefault(t *testing.T) {
 	// An explicit off must stay off and leave responses untouched.
 	off := config.Defaults()
 	off.Journal.Enabled = false
-	rt2, err := Start(&off, up.URL, 0)
+	rt2, err := Start(&off, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestJournalSummaryGeneratesAsync(t *testing.T) {
 
 	cfg := journalTestConfig(t)
 	cfg.Journal.SummaryTokens = 300
-	rt, err := Start(cfg, up.URL, 0)
+	rt, err := Start(cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -64,20 +64,26 @@ type Router struct {
 // fallbackName is the stats/log name for the fallback backend (the main model).
 const fallbackName = "main"
 
-// Start launches the router in front of upstream (the llama-server/-swap URL) on
-// an ephemeral localhost port. ctxWindow, when > 0, is the server's loaded context
-// size -- used to trim an oversized compaction request so its summary can complete.
-func Start(cfg *config.Config, upstream string, ctxWindow int) (*Router, error) {
+// Start launches the router in front of upstream (the llama-server/-swap URL).
+// addr pins the listen address ("host:port") for clients that need a STABLE
+// endpoint across launches (OpenClaw's provider config; the jobdar eval
+// profile); "" picks an ephemeral localhost port, the agent-flow default.
+// ctxWindow, when > 0, is the server's loaded context size -- used to trim an
+// oversized compaction request so its summary can complete.
+func Start(cfg *config.Config, upstream string, ctxWindow int, addr string) (*Router, error) {
 	u, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err
+	}
+	if addr == "" {
+		addr = "127.0.0.1:0"
 	}
 	r := &Router{requests: map[string]int{}, dead: map[string]bool{}}
 	r.openJournal(cfg, upstream, ctxWindow)
 	rp := httputil.NewSingleHostReverseProxy(u)
 	rp.ErrorHandler = swallowClientCancel
 	rp.ModifyResponse = r.rewriteOverflow
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}

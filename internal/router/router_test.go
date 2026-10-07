@@ -26,7 +26,7 @@ func roundtrip(t *testing.T, cfg *config.Config, path, body string) map[string]a
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer up.Close()
-	rt, err := Start(cfg, up.URL, 0)
+	rt, err := Start(cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestRouterInjectsBudget(t *testing.T) {
 
 func TestRouterBadUpstreamReturns502(t *testing.T) {
 	cfg := config.Defaults()
-	rt, err := Start(&cfg, "http://127.0.0.1:1", 0) // nothing listening -> dial fails
+	rt, err := Start(&cfg, "http://127.0.0.1:1", 0, "") // nothing listening -> dial fails
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func errUpstream(t *testing.T, status int, body string) (*Router, func()) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		up.Close()
 		t.Fatal(err)
@@ -738,7 +738,7 @@ func TestRouterBlocksWallRequests(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 8192) // tiny real window
+	rt, err := Start(&cfg, up.URL, 8192, "") // tiny real window
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +850,7 @@ func TestRouterContinuesTruncatedStream(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,7 +909,7 @@ func TestRouterNoContinueOnToolUseCut(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -946,7 +946,7 @@ func TestRouterContinuesTruncatedJSON(t *testing.T) {
 		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"Started but"}],"stop_reason":"max_tokens","stop_sequence":null,"usage":{"input_tokens":9,"output_tokens":5}}`))
 	}))
 	defer up.Close()
-	rt, err := Start(&cfg, up.URL, 0)
+	rt, err := Start(&cfg, up.URL, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
