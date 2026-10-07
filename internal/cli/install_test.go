@@ -11,10 +11,12 @@ import (
 // registered command uses forward slashes (the JSON crosses cmd.exe + node
 // argv parsing, which eat backslashes next to quotes).
 func TestOpenClawEntryMatches(t *testing.T) {
-	// A native path on every OS: Windows builds get C:\w\winc.exe and must
-	// register C:/w/winc.exe; Unix builds already use slashes (ToSlash is a
-	// no-op there, which is why a hard-coded backslash input failed on CI).
-	want := openClawServerJSON(filepath.Join("C:", "w", "winc.exe"))
+	// A native path on every OS: FromSlash gives Windows builds C:\w\winc.exe
+	// (which must register as C:/w/winc.exe) and leaves Unix builds' slashes
+	// alone, where ToSlash is a no-op -- a hard-coded backslash input failed on
+	// CI's Linux/macOS legs, and filepath.Join("C:", ...) is drive-relative on
+	// Windows (C:w\...).
+	want := openClawServerJSON(filepath.FromSlash("C:/w/winc.exe"))
 	if !strings.Contains(want, `"command":"C:/w/winc.exe"`) {
 		t.Fatalf("registered path must use forward slashes: %s", want)
 	}
