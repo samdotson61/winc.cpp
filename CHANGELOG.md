@@ -99,7 +99,12 @@ All notable changes to winc.cpp, newest first. Each release is a single
   binary, the migrated tool lists and the new section together. Also:
   `selfUpdatePrebuilt` replaced any binary whose version merely DIFFERED from
   the latest tag — a build ahead of the tag would have been downgraded; it now
-  uses the same behind-only check as `winc check`.
+  uses the same behind-only check as `winc check`. One caveat, verified live:
+  an install updating FROM v1.42.0 or older runs that first `winc update` with
+  the OLD code, so it gets the v1.43.0 binary and working search (defaults are
+  backfilled in memory) but the `[search]` section and the migrated tool lists
+  land on the following `winc update` -- or at once with `winc reconcile`.
+  From v1.43.0 on, one update delivers everything.
 - Follow-up (separate issue): the Bash safety-classifier timeout seen in the
   same report.
 

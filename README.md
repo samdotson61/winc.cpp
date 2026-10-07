@@ -173,7 +173,9 @@ same server through `OPENCODE_CONFIG` (`.opencode-local/opencode.json`, tool `wi
 anthropic provider pointed at winc) and **OpenClaw** through `openclaw mcp set winc …` in its own
 config (re-set only when the registered path differs). Existing installs pick all of this up with
 `winc -u`: the new binary, the migrated `worker_tools` / `sonnet_tools`, and the `[search]` section
-arrive in one update; the sandbox permissions migrate on the next launch.
+arrive in one update (an install updating from v1.42.0 or older gets the `[search]` section on its
+second `winc -u`, or at once with `winc reconcile`; search itself works right after the first); the
+sandbox permissions migrate on the next launch.
 
 ### Adaptive reasoning
 
