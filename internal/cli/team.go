@@ -19,6 +19,7 @@ import (
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
+	"winc/internal/search"
 	"winc/internal/server"
 	"winc/internal/ui"
 )
@@ -39,7 +40,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	ensureVisionFor(cfg, cat, mainAlias) // the HEAD gets its projector; workers run vision off
 	rememberLastUsed(cfg, app, mainAlias)
 
-	if _, err := config.EnsureClaudeLocal(); err != nil {
+	if _, err := config.EnsureClaudeLocal(search.Enabled(cfg.Search)); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)
 	}
 	if err := config.WriteTeamAgents(); err != nil {
@@ -126,7 +127,7 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 	headCtx := loadedCtx
 	// Provision the agent-side notes: the REAL window (the agent's own UI cannot
 	// show local windows below 100k), measured speeds, and small-window practices.
-	if err := config.WriteAgentNotes(loadedCtx, headCtx, lastBench.gen, lastBench.pp); err != nil {
+	if err := config.WriteAgentNotes(loadedCtx, headCtx, lastBench.gen, lastBench.pp, searchToolForNotes(cfg)); err != nil {
 		ui.Warn("could not write agent notes: %v", err)
 	}
 
@@ -297,8 +298,10 @@ func startTeam(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, a
 		ui.Good("team ready  main=%s  all subagents -> %s", mainAlias, disp.subagentModel)
 	}
 	env := agent.Env(baseURL, slots, maxOut, headCtx, mainAlias, disp.subagentModel) // pin main + force subagents onto the worker(s)
+	searchArgs, searchEnv := registerSearch(cfg, app, baseURL)
+	env = append(env, searchEnv...)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
-	if err := agent.Launch(app, env); err != nil {
+	if err := agent.Launch(app, env, searchArgs...); err != nil {
 		ui.Warn("agent exited: %v", err)
 	}
 	teardown.Store(true) // watchdogs stand down; worker deaths from here on are expected

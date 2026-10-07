@@ -115,7 +115,7 @@ func TestTeamDefaults(t *testing.T) {
 func TestEnsureClaudeLocalPreApprovesWebSearch(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WINC_HOME", dir)
-	if _, err := EnsureClaudeLocal(); err != nil {
+	if _, err := EnsureClaudeLocal(true); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, ".claude-local", "settings.json"))
@@ -138,8 +138,11 @@ func TestEnsureClaudeLocalPreApprovesWebSearch(t *testing.T) {
 		}
 		return false
 	}
-	if !has("WebSearch") || !has("WebFetch") {
+	if !has("mcp__winc__web_search") || !has("WebFetch") {
 		t.Fatalf("web tools not pre-approved (the every-launch headache): %v", root.Permissions.Allow)
+	}
+	if has("WebSearch") {
+		t.Fatalf("the dead built-in WebSearch must not be pre-approved: %v", root.Permissions.Allow)
 	}
 }
 
@@ -155,11 +158,11 @@ func TestEnsureClaudeLocalMergesExisting(t *testing.T) {
 		[]byte(`{"permissions":{"allow":["Bash(npm test:*)"],"deny":["WebFetch"]}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureClaudeLocal(); err != nil {
+	if _, err := EnsureClaudeLocal(true); err != nil {
 		t.Fatal(err)
 	}
 	s := string(mustRead(t, filepath.Join(cl, "settings.json")))
-	for _, want := range []string{"Bash(npm test:*)", "WebSearch", "WebFetch", `"deny"`} {
+	for _, want := range []string{"Bash(npm test:*)", "mcp__winc__web_search", "WebFetch", `"deny"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("merge dropped %q: %s", want, s)
 		}
@@ -296,7 +299,7 @@ func TestWriteAgentNotesMarkerPolicy(t *testing.T) {
 	t.Setenv("WINC_HOME", dir)
 	p := filepath.Join(dir, ".claude-local", "CLAUDE.md")
 
-	if err := WriteAgentNotes(65536, 65536, 38, 877); err != nil {
+	if err := WriteAgentNotes(65536, 65536, 38, 877, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(p)
@@ -310,7 +313,7 @@ func TestWriteAgentNotesMarkerPolicy(t *testing.T) {
 	}
 
 	// winc-owned -> rewritten with the new launch's numbers; unmeasured speeds omitted.
-	if err := WriteAgentNotes(65536, 32768, 0, 0); err != nil {
+	if err := WriteAgentNotes(65536, 32768, 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(p)
@@ -322,10 +325,246 @@ func TestWriteAgentNotesMarkerPolicy(t *testing.T) {
 	if err := os.WriteFile(p, []byte("my own notes\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteAgentNotes(99999, 99999, 1, 1); err != nil {
+	if err := WriteAgentNotes(99999, 99999, 1, 1, ""); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ = os.ReadFile(p); string(data) != "my own notes\n" {
 		t.Errorf("user-owned CLAUDE.md must never be clobbered, got:\n%s", data)
+	}
+}
+
+// Existing sandboxes (pre-1.43) had the dead built-in WebSearch pre-approved. With
+// search on it must move allow -> deny, the local tool must be allowed, the user's
+// own rules must survive, and a second pass must change nothing.
+func TestEnsureClaudeLocalMigratesDeadWebSearch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	cl := filepath.Join(dir, ".claude-local")
+	if err := os.MkdirAll(cl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(cl, "settings.json")
+	if err := os.WriteFile(p, []byte(`{"permissions":{"allow":["WebSearch","WebFetch","Read","Grep","Glob","Bash(go test:*)"],"deny":["Bash(rm -rf:*)"]},"theme":"dark"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureClaudeLocal(true); err != nil {
+		t.Fatal(err)
+	}
+	var root struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+			Deny  []string `json:"deny"`
+		} `json:"permissions"`
+		Theme string `json:"theme"`
+	}
+	if err := json.Unmarshal(mustRead(t, p), &root); err != nil {
+		t.Fatal(err)
+	}
+	contains := func(ss []string, s string) bool {
+		for _, x := range ss {
+			if x == s {
+				return true
+			}
+		}
+		return false
+	}
+	if contains(root.Permissions.Allow, "WebSearch") {
+		t.Errorf("WebSearch still allowed: %v", root.Permissions.Allow)
+	}
+	if !contains(root.Permissions.Deny, "WebSearch") {
+		t.Errorf("WebSearch not denied: %v", root.Permissions.Deny)
+	}
+	if !contains(root.Permissions.Allow, "mcp__winc__web_search") || !contains(root.Permissions.Allow, "Bash(go test:*)") || !contains(root.Permissions.Deny, "Bash(rm -rf:*)") || root.Theme != "dark" {
+		t.Errorf("user rules / local tool lost: %+v", root)
+	}
+	first := string(mustRead(t, p))
+	if _, err := EnsureClaudeLocal(true); err != nil {
+		t.Fatal(err)
+	}
+	if again := string(mustRead(t, p)); again != first {
+		t.Errorf("second pass changed the file:\n%s\n---\n%s", first, again)
+	}
+	if strings.Count(first, `"WebSearch"`) != 1 {
+		t.Errorf("WebSearch must appear exactly once (in deny): %s", first)
+	}
+}
+
+// With search OFF the permissions are left as they are: no local tool, no deny.
+func TestEnsureClaudeLocalSearchOffLeavesRules(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	if _, err := EnsureClaudeLocal(false); err != nil {
+		t.Fatal(err)
+	}
+	s := string(mustRead(t, filepath.Join(dir, ".claude-local", "settings.json")))
+	if strings.Contains(s, "mcp__winc__web_search") || strings.Contains(s, `"deny"`) {
+		t.Errorf("search off must not register or deny anything: %s", s)
+	}
+	if !strings.Contains(s, "WebFetch") {
+		t.Errorf("the other pre-approvals must still land: %s", s)
+	}
+}
+
+// WriteMCPConfig points at the given binary with the mcp-search arg, is
+// regenerated (a moved folder gets the new path) and is byte-stable otherwise.
+func TestWriteMCPConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	p, err := WriteMCPConfig(`C:\old\winc.exe`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Servers map[string]struct {
+			Type    string   `json:"type"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(mustRead(t, p), &doc); err != nil {
+		t.Fatal(err)
+	}
+	w := doc.Servers["winc"]
+	if w.Type != "stdio" || w.Command != `C:\old\winc.exe` || len(w.Args) != 1 || w.Args[0] != "mcp-search" {
+		t.Fatalf("bad registration: %+v", doc)
+	}
+	first := mustRead(t, p)
+	if _, err := WriteMCPConfig(`C:\old\winc.exe`); err != nil {
+		t.Fatal(err)
+	}
+	if string(mustRead(t, p)) != string(first) {
+		t.Error("unchanged binary must produce an identical file")
+	}
+	if _, err := WriteMCPConfig(`D:\moved\winc.exe`); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustRead(t, p)), `D:\\moved\\winc.exe`) {
+		t.Errorf("moved binary not re-registered: %s", mustRead(t, p))
+	}
+}
+
+// Old winc.toml tool lists name WebSearch only: the file migration inserts the
+// local tool after it (idempotent, nothing else touched) and Load carries it in
+// memory even before the file is migrated.
+func TestMigrateToolListsAndBackfill(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	old := "[general]\ndefault_model = \"m\"   # keep\n\n[team]\nmode = \"on\"\nworker_tools = [\"WebSearch\", \"WebFetch\", \"Read\"]   # 0.8B\nsonnet_tools = [\"all\"]\n"
+	p := filepath.Join(dir, "winc.toml")
+	if err := os.WriteFile(p, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Team.WorkerTools, ","); got != "WebSearch,mcp__winc__web_search,WebFetch,Read" {
+		t.Errorf("backfill did not carry the local tool: %s", got)
+	}
+	if got := strings.Join(cfg.Team.SonnetTools, ","); got != "all" {
+		t.Errorf("[\"all\"] must be untouched: %s", got)
+	}
+	if cfg.Search.Provider != "auto" || cfg.Search.MaxResults != 5 {
+		t.Errorf("search defaults not backfilled: %+v", cfg.Search)
+	}
+	changed, err := MigrateToolLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0] != "worker_tools" {
+		t.Errorf("changed = %v, want [worker_tools]", changed)
+	}
+	out := string(mustRead(t, p))
+	if !strings.Contains(out, "worker_tools = [\"WebSearch\", \"mcp__winc__web_search\", \"WebFetch\", \"Read\"]   # 0.8B") {
+		t.Errorf("migration wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "default_model = \"m\"   # keep") || !strings.Contains(out, "sonnet_tools = [\"all\"]") {
+		t.Errorf("other lines disturbed:\n%s", out)
+	}
+	if again, err := MigrateToolLists(); err != nil || len(again) != 0 {
+		t.Errorf("second migration must be a no-op: %v %v", again, err)
+	}
+	if string(mustRead(t, p)) != out {
+		t.Error("second migration changed bytes")
+	}
+	// The new default template never needs migrating, and the [search] section arrives via sync.
+	if err := os.WriteFile(p, []byte(defaultTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ch, _ := MigrateToolLists(); len(ch) != 0 {
+		t.Errorf("default template should not migrate: %v", ch)
+	}
+	if err := os.WriteFile(p, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	added, err := SyncMissingSections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := false
+	for _, a := range added {
+		if a == "search" {
+			has = true
+		}
+	}
+	if !has {
+		t.Errorf("[search] not appended: %v", added)
+	}
+}
+
+// The agent notes tell the model which search tool works here.
+func TestWriteAgentNotesSearchLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	if err := WriteAgentNotes(32768, 32768, 0, 0, "mcp__winc__web_search"); err != nil {
+		t.Fatal(err)
+	}
+	s := string(mustRead(t, filepath.Join(dir, ".claude-local", "CLAUDE.md")))
+	if !strings.Contains(s, "mcp__winc__web_search") || !strings.Contains(s, "WebSearch tool is UNAVAILABLE") {
+		t.Errorf("search note missing:\n%s", s)
+	}
+	if err := WriteAgentNotes(32768, 32768, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := string(mustRead(t, filepath.Join(dir, ".claude-local", "CLAUDE.md"))); strings.Contains(s, "mcp__winc__web_search") {
+		t.Errorf("search off must not advertise the tool:\n%s", s)
+	}
+}
+
+// WriteOpenCodeConfig registers winc as OpenCode's local MCP server and points
+// its anthropic provider at winc; regenerated per launch, byte-stable otherwise.
+func TestWriteOpenCodeConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WINC_HOME", dir)
+	p, err := WriteOpenCodeConfig(`C:\\w\\winc.exe`, "http://127.0.0.1:9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MCP map[string]struct {
+			Type    string   `json:"type"`
+			Command []string `json:"command"`
+			Enabled bool     `json:"enabled"`
+		} `json:"mcp"`
+		Provider map[string]struct {
+			Options map[string]string `json:"options"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(mustRead(t, p), &doc); err != nil {
+		t.Fatal(err)
+	}
+	w := doc.MCP["winc"]
+	if w.Type != "local" || !w.Enabled || len(w.Command) != 2 || w.Command[0] != `C:\\w\\winc.exe` || w.Command[1] != "mcp-search" {
+		t.Fatalf("bad mcp entry: %+v", doc.MCP)
+	}
+	if doc.Provider["anthropic"].Options["baseURL"] != "http://127.0.0.1:9" {
+		t.Errorf("provider baseURL missing: %+v", doc.Provider)
+	}
+	first := mustRead(t, p)
+	if _, err := WriteOpenCodeConfig(`C:\\w\\winc.exe`, "http://127.0.0.1:9"); err != nil {
+		t.Fatal(err)
+	}
+	if string(mustRead(t, p)) != string(first) {
+		t.Error("unchanged inputs must produce an identical file")
 	}
 }

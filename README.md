@@ -84,10 +84,11 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 | `winc stop` | Stop the running server; only ever touches stamp-verified processes winc itself started |
 | `winc serve/-s ... --journal[=off]` | Override the journal (context virtualization) for this run |
 | `winc journal [ls\|show\|rm\|path]` | Inspect the conversation journal — plaintext, local, nothing auto-deleted |
-| `winc doctor` | Read-only health snapshot: hardware, engine, models (GGUF check), config, agents, ports, logs |
+| `winc doctor` | Read-only health snapshot: hardware, engine, models (GGUF check), config, search provider, agents, ports, logs |
+| `winc mcp-search --query <q>` | Run one web search from the terminal with the configured `[search]` backend (checks a key / URL without an agent); the bare `winc mcp-search` is the stdio MCP server the agents launch |
 | `winc logs [name] [--bundle]` | Show log tails; `--bundle` zips a support archive for bug reports |
 | `winc -c` / `winc check` | Update status: winc version, source freshness, engine, catalog |
-| `winc -u` / `winc update` | Update **everything**: pull + rebuild (clone), refresh engine + catalog, and reconcile `winc.toml` (repair a stale `default_model`, add new config sections) |
+| `winc -u` / `winc update` | Update **everything**: pull + rebuild (clone) or self-update (prebuilt), refresh engine + catalog, and reconcile `winc.toml` **with the newly installed binary** (repair a stale `default_model`, migrate the team tool lists, add new config sections such as `[search]`) |
 | `winc -n` / `winc uninstall [-y]` | Remove installed components + PATH entry |
 | `winc version` | Print version |
 
@@ -143,9 +144,38 @@ sonnet    = "qwen3.5-4b"    # the "sonnet" worker model (escalation target)
 mid       = "qwen3.5-2b"    # dynamic-mode middle rung between 0.8B and 4B ("off" to disable)
 haiku     = "qwen3.5-0.8b"  # the "haiku" worker model (default subagent / research)
 parallel  = 4               # concurrent slots on the haiku/mid workers (halved on <=16GB RAM)
-worker_tools = ["WebSearch","WebFetch","Read","Grep","Glob"]          # tools the 0.8B/2B may use
-sonnet_tools = ["WebSearch","WebFetch","Read","Grep","Glob","Write"]  # 4B also gets Write; ["all"]=no strip
+worker_tools = ["mcp__winc__web_search","WebFetch","Read","Grep","Glob"]          # tools the 0.8B/2B may use
+sonnet_tools = ["mcp__winc__web_search","WebFetch","Read","Grep","Glob","Write"]  # 4B also gets Write; ["all"]=no strip
+
+[search]                    # web search for the local agent (winc serves it as the MCP tool mcp__winc__web_search)
+provider      = "auto"      # auto | brave | searxng | duckduckgo | off  (auto: Brave if keyed, else SearXNG if set, else DuckDuckGo)
+brave_api_key = ""          # https://brave.com/search/api/ — or the BRAVE_API_KEY env var
+searxng_url   = ""          # e.g. "http://localhost:8888" (the instance must allow format=json)
+max_results   = 5           # per query, 1..10
 ```
+
+### Web search on a local model
+
+Claude Code's built-in `WebSearch` is executed on Anthropic's servers, so on a local model it
+returns **0 results, silently** (WebFetch works — Claude Code runs that one itself). winc fixes
+this by shipping its own search tool: every `winc -s claude` launch registers the running winc
+binary as a stdio MCP server named `winc` (`--mcp-config .claude-local/mcp.json`, regenerated
+each launch), and the model gets **`mcp__winc__web_search`**, pre-approved, while the dead
+built-in tool is **denied** in the sandbox. Backends are chosen by the `[search]` section above
+— DuckDuckGo needs no key; a free [Brave Search API](https://brave.com/search/api/) key or a
+self-hosted [SearXNG](https://docs.searxng.org/) gives steadier results. Failures are never
+silent: a rate limit, CAPTCHA page, HTTP error or timeout comes back to the model as an error
+that names the cause. Team workers keep the tool (it is in both tier allowlists), and
+`winc update` migrates older `winc.toml` lists. Check a backend from the terminal with
+`winc mcp-search --query "llama.cpp server"`; every query is logged to `winc-search.log`.
+`provider = "off"` turns all of this off and leaves the permissions untouched. **OpenCode** gets the
+same server through `OPENCODE_CONFIG` (`.opencode-local/opencode.json`, tool `winc_web_search`,
+anthropic provider pointed at winc) and **OpenClaw** through `openclaw mcp set winc …` in its own
+config (re-set only when the registered path differs). Existing installs pick all of this up with
+`winc -u`: the new binary, the migrated `worker_tools` / `sonnet_tools`, and the `[search]` section
+arrive in one update (an install updating from v1.42.0 or older gets the `[search]` section on its
+second `winc -u`, or at once with `winc reconcile`; search itself works right after the first); the
+sandbox permissions migrate on the next launch.
 
 ### Adaptive reasoning
 
@@ -240,9 +270,11 @@ a worker for read-and-report work, and such a request has no tool that could use
 extra capability. The end-of-session stats count these as `info-pinned`. Research-tier calls run with a brief,
 **capped** thinking budget (small models call tools far more reliably with a little thinking
 than none, but unbounded thinking is slow and can trap the call in the reasoning block).
-Nano/small models also get loop-safe, family-appropriate sampling automatically. **Web
-search/fetch and read-only tools are pre-approved** in winc's sandbox, so you're never
-prompted to grant them every launch. `winc` offers to download a missing worker and ships
+Nano/small models also get loop-safe, family-appropriate sampling automatically. **winc's local
+web search (`mcp__winc__web_search`), web fetch and the read-only tools are pre-approved** in
+winc's sandbox, so you're never prompted to grant them every launch; Claude Code's built-in
+`WebSearch` is denied there because it returns nothing on a local model (see
+[Web search on a local model](#web-search-on-a-local-model)). `winc` offers to download a missing worker and ships
 ready-made `research`, `collator`, and `code-reviewer` agents — your project `.claude/agents`
 always win.
 
@@ -611,7 +643,7 @@ It stands on these upstream projects, each under its own license — winc bundle
 
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — local inference engine + native Anthropic Messages API
 - **[llama-swap](https://github.com/mostlygeek/llama-swap)** — multi-model routing proxy
-- **Claude Code / OpenCode / OpenClaw** — the coding agents winc points at your GPU
+- **Claude Code / OpenCode / OpenClaw** — the coding agents winc points at your GPU (each gets winc's local web search tool; see [Web search on a local model](#web-search-on-a-local-model))
 
 ---
 

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 	"winc/internal/agent"
+	"winc/internal/search"
 
 	"winc/internal/config"
 	"winc/internal/download"
@@ -33,8 +34,7 @@ var knownLogs = []string{
 	"winc-router.log",
 	"worker-haiku.log",
 	"worker-mid.log",
-	"worker-sonnet.log",
-}
+	"worker-sonnet.log", "winc-search.log"}
 
 // cmdDoctor prints a one-shot health snapshot for bug reports and self-diagnosis.
 func cmdDoctor() int {
@@ -142,6 +142,19 @@ func doctorReport(cfg *config.Config) []string {
 	add("  reasoning: %s", cfg.Reasoning.Mode)
 	add("  team:      mode=%s subagents=%s (haiku=%s mid=%s sonnet=%s)",
 		cfg.Team.Mode, cfg.Team.Subagents, cfg.Team.Haiku, cfg.Team.Mid, cfg.Team.Sonnet)
+	sp, sreason := search.ResolveProvider(cfg.Search)
+	switch sp {
+	case "off":
+		add("  search:    off (the agent has NO web search: built-in WebSearch returns nothing on a local model)")
+	case "brave":
+		key := "brave_api_key NOT set"
+		if cfg.Search.BraveAPIKey != "" {
+			key = "brave_api_key set (redacted)"
+		}
+		add("  search:    brave - %s - as %s", key, search.ToolName)
+	default:
+		add("  search:    %s (%s) - as %s", sp, sreason, search.ToolName)
+	}
 	switch {
 	case cfg.HuggingFace.Token != "":
 		add("  hf token:  set in winc.toml (redacted)")

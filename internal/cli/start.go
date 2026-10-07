@@ -15,6 +15,7 @@ import (
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
+	"winc/internal/search"
 	"winc/internal/server"
 	"winc/internal/ui"
 )
@@ -114,7 +115,7 @@ func cmdStart(args []string) int {
 	rememberLastUsed(cfg, app, alias)
 	// (family-correct sampling is applied for all tiers inside engine.ServerArgs)
 
-	if _, err := config.EnsureClaudeLocal(); err != nil {
+	if _, err := config.EnsureClaudeLocal(search.Enabled(cfg.Search)); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)
 	}
 
@@ -141,7 +142,7 @@ func cmdStart(args []string) int {
 	// show local windows below 100k), measured speeds, and small-window practices.
 	// Single mode runs llama's auto-parallel with a UNIFIED KV pool, so every
 	// request can use the full window (verified on the shipped engine).
-	if err := config.WriteAgentNotes(loadedCtx, loadedCtx, lastBench.gen, lastBench.pp); err != nil {
+	if err := config.WriteAgentNotes(loadedCtx, loadedCtx, lastBench.gen, lastBench.pp, searchToolForNotes(cfg)); err != nil {
 		ui.Warn("could not write agent notes: %v", err)
 	}
 	if loadedCtx < 49152 {
@@ -170,8 +171,10 @@ func cmdStart(args []string) int {
 
 	slots := agent.Slots{Sonnet: alias, Opus: alias, Haiku: alias}
 	env := agent.Env(baseURL, slots, maxOut, loadedCtx, "", "")
+	searchArgs, searchEnv := registerSearch(cfg, app, baseURL)
+	env = append(env, searchEnv...)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
-	if err := agent.Launch(app, env); err != nil {
+	if err := agent.Launch(app, env, searchArgs...); err != nil {
 		ui.Warn("agent exited: %v", err)
 	}
 	// Surface how often the session hit the context wall (each one was rewritten into

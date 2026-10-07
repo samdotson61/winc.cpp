@@ -3,6 +3,124 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.43.0-jobdar.1 — 2026-10-06 (winc-jobdar branch)
+
+**Merge of master v1.43.0 ("web search works on local models") plus its docs
+follow-up.** Inert for the eval profile: `winc serve --eval` launches no agent,
+so no MCP server is registered, no permissions are touched and no OPENCODE /
+OpenClaw config is written; the jobdar desktop's `winc_manager` contract
+(`serve --eval` on the winc.toml port, `/v1/messages` + `/v1/chat/completions`)
+is untouched. The `[search]` section is appended to winc.toml by the
+reconcile step like any other new section and is ignored under --eval.
+`winc update` now reconciles with the freshly installed binary (hidden `winc
+reconcile`); the jobdar self-update guard still fires (suffix kept, pinned by
+`update_jobdar_test.go`). eval.go byte-identical; full suite green; serve --eval
+smoke on a scratch port answered a JSON-mode request.
+
+## v1.43.0 — 2026-10-06
+
+### Fixed
+- **Web search works on local models.** Root cause: Claude Code's built-in
+  `WebSearch` is not a client-side tool — it is executed **server-side by
+  Anthropic's API**. Under winc the "API" is llama-server, which has no search
+  backend, so every query came back as **0 results with no error**, and winc had
+  been pre-approving exactly that tool since the sandbox was introduced. (WebFetch
+  worked all along because Claude Code runs it client-side.) Nothing in winc ever
+  executed a search; the allowlists were the only mentions.
+- **The fix: winc ships its own search tool and denies the dead one.** A new
+  stdio MCP server, `winc mcp-search` (stdlib JSON-RPC: `initialize`,
+  `tools/list`, `tools/call`, `ping`), serves one tool, `web_search`
+  (`{query, max_results?}` → numbered title / URL / snippet). It is registered
+  at every `winc -s claude` launch as the server **`winc`** through
+  `--mcp-config .claude-local/mcp.json`, pointing at the running winc binary's
+  own path (regenerated each launch like the agent notes, so a moved folder
+  never breaks it; the user's cloud Claude Code config is never touched), and
+  reaches the model as **`mcp__winc__web_search`**. Backends from the new
+  `[search]` section: `provider = "auto"` (default) picks Brave when
+  `brave_api_key` (or `BRAVE_API_KEY`) is set, else SearXNG when `searxng_url`
+  is set, else DuckDuckGo's HTML endpoint (no key); explicit
+  `brave | searxng | duckduckgo | off`. **Failures are loud**: a 429, a
+  CAPTCHA / bot-challenge page, any HTTP error, a timeout (10 s per request)
+  or a page that no longer parses returns a tool error naming the cause —
+  never an empty list; a genuine empty answer says "No results". Real browser
+  User-Agent, results default 5, hard cap 10. `winc mcp-search --query "<q>"`
+  runs one search from the terminal to check a backend or key; every call is
+  logged to `winc-search.log` (shown by `winc doctor` / `winc logs`).
+- **Permissions migrate.** `preApprovedTools` now names `mcp__winc__web_search`
+  instead of `WebSearch`, and `ensureToolPermissions` — append-only until now —
+  also moves `WebSearch` out of `permissions.allow` into `permissions.deny` on
+  existing sandboxes, so the model is never offered the tool that returns
+  nothing. Idempotent; the user's other allow/deny rules are kept verbatim.
+  With `provider = "off"` nothing is registered and the rules are left as they
+  were.
+- **Team mode keeps search.** The default `worker_tools` / `sonnet_tools` name
+  `mcp__winc__web_search`; existing `winc.toml` files are migrated by
+  `winc update` (`MigrateToolLists` inserts it after `"WebSearch"` — the one
+  deliberate in-place edit of the reconcile step, idempotent) and the `[search]`
+  section is appended by the usual missing-section sync; until then `Load`
+  carries the tool in memory so workers are never stripped of it. The router's
+  `infoTools` include it, so a research subagent carrying it still counts as
+  information-only and stays pinned to its worker instead of escalating to the
+  head. The shipped `research` agent's `tools:` line and prose name the new tool.
+- **Diagnostics.** `winc doctor` reports the resolved provider and whether a key
+  / URL is set (read-only, no network); the agent notes (`.claude-local/CLAUDE.md`)
+  tell the model to search with `mcp__winc__web_search` and that the built-in
+  WebSearch is unavailable locally.
+- **Also in this release:** `winc setup` no longer auto-downloads the
+  recommended model when it is run from a pipe or script (`Confirm` answered
+  its default "yes" to end-of-file; a redirected setup pulled a 13 GB model
+  unasked) — it prints the `winc -d` command instead; the wizard's step counter
+  reads 1..7 consistently.
+- Tests: per-backend parsing from fixtures (a captured DuckDuckGo page, Brave
+  and SearXNG JSON), the error paths (429, CAPTCHA page, timeout, unparsable
+  page vs DDG's own no-results marker), MCP handshake + `tools/list` +
+  `tools/call` round trip + tool-error shaping + JSON-RPC error codes,
+  permission migration (allow → deny, idempotent, user rules kept, off leaves
+  rules), `MigrateToolLists` + `Load` backfill + `[search]` sync,
+  `WriteMCPConfig` regeneration, agent-notes line, `infoOnlyRequest` with the
+  new tool name.
+- E2E on the 5070 Ti box (scratch home, port 8099, prompt piped so Claude Code
+  ran in print mode): `winc -s claude qwen3.5-4b --noteam` (adaptive),
+  `--reasoning off` (router bypassed), and `qwen3.5-9b --team` all answered
+  "https://github.com/ggml-org/llama.cpp" after one `mcp__winc__web_search`
+  call each (winc-search.log: `provider=duckduckgo query="llama.cpp official
+  GitHub repository" n=5 results=5`, ~0.8-1.1 s); in team mode a `research`
+  subagent launched via the Task tool searched through the same tool from the
+  4B worker (router stats `main=4 sonnet=2`) and the head reported its answer.
+  The sandbox settings after launch: allow = [mcp__winc__web_search, WebFetch,
+  Read, Grep, Glob], deny = [WebSearch]; mcp.json pointed at the running binary.
+- **OpenCode and OpenClaw get the same tool.** `winc -s opencode` writes
+  `.opencode-local/opencode.json` (the local MCP server `winc` → tool
+  `winc_web_search`, plus the anthropic provider's `baseURL` pointed at winc's
+  endpoint — as `<router>/v1`, because OpenCode's Anthropic client appends
+  `/messages` to it; a bare origin 404s at llama-server — which the env-only
+  launch never did for OpenCode) and passes it as
+  `OPENCODE_CONFIG`, which OpenCode merges between its global and project
+  config — the user's own OpenCode config is untouched. `winc -s openclaw`
+  registers `mcp.servers.winc` through OpenClaw's own CLI (`openclaw mcp set
+  winc {"command": "<winc>", "args": ["mcp-search"]}` — OpenClaw has no
+  per-launch config file), re-set only when the configured entry differs from
+  the running binary (a moved folder re-registers; an unchanged one never
+  rewrites openclaw.json). The path is registered with forward slashes because
+  the JSON crosses cmd.exe and node argv parsing, which eat backslashes next to
+  quotes.
+- **`winc update` reconciles with the binary it just installed.** The
+  in-process reconcile ran the OLD code after the pull/rebuild or self-update,
+  so a section new in a release (this one's `[search]`) only reached winc.toml
+  on the FOLLOWING update. `winc update` now runs the hidden, idempotent
+  `winc reconcile` through the freshly installed executable (falling back to
+  the in-process reconcile if that fails), so one `winc -u` delivers the
+  binary, the migrated tool lists and the new section together. Also:
+  `selfUpdatePrebuilt` replaced any binary whose version merely DIFFERED from
+  the latest tag — a build ahead of the tag would have been downgraded; it now
+  uses the same behind-only check as `winc check`. One caveat, verified live:
+  an install updating FROM v1.42.0 or older runs that first `winc update` with
+  the OLD code, so it gets the v1.43.0 binary and working search (defaults are
+  backfilled in memory) but the `[search]` section and the migrated tool lists
+  land on the following `winc update` -- or at once with `winc reconcile`.
+  From v1.43.0 on, one update delivers everything.
+- Follow-up (separate issue): the Bash safety-classifier timeout seen in the
+  same report.
 ## 1.42.0-jobdar.2 — 2026-10-06 (winc-jobdar branch)
 
 ### Fixed

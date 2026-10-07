@@ -1031,3 +1031,21 @@ func TestRouterContinuesTruncatedJSON(t *testing.T) {
 		t.Errorf("continued counter = %d, want 1", n)
 	}
 }
+
+// A research subagent carrying winc's local search tool is still information-only
+// (and so stays pinned to the worker instead of escalating to the head); any other
+// MCP tool still disqualifies.
+func TestInfoOnlyRequestLocalSearchTool(t *testing.T) {
+	mk := func(tools string) []byte {
+		return []byte(`{"model":"x","messages":[{"role":"user","content":"q"}],"tools":[` + tools + `]}`)
+	}
+	if !infoOnlyRequest(mk(`{"name":"mcp__winc__web_search"},{"name":"WebFetch"},{"name":"Read"}`)) {
+		t.Error("mcp__winc__web_search + read tools must count as info-only")
+	}
+	if infoOnlyRequest(mk(`{"name":"mcp__winc__web_search"},{"name":"mcp__other__thing"}`)) {
+		t.Error("an unknown MCP tool must disqualify")
+	}
+	if infoOnlyRequest(mk(`{"name":"mcp__winc__web_search"},{"name":"Bash"}`)) {
+		t.Error("Bash must disqualify")
+	}
+}

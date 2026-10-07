@@ -15,6 +15,7 @@ import (
 	"winc/internal/paths"
 	"winc/internal/platform"
 	"winc/internal/router"
+	"winc/internal/search"
 	"winc/internal/server"
 	"winc/internal/ui"
 )
@@ -78,7 +79,7 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 		ui.Err("could not write llama-swap.yaml: %v", err)
 		return 1
 	}
-	if _, err := config.EnsureClaudeLocal(); err != nil {
+	if _, err := config.EnsureClaudeLocal(search.Enabled(cfg.Search)); err != nil {
 		ui.Warn("could not create .claude-local: %v", err)
 	}
 
@@ -128,8 +129,10 @@ func startMulti(cfg *config.Config, cat *catalog.Catalog, hw platform.Hardware, 
 	ctxWin := engine.ResolveContext(cfg, hw, sonnetPath, engine.FileMB(sonnetPath), engine.WillOffloadExperts(cfg, hw, sonnetPath))
 	maxOut := engine.ResolveMaxOutput(cfg, ctxWin)
 	env := agent.Env(baseURL, slots, maxOut, ctxWin, "", "")
+	searchArgs, searchEnv := registerSearch(cfg, app, baseURL)
+	env = append(env, searchEnv...)
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
-	if err := agent.Launch(app, env); err != nil {
+	if err := agent.Launch(app, env, searchArgs...); err != nil {
 		ui.Warn("agent exited: %v", err)
 	}
 	return 0
