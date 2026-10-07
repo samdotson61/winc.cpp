@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,10 @@ import (
 // registered command uses forward slashes (the JSON crosses cmd.exe + node
 // argv parsing, which eat backslashes next to quotes).
 func TestOpenClawEntryMatches(t *testing.T) {
-	want := openClawServerJSON(`C:\w\winc.exe`)
+	// A native path on every OS: Windows builds get C:\w\winc.exe and must
+	// register C:/w/winc.exe; Unix builds already use slashes (ToSlash is a
+	// no-op there, which is why a hard-coded backslash input failed on CI).
+	want := openClawServerJSON(filepath.Join("C:", "w", "winc.exe"))
 	if !strings.Contains(want, `"command":"C:/w/winc.exe"`) {
 		t.Fatalf("registered path must use forward slashes: %s", want)
 	}
