@@ -3,6 +3,63 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.44.0-jobdar.1 — 2026-10-07 (winc-jobdar branch)
+
+**Merge of master v1.44.0 (`winc -s openclaw` configures OpenClaw).** Inert for
+the eval profile: `serve --eval` launches no agent, so OpenClaw's config is never
+touched and the new on-exit hook never runs; `router.Start`'s `addr` parameter is
+now IDENTICAL on both branches (master adopted the branch's signature), so the
+eval profile's pinned router needs no branch-only change any more. winc_manager
+contract untouched; eval.go byte-identical; full suite green; serve --eval smoke
+on a scratch port answered JSON-mode and `winc stop` found it.
+
+## v1.44.0 — 2026-10-07
+
+### Fixed
+- **`winc -s openclaw <model>` now actually runs OpenClaw on that model.**
+  OpenClaw reads its model providers only from its own config (openclaw.json);
+  the `ANTHROPIC_*` environment winc exports for Claude Code means nothing to
+  it, so the launch opened a TUI that still talked to whatever provider the user
+  had configured (on this box: an Ollama model). winc now writes, through
+  OpenClaw's own CLI and check-then-act against `openclaw config get` (an
+  unchanged launch rewrites nothing): `models.providers.winc` — an
+  `anthropic-messages` provider at winc's endpoint listing the launched model
+  with its REAL context window and output cap — and
+  `agents.defaults.model.primary = "winc/<alias>"` for the session, **restored
+  to the previous value when the agent exits**, on Ctrl-C too (a new on-exit
+  hook; `os.Exit` skipped the defers). For this the router is pinned to the
+  winc.toml port and llama-server moves to an ephemeral one (the eval
+  profile's arrangement; `router.Start` gained the branch's `addr` parameter),
+  so the endpoint in OpenClaw's config stays valid across launches. OpenClaw's
+  gateway reads its config at start, so the launch prints the one-time hint
+  (`openclaw gateway run` / `openclaw gateway restart`).
+- **OpenClaw search, verified for real.** OpenClaw exposes winc's MCP tool as
+  **`winc__web_search`** (server prefix + double underscore) BESIDE its own
+  built-in `web_search`, which runs client-side and works key-free — so on
+  OpenClaw the built-in tool was never dead; winc's adds the configured
+  Brave / SearXNG backend. Live, in an isolated OpenClaw profile against
+  `winc serve`: `openclaw agent --local` on `winc/qwen3.5-4b` answered the
+  llama.cpp repo URL with `toolSummary {calls: 1, tools: ["web_search"]}`
+  (built-in; control run with the MCP server unset gave the same) and, asked
+  for `winc__web_search` by name, with `tools: ["winc__web_search"]` plus the
+  matching `winc-search.log` line. The v1.43.0 note that claimed OpenClaw's
+  built-in search was dead is corrected in the README.
+- E2E on the 5070 Ti box, isolated OpenClaw profile with its own gateway
+  (`gateway.mode local`, token auth, `openclaw gateway run --port 18799`):
+  `winc -s openclaw qwen3.5-4b --noteam` wrote the provider at the pinned
+  port 8099 with context 262144 / max output 65536, set the default model,
+  the TUI connected (status line `tokens ?/262k`); `openclaw agent --local`
+  through the live launch returned `toolSummary {calls: 1, tools:
+  ["winc__web_search"], failures: 0}` and the repo URL; ending the TUI
+  restored the default (`Config path not found`), stopped the engine and
+  freed the port.
+- Tests: the whole register/restore flow against a recorded fake `openclaw`
+  (fresh config → provider written + default switched + restore unsets;
+  previous default restored; unchanged provider not rewritten, a changed
+  window is; missing binary → no calls), provider matching with the redacted
+  key and defaulted fields.
+- Mac: a step-by-step test handoff for v1.42–v1.44 is in the iCloud File
+  Transfer folder (`winc-v1.44-mac-test-2026-10-07.md`).
 ## 1.43.0-jobdar.1 — 2026-10-06 (winc-jobdar branch)
 
 **Merge of master v1.43.0 ("web search works on local models") plus its docs

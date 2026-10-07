@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"winc/internal/agent"
 	"winc/internal/catalog"
@@ -120,6 +121,17 @@ func cmdStart(args []string) int {
 	}
 
 	port := cfg.General.Port
+	// OpenClaw reads winc's endpoint from its own config file, so it must not
+	// move between launches: the ROUTER takes the winc.toml port and llama-server
+	// an ephemeral one (the eval profile's arrangement). Other agents get the
+	// endpoint by environment each launch and keep the historical layout.
+	routerAddr := ""
+	if app == "openclaw" {
+		if lp := freePort(); lp > 0 {
+			port = lp
+			routerAddr = fmt.Sprintf("%s:%d", cfg.General.Host, cfg.General.Port)
+		}
+	}
 	serverURL := fmt.Sprintf("http://%s:%d", cfg.General.Host, port)
 	logPath := filepath.Join(paths.InstallDir(), "llama-server.log")
 
@@ -132,9 +144,18 @@ func cmdStart(args []string) int {
 	}
 	defer proc.Stop()
 
+	// onExit runs on Ctrl-C too (os.Exit skips defers): today it restores
+	// OpenClaw's default model.
+	var onExit atomic.Pointer[func()]
+	runOnExit := func() {
+		if f := onExit.Load(); f != nil {
+			(*f)()
+		}
+	}
+	defer runOnExit()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
-	go func() { <-sig; proc.Stop(); os.Exit(130) }()
+	go func() { <-sig; runOnExit(); proc.Stop(); os.Exit(130) }()
 
 	maxOut := engine.ResolveMaxOutput(cfg, loadedCtx)
 	ui.Good("server ready at %s (context %d, max output %d)", serverURL, loadedCtx, maxOut)
@@ -157,9 +178,12 @@ func cmdStart(args []string) int {
 	// into the wording Claude Code recognizes (so a big tool_result doesn't surface as
 	// "<model> is temporarily unavailable" and block the command in auto mode).
 	baseURL := serverURL
-	r, rerr := router.Start(cfg, serverURL, loadedCtx, "")
+	r, rerr := router.Start(cfg, serverURL, loadedCtx, routerAddr)
 	if rerr != nil {
 		ui.Warn("router failed (%v); using direct serving", rerr)
+		if routerAddr != "" {
+			ui.Warn("OpenClaw needs the router on %s - stop whatever holds that port and re-run", routerAddr)
+		}
 	} else {
 		defer r.Stop()
 		baseURL = r.BaseURL()
@@ -173,10 +197,15 @@ func cmdStart(args []string) int {
 	env := agent.Env(baseURL, slots, maxOut, loadedCtx, "", "")
 	searchArgs, searchEnv := registerSearch(cfg, app, baseURL)
 	env = append(env, searchEnv...)
+	if app == "openclaw" {
+		restore := registerOpenClawModel(baseURL, alias, loadedCtx, maxOut)
+		onExit.Store(&restore)
+	}
 	ui.Good("launching %s ... (Ctrl-C to stop)", app)
 	if err := agent.Launch(app, env, searchArgs...); err != nil {
 		ui.Warn("agent exited: %v", err)
 	}
+	runOnExit()
 	// Surface how often the session hit the context wall (each one was rewritten into
 	// Claude Code's compaction signal). A recurring count means the context is too
 	// small for the workload -- the actionable follow-up lives in the warning above.

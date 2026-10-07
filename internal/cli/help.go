@@ -16,7 +16,7 @@ func usage() {
 	ui.Say("  winc -r <model> [-y]            delete a downloaded model")
 	ui.Say("  winc -s claude <model>          start Claude Code on a local model")
 	ui.Say("  winc -s opencode <model>        start OpenCode")
-	ui.Say("  winc -s openclaw <model>        start OpenClaw")
+	ui.Say("  winc -s openclaw <model>        start OpenClaw on it (winc provider + default model, restored on exit)")
 	ui.Say("  winc -s cli <model>             raw llama.cpp chat")
 	ui.Say("        [--noteam] [--multi] [--reasoning adaptive|on|off|fixed]")
 	ui.Say("        team mode is DEFAULT on a big model: subagents start on a small CPU worker")

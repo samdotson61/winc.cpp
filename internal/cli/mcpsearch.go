@@ -2,15 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"winc/internal/agent"
 	"winc/internal/config"
 	"winc/internal/paths"
 	"winc/internal/search"
@@ -114,74 +109,9 @@ func registerSearch(cfg *config.Config, app, baseURL string) (args, env []string
 			ui.Warn("web search: could not register with OpenClaw: %v", err)
 			return nil, nil
 		}
-		ui.Info("web search: OpenClaw MCP server \"winc\" via %s (openclaw.json mcp.servers.winc)", prov)
+		ui.Info("web search: %s via %s (OpenClaw MCP server \"winc\"; its built-in web_search also works locally)", openClawSearchTool, prov)
 	}
 	return nil, nil
-}
-
-// openClawServerJSON is the mcp.servers entry winc keeps in OpenClaw's config:
-// the stdio form `openclaw mcp set` documents ({"command":..., "args":[...]}).
-func openClawServerJSON(exe string) string {
-	// Forward slashes: the JSON crosses cmd.exe and node argv parsing, which eat
-	// backslashes next to quotes; Windows launches "C:/x/winc.exe" just the same.
-	b, _ := json.Marshal(map[string]any{"command": filepath.ToSlash(exe), "args": []string{"mcp-search"}})
-	return string(b)
-}
-
-// registerOpenClawSearch sets mcp.servers.winc in OpenClaw's config through
-// its own CLI (the only writer OpenClaw documents), skipping the write when
-// the configured entry already matches -- a launch never rewrites the user's
-// openclaw.json needlessly.
-func registerOpenClawSearch(exe string) error {
-	bin, ok := agent.Resolve("openclaw")
-	if !ok {
-		return errors.New("openclaw not found")
-	}
-	want := openClawServerJSON(exe)
-	if cur, err := openClawRun(bin, "mcp", "show", "winc"); err == nil && openClawEntryMatches(cur, want) {
-		return nil
-	}
-	_, err := openClawRun(bin, "mcp", "set", "winc", want)
-	return err
-}
-
-// openClawRun runs an openclaw CLI command (via cmd.exe for the npm .cmd shim
-// on Windows) and returns its combined output.
-func openClawRun(bin string, args ...string) (string, error) {
-	var c *exec.Cmd
-	switch strings.ToLower(filepath.Ext(bin)) {
-	case ".cmd", ".bat":
-		c = exec.Command("cmd", append([]string{"/c", bin}, args...)...)
-	default:
-		c = exec.Command(bin, args...)
-	}
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
-}
-
-// openClawEntryMatches reports whether `openclaw mcp show winc` output carries
-// the JSON object we want (same command + args), tolerating the banner lines
-// and key order the CLI prints.
-func openClawEntryMatches(shown, want string) bool {
-	i := strings.Index(shown, "{")
-	j := strings.LastIndex(shown, "}")
-	if i < 0 || j <= i {
-		return false
-	}
-	var got, exp map[string]any
-	if json.Unmarshal([]byte(shown[i:j+1]), &got) != nil || json.Unmarshal([]byte(want), &exp) != nil {
-		return false
-	}
-	// `show <name>` prints the entry itself; `show` (all) nests it under the name.
-	if inner, ok := got["winc"].(map[string]any); ok {
-		got = inner
-	}
-	gb, _ := json.Marshal(map[string]any{"command": got["command"], "args": got["args"]})
-	eb, _ := json.Marshal(map[string]any{"command": exp["command"], "args": exp["args"]})
-	return string(gb) == string(eb)
 }
 
 // searchToolForNotes is the tool name WriteAgentNotes should advertise, or ""

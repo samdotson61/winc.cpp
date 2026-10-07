@@ -73,7 +73,7 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 | `winc -s` | Start the **last used** agent on the **last used** model (every successful agent start updates the defaults) |
 | `winc -s claude <model>` | Start Claude Code on a local model (sandboxed instance) |
 | `winc -s opencode <model>` | Start OpenCode |
-| `winc -s openclaw <model>` | Start OpenClaw |
+| `winc -s openclaw <model>` | Start OpenClaw on the model: winc writes the `winc` provider + sets OpenClaw's default model to `winc/<model>` for the session (restored on exit); its gateway must be running (`openclaw gateway run`) |
 | `winc -s cli <model>` | Raw llama.cpp chat (doesn't change the defaults) |
 | `winc -s ... --multi` | Route through llama-swap (multiple models, hot-swapped) |
 | `winc -s claude <model>` | **Team is the default on a big model**: it orchestrates while a small CPU worker runs all subagents (research fan-out + Explore) |
@@ -170,8 +170,10 @@ that names the cause. Team workers keep the tool (it is in both tier allowlists)
 `winc mcp-search --query "llama.cpp server"`; every query is logged to `winc-search.log`.
 `provider = "off"` turns all of this off and leaves the permissions untouched. **OpenCode** gets the
 same server through `OPENCODE_CONFIG` (`.opencode-local/opencode.json`, tool `winc_web_search`,
-anthropic provider pointed at winc) and **OpenClaw** through `openclaw mcp set winc …` in its own
-config (re-set only when the registered path differs). Existing installs pick all of this up with
+anthropic provider pointed at winc). **OpenClaw** gets it through `openclaw mcp set winc …` in its own
+config (re-set only when the registered path differs) as **`winc__web_search`**, beside OpenClaw's own
+built-in `web_search` — which runs client-side and works without keys, so on OpenClaw winc's tool is
+the keyed-backend option, not a fix. Existing installs pick all of this up with
 `winc -u`: the new binary, the migrated `worker_tools` / `sonnet_tools`, and the `[search]` section
 arrive in one update (an install updating from v1.42.0 or older gets the `[search]` section on its
 second `winc -u`, or at once with `winc reconcile`; search itself works right after the first); the
@@ -600,6 +602,21 @@ printed command and a non-zero exit.
 The freshly installed `claude` launches from the same winc run — winc resolves the agent to a
 path rather than relying on the PATH your shell started with. `winc doctor` shows which install
 it found and its version.
+
+---
+
+## OpenClaw
+
+OpenClaw reads its model providers and MCP servers from its own config file (`openclaw.json`), not
+from the environment, so `winc -s openclaw <model>` configures it through OpenClaw's own CLI:
+`models.providers.winc` (an `anthropic-messages` provider at winc's endpoint, listing the launched
+model with its real context window and output cap) and `agents.defaults.model.primary =
+"winc/<model>"` for the session — **restored to your previous default when the agent exits**, Ctrl-C
+included. Nothing is rewritten when it already matches. For this the router sits on the `winc.toml`
+port (llama-server moves to an ephemeral one), so the endpoint stays valid across launches. OpenClaw's
+TUI talks to its gateway, which reads the config at start: if it shows `gateway disconnected`, run
+`openclaw gateway run` in another terminal; if it was already running, `openclaw gateway restart`.
+One-shot turns work without the gateway: `openclaw agent --local --session-id test -m "…"`.
 
 ---
 
