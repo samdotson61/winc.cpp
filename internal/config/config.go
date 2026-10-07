@@ -7,6 +7,8 @@ package config
 import (
 	"os"
 	"regexp"
+	"strings"
+	"winc/internal/search"
 
 	"github.com/pelletier/go-toml/v2"
 	"winc/internal/paths"
@@ -19,6 +21,7 @@ type Config struct {
 	Performance  Performance   `toml:"performance"`
 	Multi        Multi         `toml:"multi"`
 	Team         Team          `toml:"team"`
+	Search       search.Config `toml:"search"`
 	HuggingFace  HuggingFace   `toml:"huggingface"`
 	Paths        Paths         `toml:"paths"`
 	CustomModels []CustomModel `toml:"custom_models"`
@@ -255,14 +258,23 @@ parallel  = 4               # concurrent slots on the haiku/mid workers (fan-out
 # Per-tier tool allowlists: winc strips a worker request's tool set to its tier's list (the
 # HEAD model always keeps every tool). Tiny workers stay research-only; the 4B also gets
 # Write for collation/review. Use ["all"] to disable stripping for a tier.
-worker_tools = ["WebSearch", "WebFetch", "Read", "Grep", "Glob"]           # 0.8B / 2B
-sonnet_tools = ["WebSearch", "WebFetch", "Read", "Grep", "Glob", "Write"]  # 4B (collator/review)
+worker_tools = ["mcp__winc__web_search", "WebFetch", "Read", "Grep", "Glob"]           # 0.8B / 2B
+sonnet_tools = ["mcp__winc__web_search", "WebFetch", "Read", "Grep", "Glob", "Write"]  # 4B (collator/review)
 # Worker generation caps (loop guard): a small model can otherwise run away and generate
 # until it slams into its context window (minutes of CPU time for truncated garbage). winc
 # lowers an over-large max_tokens to these ceilings for worker requests only (never the main
 # model). Research outputs are short; collation gets more room. 0 = uncapped.
 worker_max_tokens = 1536    # 0.8B / 2B research tier
 sonnet_max_tokens = 4096    # 4B collation / review tier
+
+[search]                 # web search for the local agent (served by winc as the MCP tool mcp__winc__web_search)
+# Claude Code's built-in WebSearch runs on Anthropic's servers -- on a local model it returns
+# 0 results, silently. winc registers its own search tool instead and denies the built-in one.
+provider      = "auto"   # auto | brave | searxng | duckduckgo | off
+                         #   auto -> Brave if brave_api_key is set, else SearXNG if searxng_url is set, else DuckDuckGo
+brave_api_key = ""       # https://brave.com/search/api/ (free tier available); or the BRAVE_API_KEY env var
+searxng_url   = ""       # e.g. "http://localhost:8888" -- the instance must allow format=json
+max_results   = 5        # results per query (1..10); the model can ask for more up to 10
 
 [huggingface]
 token = ""               # gated repos; or use the HF_TOKEN env var
@@ -445,4 +457,44 @@ func (c *Config) backfill() {
 	if len(c.Team.SonnetTools) == 0 {
 		c.Team.SonnetTools = d.Team.SonnetTools
 	}
+	// Pre-1.43 tool lists name the built-in WebSearch, which never worked on a
+	// local model; the local tool rides along in memory so workers keep search
+	// until `winc update` migrates the file (MigrateToolLists).
+	c.Team.WorkerTools = withLocalSearch(c.Team.WorkerTools)
+	c.Team.SonnetTools = withLocalSearch(c.Team.SonnetTools)
+	if strings.TrimSpace(c.Search.Provider) == "" {
+		c.Search.Provider = d.Search.Provider
+	}
+	if c.Search.MaxResults <= 0 {
+		c.Search.MaxResults = d.Search.MaxResults
+	}
+	if c.Search.BraveAPIKey == "" {
+		c.Search.BraveAPIKey = os.Getenv("BRAVE_API_KEY")
+	}
+}
+
+// withLocalSearch appends the local search tool to a tool list that names the
+// dead built-in WebSearch but not yet the local one. Idempotent; ["all"] and
+// lists without WebSearch are returned unchanged.
+func withLocalSearch(tools []string) []string {
+	hasOld, hasNew := false, false
+	for _, t := range tools {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "websearch":
+			hasOld = true
+		case strings.ToLower(search.ToolName):
+			hasNew = true
+		}
+	}
+	if !hasOld || hasNew {
+		return tools
+	}
+	out := make([]string, 0, len(tools)+1)
+	for _, t := range tools {
+		out = append(out, t)
+		if strings.EqualFold(strings.TrimSpace(t), "WebSearch") {
+			out = append(out, search.ToolName)
+		}
+	}
+	return out
 }

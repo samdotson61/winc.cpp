@@ -19,6 +19,7 @@ import (
 	"winc/internal/engine"
 	"winc/internal/paths"
 	"winc/internal/platform"
+	"winc/internal/search"
 	"winc/internal/ui"
 )
 
@@ -103,7 +104,20 @@ func cmdUpdate() int {
 		selfUpdatePrebuilt()
 	}
 
-	reconcileConfig(hw)
+	// Reconcile winc.toml with the binary that was JUST installed, not the one
+	// still running: a section new in this release (e.g. [search] in v1.43)
+	// is only known to the new code, and the in-process reconcile used to run
+	// the OLD code -- new sections only arrived on the following `winc update`.
+	// `winc reconcile` is idempotent, so a same-version update is a no-op here;
+	// if the swap failed it simply runs the current build.
+	if exe, err := os.Executable(); err == nil {
+		if rerr := execInherit(exe, "reconcile").Run(); rerr != nil {
+			ui.Warn("config reconcile (new binary) failed: %v - running the in-process one", rerr)
+			reconcileConfig(hw)
+		}
+	} else {
+		reconcileConfig(hw)
+	}
 	refreshEngine(hw)
 	// PATH reconcile: older installs recorded PATH only for bash/zsh -- fish-first
 	// distros (CachyOS) never saw it, and a moved folder breaks the recorded entry
@@ -160,7 +174,10 @@ func selfUpdatePrebuilt() {
 		ui.Warn("could not reach the winc releases API - keeping the current binary")
 		return
 	}
-	if strings.TrimPrefix(tag, "v") == Version {
+	// Behind-only: a build AHEAD of the latest tag (a release literal cut before
+	// its tag is published, or a describe-stamped build past it) must never be
+	// replaced by the older release. Same predicate `winc check` uses.
+	if !versionBehindTag(Version, tag) {
 		ui.Good("winc is up to date (%s)", Version)
 		return
 	}
@@ -241,6 +258,11 @@ func reconcileConfig(hw platform.Hardware) {
 		}
 	}
 
+	if changed, err := config.MigrateToolLists(); err != nil {
+		ui.Warn("config: couldn't migrate team tool lists: %v", err)
+	} else if len(changed) > 0 {
+		ui.Good("config: %s now also name %s (built-in WebSearch returns nothing on a local model)", strings.Join(changed, " + "), search.ToolName)
+	}
 	if added, err := config.SyncMissingSections(); err != nil {
 		ui.Warn("config: couldn't add new sections: %v", err)
 	} else if len(added) > 0 {
@@ -417,4 +439,12 @@ func rebuildFromSource() {
 		return
 	}
 	ui.Good("rebuilt winc from source - re-run your command to use the latest version")
+}
+
+// cmdReconcile is the hidden `winc reconcile`: bring winc.toml forward for THIS
+// binary's version (repair default_model, migrate tool lists, append new
+// sections). `winc update` runs it through the freshly installed binary.
+func cmdReconcile() int {
+	reconcileConfig(platform.DetectHardwareCached())
+	return 0
 }

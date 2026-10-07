@@ -700,7 +700,7 @@ func pickAt(ladder []Tier, est int, heavy bool) Tier {
 // up and report back -- it cannot edit, run commands, or spawn agents.
 var infoTools = map[string]bool{
 	"Read": true, "Glob": true, "Grep": true, "LS": true, "NotebookRead": true,
-	"WebFetch": true, "WebSearch": true, "ToolSearch": true,
+	"WebFetch": true, "WebSearch": true, "mcp__winc__web_search": true, "ToolSearch": true,
 	"TaskGet": true, "TaskList": true, "TodoRead": true,
 	"ListMcpResourcesTool": true, "ReadMcpResourceTool": true,
 	"StructuredOutput": true,
@@ -708,8 +708,8 @@ var infoTools = map[string]bool{
 
 // infoOnlyRequest reports whether a chat request is information-only: it carries no
 // tools at all (pure read-context-and-report generation), or every tool it carries is
-// in the read/search/fetch set. Anything unrecognized (Bash, Edit, Write, MCP tools,
-// ...) disqualifies, so a request that can act keeps its right to escalate.
+// in the read/search/fetch set (winc's own MCP search tool included). Anything
+// unrecognized (Bash, Edit, Write, other MCP tools, ...) disqualifies, so a request that can act keeps its right to escalate.
 // Byte-based form of (*preq).infoOnly, kept as the testable contract.
 func infoOnlyRequest(body []byte) bool {
 	p := parseReq(body)

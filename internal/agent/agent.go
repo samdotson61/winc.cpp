@@ -140,8 +140,10 @@ func Available(app string) bool {
 // The launcher is resolved to a path first (PATH, then the installers' known
 // locations), so an agent installed in this same winc run -- before the shell
 // saw its PATH entry -- still starts.
-func Launch(app string, env []string) error {
+// extra arguments (e.g. --mcp-config <file>) are appended to the launcher's own.
+func Launch(app string, env []string, extra ...string) error {
 	_, args, ok := command(app)
+	args = append(append([]string{}, args...), extra...)
 	if !ok {
 		return fmt.Errorf("unknown app %q (use claude, opencode, or openclaw)", app)
 	}

@@ -44,6 +44,10 @@ func Run(args []string) int {
 		return cmdSetup()
 	case "-i", "install":
 		return cmdInstall(rest)
+	case "mcp-search":
+		return cmdMcpSearch(rest)
+	case "reconcile":
+		return cmdReconcile()
 	case "detect":
 		return cmdDetect()
 	case "doctor":

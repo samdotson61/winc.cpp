@@ -25,11 +25,11 @@ func cmdSetup() int {
 	tier := catalog.VramTier(hw.MemoryBudgetMB())
 	ui.Say("  backend=%s  memory budget=%d MB  ->  tier '%s'", platform.DefaultBackend(hw), hw.MemoryBudgetMB(), tier)
 
-	ui.Step(2, 6, "Config")
+	ui.Step(2, 7, "Config")
 	ui.Good("single config file: %s", paths.ConfigPath())
 	ui.Say("  reasoning mode: %s   (edit winc.toml to change)", cfg.Reasoning.Mode)
 
-	ui.Step(3, 6, "Engine: llama.cpp")
+	ui.Step(3, 7, "Engine: llama.cpp")
 	serverBin, err := engine.AcquireLlama(hw)
 	if err != nil {
 		ui.Err("could not get llama.cpp: %v", err)
@@ -37,16 +37,18 @@ func cmdSetup() int {
 	}
 	ui.Good("llama-server: %s", serverBin)
 
-	ui.Step(4, 6, "Multi-model router: llama-swap")
+	ui.Step(4, 7, "Multi-model router: llama-swap")
 	if _, err := engine.AcquireSwap(hw); err != nil {
 		ui.Warn("llama-swap optional; skipped (%v)", err)
 	}
 
-	ui.Step(5, 6, "Model")
+	ui.Step(5, 7, "Model")
 	if anyModelDownloaded(cfg) {
 		ui.Good("models already present in %s", modelsDir(cfg))
 	} else if def := recommendModel(cat, hw.MemoryBudgetMB()); def != nil {
-		if ui.Confirm(fmt.Sprintf("Download recommended model %s (%s) for tier '%s'?", def.Alias, def.Size, tier), true) {
+		if !ui.Interactive() {
+			ui.Say("  recommended model for tier '%s': %s (%s) - not downloading from a non-interactive run; use:  winc -d %s", tier, def.Alias, def.Size, def.Alias)
+		} else if ui.Confirm(fmt.Sprintf("Download recommended model %s (%s) for tier '%s'?", def.Alias, def.Size, tier), true) {
 			if _, err := download.HFDownload(def.Repo, def.File, modelsDir(cfg), cfg.HuggingFace.Token); err != nil {
 				ui.Warn("model download failed: %v", err)
 			} else {

@@ -91,7 +91,7 @@ func cmdServe(args []string) int {
 	// client gets pointed at this server can read them. Single/serve mode runs
 	// llama's auto-parallel with a UNIFIED KV pool, so every request can use the
 	// full window (verified on the shipped engine).
-	if err := config.WriteAgentNotes(loadedCtx, loadedCtx, lastBench.gen, lastBench.pp); err != nil {
+	if err := config.WriteAgentNotes(loadedCtx, loadedCtx, lastBench.gen, lastBench.pp, searchToolForNotes(cfg)); err != nil {
 		ui.Warn("could not write agent notes: %v", err)
 	}
 

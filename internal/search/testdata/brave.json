@@ -1,0 +1,5 @@
+{"type":"search","query":{"original":"llama.cpp server"},"web":{"type":"search","results":[
+{"title":"llama.cpp/tools/server/README.md at master · ggml-org/llama.cpp","url":"https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md","description":"Fast, lightweight, pure C/C++ <strong>HTTP server</strong> based on httplib &amp; nlohmann::json.","age":"2026-09-01"},
+{"title":"GitHub - ggml-org/llama.cpp: LLM inference in C/C++","url":"https://github.com/ggml-org/llama.cpp","description":"LLM inference in C/C++."},
+{"title":"Running a server — llama.app","url":"https://llama.app/docs/serve","description":"How to run llama-server."}
+]}}
