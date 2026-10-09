@@ -6,11 +6,13 @@ All notable changes to winc.cpp, newest first. Each release is a single
 ## 1.45.0-jobdar.1 — 2026-10-09 (winc-jobdar branch)
 
 **Merge of master v1.45.0 (no download from a closed stdin, installer PATH note
-gone, per-directory PATH removal).** Relevant to jobdar: `winc update` run from
-the desktop app or a script no longer takes the engine-refresh prompt from EOF —
-it prints the skipped refresh and `winc update -y` is the scripted opt-in (the
-desktop's winc_manager should pass `-y` if it wants the engine refreshed
-unattended). `serve --eval` has no prompts and is unaffected; eval.go
+gone, per-directory PATH removal).** Inert for jobdar: the desktop's winc_manager
+runs only `winc -d <model> --eval` and `winc serve --eval <model>` — never `winc
+update` — so its engine stays PINNED to the build that first `serve --eval`
+fetched, by design (an engine change under the eval profile is a deliberate
+jobdar release decision, not something to track upstream automatically). The
+new `winc update -y` matters only if the desktop ever starts running `winc
+update` unattended. `serve --eval` has no prompts and is unaffected; eval.go
 byte-identical; full suite green; serve --eval smoke on a scratch port answered
 JSON-mode and `winc stop` found it.
 
