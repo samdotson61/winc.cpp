@@ -37,7 +37,7 @@ func Run(args []string) int {
 	case "-c", "check":
 		return cmdCheck()
 	case "-u", "update":
-		return cmdUpdate()
+		return cmdUpdate(rest)
 	case "-n", "uninstall":
 		return cmdUninstall(rest)
 	case "setup":

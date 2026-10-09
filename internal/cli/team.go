@@ -455,6 +455,10 @@ func ensureWorker(cfg *config.Config, cat *catalog.Catalog, query, role string) 
 		ui.Warn("team: %s worker %q isn't in the catalog - that tier will use the main model", role, query)
 		return "", query
 	}
+	if !ui.Interactive() {
+		ui.Say("  team: %s worker %s not downloaded (non-interactive run) - 'winc -d %s' fetches it; the %s tier falls back to the main model", role, m.Alias, m.Alias, role)
+		return "", m.Alias
+	}
 	if !ui.Confirm(fmt.Sprintf("team: download the %s worker %s (%s, %s)?", role, m.Alias, m.Size, m.Tier), true) {
 		ui.Dim("skipped %s - the %s tier will fall back to the main model", m.Alias, role)
 		return "", m.Alias

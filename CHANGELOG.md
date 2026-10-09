@@ -3,6 +3,39 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.45.0 — 2026-10-09
+
+### Fixed
+- **No download ever happens because stdin was closed.** Four prompts still
+  took their default "yes" from end-of-file when winc ran from a pipe or a
+  script (the way setup's model download did before v1.43.0): the MTP and
+  DFlash drafter-head offers during `winc -d`, the team worker download at
+  launch, and the engine refresh in `winc update` (which also took "no" from
+  EOF, silently skipping the refresh). Each now checks for a terminal first;
+  non-interactive runs print what was skipped and the command that opts in:
+  `winc -d <alias> -y` for the heads, `winc -d <alias>` for a worker (the tier
+  falls back to the main model for that launch), and the new **`winc update
+  -y`** for the engine.
+- **`winc install claude` no longer ends with the installer's "not in your
+  PATH" note.** `claude install` checks its OWN environment for `~/.local/bin`
+  and printed the note (the first thing a new user read) even though winc
+  recorded the directory right after — the recorded entry is not live in the
+  running process. The installer child now gets the destination on its PATH
+  up front; the persistent record still follows as before.
+- **`winc uninstall` takes only winc's PATH entries.** The Unix removal
+  deleted the whole fish drop-in and dropped every `# winc.cpp PATH` marker
+  line regardless of directory, which since v1.42 could orphan Claude Code's
+  `~/.local/bin` export (its block lost the marker and stopped counting as
+  recorded, so the next `winc install claude` would have appended it again).
+  Removal is now per directory in the rc files and the drop-in, which is
+  deleted only when nothing of winc's is left. The uninstaller also removes the
+  `.opencode-local` sandbox it creates, and says what it never touches: Claude
+  Code itself (a `winc install claude` is the official install, not a winc
+  component) and its PATH record.
+- Tests: the installer's child-PATH helper (prepend, keep, no duplicate,
+  create), and per-directory removal leaving the other directory's rc block
+  and fish block intact and still recorded.
+
 ## v1.44.0 — 2026-10-07
 
 ### Fixed

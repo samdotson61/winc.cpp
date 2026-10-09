@@ -53,6 +53,10 @@ func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 	}
 	ui.Warn("%s", catalog.MTPVisionWarning)
 	q := fmt.Sprintf("%s ships a small MTP drafter head - also download it to speed up decoding (~1.5x)?", m.Alias)
+	if !autoYes && !ui.Interactive() {
+		ui.Say("  MTP head not downloaded (non-interactive run) - 'winc -d %s -y' fetches it", m.Alias)
+		return
+	}
 	if !autoYes && !ui.Confirm(q, true) {
 		ui.Dim("skipped - run 'winc -d %s' anytime to fetch it", m.Alias)
 		return
@@ -87,6 +91,10 @@ func offerDFlashHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 		return
 	}
 	q := fmt.Sprintf("%s has a small DFlash drafter head - also download it to speed up decoding (~1.5x)?", m.Alias)
+	if !autoYes && !ui.Interactive() {
+		ui.Say("  DFlash head not downloaded (non-interactive run) - 'winc -d %s -y' fetches it", m.Alias)
+		return
+	}
 	if !autoYes && !ui.Confirm(q, true) {
 		ui.Dim("skipped - run 'winc -d %s' anytime to fetch it", m.Alias)
 		return
