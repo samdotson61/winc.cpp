@@ -211,3 +211,24 @@ func TestFetchClaudeReleaseLive(t *testing.T) {
 	}
 	t.Logf("live: %s -> %s", v, strings.TrimSpace(string(out)))
 }
+
+// The installer child must see ~/.local/bin on PATH (or it prints the "not in
+// your PATH" note winc then makes moot); existing entries are kept, a present
+// dir is not duplicated, a missing PATH is created.
+func TestWithPathPrefix(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	env := withPathPrefix([]string{"HOME=/h", "PATH=/usr/bin" + sep + "/bin"}, "/h/.local/bin")
+	if v, _ := envVal(env, "PATH"); v != "/h/.local/bin"+sep+"/usr/bin"+sep+"/bin" {
+		t.Errorf("PATH = %q", v)
+	}
+	if v, _ := envVal(env, "HOME"); v != "/h" {
+		t.Errorf("other vars disturbed: %v", env)
+	}
+	again := withPathPrefix(env, "/h/.local/bin")
+	if v, _ := envVal(again, "PATH"); strings.Count(v, "/h/.local/bin") != 1 {
+		t.Errorf("present dir duplicated: %q", v)
+	}
+	if v, ok := envVal(withPathPrefix([]string{"HOME=/h"}, "/h/.local/bin"), "PATH"); !ok || v != "/h/.local/bin" {
+		t.Errorf("missing PATH not created: %q %v", v, ok)
+	}
+}

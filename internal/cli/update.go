@@ -90,7 +90,14 @@ func cmdCheck() int {
 	return 0
 }
 
-func cmdUpdate() int {
+// Usage: winc update [-y]  (-y accepts the engine refresh without a prompt, for scripts).
+func cmdUpdate(args []string) int {
+	yes := false
+	for _, a := range args {
+		if a == "-y" || a == "--yes" {
+			yes = true
+		}
+	}
 	hw := platform.DetectHardware()
 	dir := paths.InstallDir()
 
@@ -130,7 +137,7 @@ func cmdUpdate() int {
 	} else {
 		reconcileConfig(hw)
 	}
-	refreshEngine(hw)
+	refreshEngine(hw, yes)
 	// PATH reconcile: older installs recorded PATH only for bash/zsh -- fish-first
 	// distros (CachyOS) never saw it, and a moved folder breaks the recorded entry
 	// anyway. If the LIVE environment can't reach winc, re-apply for every
@@ -308,13 +315,20 @@ func modelResolvable(cfg *config.Config, cat *catalog.Catalog, q string) bool {
 // refreshEngine updates the llama.cpp engine -- but only when it's actually behind,
 // and only after confirming (the prebuilt is a large download). Reports when it's
 // already current, and installs without prompting when nothing is installed yet.
-func refreshEngine(hw platform.Hardware) {
+func refreshEngine(hw platform.Hardware, yes bool) {
 	latest := engine.LatestLlamaTag()
 	switch installed := engine.InstalledLlamaTag(); {
 	case installed == "":
 		ui.Info("installing llama.cpp engine (%s)...", latest)
 	case installed == latest:
 		ui.Good("engine up to date (%s)", installed)
+		return
+	case yes:
+		ui.Info("refreshing llama.cpp engine %s -> %s (-y)", installed, latest)
+	case !ui.Interactive():
+		// A scripted `winc update` used to take the prompt's default from EOF.
+		// A large download is never silent: say what was skipped and how to opt in.
+		ui.Say("  engine %s -> %s available - not downloaded from a non-interactive run; use:  winc update -y", installed, latest)
 		return
 	default:
 		if !ui.Confirm(fmt.Sprintf("Refresh llama.cpp engine %s -> %s? (large download)", installed, latest), false) {

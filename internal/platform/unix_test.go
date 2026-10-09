@@ -127,3 +127,48 @@ func TestAddDirToPathBesideWinc(t *testing.T) {
 		t.Error("~/.local/bin/winc must never be a symlink to itself")
 	}
 }
+
+// Uninstalling winc must take only winc's own PATH entries: Claude Code's
+// ~/.local/bin block (recorded by `winc install claude`) stays in the rc files
+// AND in the fish drop-in, and is still recognized as recorded afterwards.
+func TestRemoveFromPathLeavesOtherDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin")
+	winc, claude := "/opt/winc", filepath.Join(home, ".local", "bin")
+	if err := AddToPath(winc); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddDirToPath(claude); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveFromPath(winc); err != nil {
+		t.Fatal(err)
+	}
+	rc, _ := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if strings.Contains(string(rc), winc) {
+		t.Errorf("winc's export survived:\n%s", rc)
+	}
+	if !strings.Contains(string(rc), claude) || strings.Count(string(rc), pathMarker) != 1 {
+		t.Errorf("Claude Code's block (marker + export) must survive intact:\n%s", rc)
+	}
+	fish, err := os.ReadFile(filepath.Join(home, ".config", "fish", "conf.d", "winc.fish"))
+	if err != nil || !strings.Contains(string(fish), claude) || strings.Contains(string(fish), winc) {
+		t.Errorf("fish drop-in must keep Claude Code's block only: err=%v\n%s", err, fish)
+	}
+	if !OnPath(claude) || OnPath(winc) {
+		t.Error("recorded state wrong after removal")
+	}
+	if err := AddDirToPath(claude); err != nil { // still idempotent
+		t.Fatal(err)
+	}
+	if rc2, _ := os.ReadFile(filepath.Join(home, ".bashrc")); strings.Count(string(rc2), pathMarker) != 1 {
+		t.Error("re-adding the surviving dir must not duplicate it")
+	}
+	if err := RemoveFromPath(claude); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "fish", "conf.d", "winc.fish")); err == nil {
+		t.Error("an empty drop-in must be deleted")
+	}
+}

@@ -88,8 +88,8 @@ winc -s claude ornith-9b     # launch Claude Code on it (sandboxed)
 | `winc mcp-search --query <q>` | Run one web search from the terminal with the configured `[search]` backend (checks a key / URL without an agent); the bare `winc mcp-search` is the stdio MCP server the agents launch |
 | `winc logs [name] [--bundle]` | Show log tails; `--bundle` zips a support archive for bug reports |
 | `winc -c` / `winc check` | Update status: winc version, source freshness, engine, catalog |
-| `winc -u` / `winc update` | Update **everything**: pull + rebuild (clone) or self-update (prebuilt), refresh engine + catalog, and reconcile `winc.toml` **with the newly installed binary** (repair a stale `default_model`, migrate the team tool lists, add new config sections such as `[search]`) |
-| `winc -n` / `winc uninstall [-y]` | Remove installed components + PATH entry |
+| `winc -u` / `winc update [-y]` | Update **everything**: pull + rebuild (clone) or self-update (prebuilt), refresh engine + catalog, and reconcile `winc.toml` **with the newly installed binary** (repair a stale `default_model`, migrate the team tool lists, add new config sections such as `[search]`). A newer engine is a large download: interactive runs are asked, scripts skip it unless `-y` |
+| `winc -n` / `winc uninstall [-y]` | Remove installed components (engine, models, agent sandboxes) + winc's own PATH entry. Claude Code itself and its PATH record stay — it is the official install, not a winc component |
 | `winc version` | Print version |
 
 `<model>` is a catalogue alias (see `winc ls`) or any part of a downloaded filename.
@@ -597,7 +597,8 @@ same method it uses for its own folder (user PATH on Windows; bash/zsh/profile a
 macOS/Linux). `winc install claude stable` (or an exact version) picks the
 release channel. If the native path fails, winget (Windows) or Homebrew (macOS) is offered,
 then the manual commands are printed. Prompts only appear on a real terminal; scripts get the
-printed command and a non-zero exit.
+printed command and a non-zero exit. The same rule covers every download winc offers (drafter heads,
+team workers, engine refresh): nothing is fetched from a pipe or script without `-y`.
 
 The freshly installed `claude` launches from the same winc run — winc resolves the agent to a
 path rather than relying on the PATH your shell started with. `winc doctor` shows which install

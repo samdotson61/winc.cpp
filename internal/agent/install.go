@@ -198,6 +198,12 @@ func InstallClaude(target string) error {
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
+	// `claude install` checks ITS OWN environment's PATH for ~/.local/bin and
+	// otherwise prints a "not in your PATH - add it by ..." setup note -- the one
+	// thing a new user then reads, even though winc records the directory right
+	// after (the recorded entry is not live in this process). Hand the child the
+	// destination on PATH up front; the persistent record still follows.
+	c.Env = withPathPrefix(os.Environ(), NativeInstallBinDir())
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("`claude install` failed: %w", err)
 	}
@@ -255,4 +261,39 @@ func installCandidates(name string) []string {
 		filepath.Join(home, ".npm-global", "bin", name),
 	)
 	return c
+}
+
+// NativeInstallBinDir is where the native installer links the launcher on every
+// OS: ~/.local/bin (claude, or claude.exe on Windows).
+func NativeInstallBinDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "bin")
+}
+
+// withPathPrefix returns env with dir prepended to its PATH entry (added when
+// absent). Pure, for the test.
+func withPathPrefix(env []string, dir string) []string {
+	if dir == "" {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	done := false
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(k, "PATH") && !done {
+			for _, p := range strings.Split(v, string(os.PathListSeparator)) {
+				if strings.EqualFold(strings.TrimSpace(p), dir) {
+					return env // already there
+				}
+			}
+			out = append(out, k+"="+dir+string(os.PathListSeparator)+v)
+			done = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !done {
+		out = append(out, "PATH="+dir)
+	}
+	return out
 }

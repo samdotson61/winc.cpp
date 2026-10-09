@@ -33,8 +33,10 @@ func pathSize(p string) int64 {
 	return fi.Size()
 }
 
-// cmdUninstall removes installed components (engine, models, generated files) and
-// the PATH entry, keeping winc.toml, the winc binary, and any source.
+// cmdUninstall removes installed components (engine, models, generated files, the
+// agent sandboxes) and winc's own PATH entry, keeping winc.toml, the winc binary,
+// any source -- and Claude Code: a `winc install claude` is the official install,
+// not a winc component, so neither its binary nor its PATH record is touched.
 func cmdUninstall(args []string) int {
 	yes := false
 	for _, a := range args {
@@ -48,6 +50,7 @@ func cmdUninstall(args []string) int {
 		paths.BinDir(),
 		modelsDir(cfg),
 		paths.ClaudeLocalDir(),
+		filepath.Join(dir, ".opencode-local"),
 		paths.LlamaDir(),
 		paths.LlamaSwapYAML(),
 		filepath.Join(dir, "llama-server.log"),

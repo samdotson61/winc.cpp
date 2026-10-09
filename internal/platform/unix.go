@@ -135,8 +135,13 @@ func AddToPath(dir string) error {
 	return nil
 }
 
-// RemoveFromPath strips the marked block from the user's shell rc files and
-// removes the fish drop-in (that file is wholly winc's).
+// RemoveFromPath strips THIS directory's marked block from the user's shell rc
+// files and from the fish drop-in, leaving every other directory's block in
+// place (since v1.42 the drop-in and the rc files can carry Claude Code's
+// ~/.local/bin beside winc's own folder; the pre-1.45 removal deleted the whole
+// drop-in and dropped every marker line, orphaning the other directory's
+// export so it was no longer recognized as recorded). The drop-in is deleted
+// only when nothing of winc's is left in it.
 func RemoveFromPath(dir string) error {
 	for _, f := range rcFiles() {
 		b, err := os.ReadFile(f)
@@ -146,10 +151,8 @@ func RemoveFromPath(dir string) error {
 		lines := strings.Split(string(b), "\n")
 		var out []string
 		for i := 0; i < len(lines); i++ {
-			if strings.TrimSpace(lines[i]) == pathMarker {
-				if i+1 < len(lines) && strings.Contains(lines[i+1], dir) {
-					i++ // also skip the export line
-				}
+			if strings.TrimSpace(lines[i]) == pathMarker && i+1 < len(lines) && strings.Contains(lines[i+1], "\""+dir+":") {
+				i++ // skip marker + this dir's export line
 				continue
 			}
 			out = append(out, lines[i])
@@ -157,7 +160,15 @@ func RemoveFromPath(dir string) error {
 		_ = os.WriteFile(f, []byte(strings.Join(out, "\n")), 0o644)
 	}
 	if fp := fishConfPath(); fp != "" {
-		_ = os.Remove(fp)
+		if b, err := os.ReadFile(fp); err == nil {
+			block := pathMarker + "\nif not contains \"" + dir + "\" $PATH\n    set -gx PATH \"" + dir + "\" $PATH\nend\n"
+			rest := strings.ReplaceAll(string(b), block, "")
+			if strings.TrimSpace(rest) == "" {
+				_ = os.Remove(fp)
+			} else if rest != string(b) {
+				_ = os.WriteFile(fp, []byte(rest), 0o644)
+			}
+		}
 	}
 	if lb := localBinLink(); lb != "" {
 		if cur, err := os.Readlink(lb); err == nil && cur == filepath.Join(dir, "winc") {
