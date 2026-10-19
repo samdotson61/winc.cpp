@@ -227,7 +227,15 @@ func TestCustomModelMerge(t *testing.T) {
 	}
 }
 
-// Qwen3.8 and Ornith-1.5 bake the MTP head into every standard quant (GGUF metadata
+// bakedMTPLine names the catalogue lines whose standard quants carry the MTP head
+// in-file (GGUF nextn_predict_layers=1): Qwen3.8-27B, its Swift 1.5 post-train
+// (same files, verified on the Q3_K_M / Q4_K_M headers) and Ornith-1.5. Both
+// baked-MTP tests derive their expectations from this one list.
+func bakedMTPLine(alias string) bool {
+	return strings.HasPrefix(alias, "qwen3.8-27b") || strings.HasPrefix(alias, "swift-1.5-27b") || strings.HasPrefix(alias, "ornith-1.5-")
+}
+
+// Qwen3.8, Swift 1.5 and Ornith-1.5 bake the MTP head into every standard quant (GGUF metadata
 // nextn_predict_layers=1, verified on the UD-Q3_K_XL / UD-Q4_K_M files) -- so
 // unlike the Qwen3.5/3.6 lines there is NO separate "-MTP" variant, no `mtp`
 // cross-link, and the local filename must NOT carry an MTP tag (detection is
@@ -237,7 +245,7 @@ func TestBakedMTPEntries(t *testing.T) {
 	c := Load(nil)
 	n := 0
 	for _, m := range c.Models {
-		baked := strings.HasPrefix(m.Alias, "qwen3.8-27b") || strings.HasPrefix(m.Alias, "ornith-1.5-")
+		baked := bakedMTPLine(m.Alias)
 		if !baked {
 			continue
 		}
@@ -252,8 +260,8 @@ func TestBakedMTPEntries(t *testing.T) {
 			t.Errorf("%s: projector must use the family-prefix save name, got %q", m.Alias, m.MmprojSave)
 		}
 	}
-	if n < 6 {
-		t.Errorf("expected at least 6 baked-MTP rungs (qwen3.8 + ornith-1.5), found %d", n)
+	if n < 9 {
+		t.Errorf("expected at least 9 baked-MTP rungs (qwen3.8 + swift-1.5 + ornith-1.5), found %d", n)
 	}
 }
 
@@ -309,7 +317,7 @@ func TestHasMTPCoversEveryMTPSurface(t *testing.T) {
 	n := 0
 	for i := range c.Models {
 		m := &c.Models[i]
-		baked := strings.HasPrefix(m.Alias, "qwen3.8-27b") || strings.HasPrefix(m.Alias, "ornith-1.5-")
+		baked := bakedMTPLine(m.Alias)
 		if baked && !m.MtpBaked {
 			t.Errorf("%s: baked-MTP model must set mtp_baked (listings can't read GGUF metadata before download)", m.Alias)
 		}
@@ -325,7 +333,7 @@ func TestHasMTPCoversEveryMTPSurface(t *testing.T) {
 		}
 	}
 	if n < 10 {
-		t.Fatalf("only %d MTP-capable entries found - the catalogue has the mtp tier, Qwen3.8/Ornith-1.5 and every Gemma 4 model", n)
+		t.Fatalf("only %d MTP-capable entries found - the catalogue has the mtp tier, Qwen3.8/Swift-1.5/Ornith-1.5 and every Gemma 4 model", n)
 	}
 	if !strings.Contains(MTPVisionWarning, "NO VISION") || !strings.Contains(MTPVisionBadge, "no vision") {
 		t.Fatalf("the warning text must lead with the trap: %q / %q", MTPVisionWarning, MTPVisionBadge)

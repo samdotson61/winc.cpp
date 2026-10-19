@@ -299,17 +299,17 @@ losslessly drops optional `input_examples`. Set
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, spark-x2.5-4b (fastest), gemma4-e2b, qwen3.5-2b, spark-x2.5-1.7b, qwen3.5-0.8b, granite4.2-3b |
 | `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, ornith-1.5-9b, qwen3.5-9b, lfm2.5-8b-a1b (fastest), granite4.2-8b, gemma4-12b, gemma4-e4b |
-| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, muse-glimmer-30b, gemma4-31b, ornith-1.5-35b-a3b-iq3 |
-| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, muse-glimmer-30b-q4, ornith-1.5-35b-a3b |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, swift-1.5-27b, muse-glimmer-30b, gemma4-31b, ornith-1.5-35b-a3b-iq3 |
+| `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, swift-1.5-27b-q4 / -q5, muse-glimmer-30b-q4, ornith-1.5-35b-a3b |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
 
 The catalogue advertises **only models released in 2026** — the Qwen3.5 / 3.6 / 3.8 and
-Gemma 4 lines, Meta's Muse Glimmer and IBM's Granite 4.2, with full tool-calling down to
-0.8B. It's refreshed over time via `winc update` (see below), so older rosters are pruned
+Gemma 4 lines, Meta's Muse Glimmer, IBM's Granite 4.2 and UkisAI's Swift 1.5 (a Qwen3.8-27B
+post-train), with full tool-calling down to 0.8B. It's refreshed over time via `winc update` (see below), so older rosters are pruned
 as better models land. Entries the maintainer has not yet run through winc's coding set
 say so in their `winc ls` note (the Aug 2026 additions — Qwen3.8-27B, Muse Glimmer,
-Granite 4.2, plus Sep 2026's Ornith-1.5 and Spark-X2.5 — are published-benchmark picks
-until measured; the tier defaults are unchanged). Muse Glimmer needs an engine from
+Granite 4.2, plus Sep 2026's Ornith-1.5 and Spark-X2.5 and Oct 2026's Swift 1.5 — are
+published-benchmark picks until measured; the tier defaults are unchanged). Muse Glimmer needs an engine from
 b10353 or later and Spark-X2.5 from b10828 or later (`winc update`).
 
 > **Apple Silicon note:** unified memory is shared with the OS and the GPU can only use
@@ -505,7 +505,8 @@ supports the flag** (older engines just run without it):
 
 **Qwen3.8 bakes its MTP head into every standard quant** — there is no separate `-mtp`
 variant. winc reads `nextn_predict_layers` from the GGUF metadata (not the filename) and
-turns `draft-mtp` on for `qwen3.8-27b` / `-q4` / `-q5` and the `ornith-1.5-*` line wherever MTP is active (CUDA,
+turns `draft-mtp` on for `qwen3.8-27b` / `-q4` / `-q5`, the `swift-1.5-27b` rungs (UkisAI's post-train
+of the same files) and the `ornith-1.5-*` line wherever MTP is active (CUDA,
 Vulkan, CPU; off on Metal like every other speculation), so a downloaded Qwen3.8 file is
 already the fast variant.
 

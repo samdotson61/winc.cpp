@@ -3,6 +3,73 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.46.0-jobdar.1 — 2026-10-19 (winc-jobdar branch)
+
+**Merge of master v1.46.0 (catalogue: Swift 1.5 Qwen3.8-27B, three rungs).**
+Data-only for jobdar: three `mid`/`large` entries the eval profile never
+auto-picks (its picker stays on gemma4-e2b / qwen3.5-2b / qwen3.5-4b), and
+`catalog.Update()` reads master's catalogue for every install regardless of
+branch, so the embed here only keeps a fresh branch build at parity. No change
+to `serve --eval`; `eval.go` untouched by the merge.
+
+## v1.46.0 — 2026-10-19
+
+Catalogue addition: UkisAI's Swift 1.5 post-train of Qwen3.8-27B, as three rungs
+beside the base line.
+
+### Added
+- **`swift-1.5-27b` (`mid`, Q3_K_M 13.4 GB) / `-q4` (`large`, Q4_K_M 17.4 GB)
+  / `-q5` (`large`, Q5_K_M 20.9 GB) — UkisAI's Swift 1.5 Qwen3.8-27B (Sep 16
+  2026)**, a reasoning-efficiency post-train (RL + on-policy distillation) of
+  Qwen3.8-27B that keeps the base's `qwen35` arch, tokenizer, 262144 trained
+  context and vision projector family. **The MTP head is baked into every
+  quant** (`nextn_predict_layers = 1`, `block_count` 65 — verified on the
+  Q3_K_M, Q4_K_M and IQ3_XS headers, identical to the base's UD-Q3_K_XL), so
+  v1.40.0's metadata detection applies unchanged and the entries carry
+  `mtp_baked` for the `[MTP: no vision]` badge. Published against the base
+  under one protocol (BF16, five seeds): **58.5% fewer thinking tokens**
+  (median, GPQA-Diamond) at 88.59 vs 88.28, **LiveCodeBench v6 81.71 vs
+  76.76**, **Terminal-Bench 2.1 72.13 vs 69.21**; math a touch lower (AIME
+  2026 96.00 vs 98.67). The saving holds at every `reasoning_effort` the
+  authors tested, which is the point for an agent harness that pays for every
+  thinking token. Licence: **Swift Open License v1.0** — personal, research and
+  commercial use free up to US$1M gross annual revenue (affiliates included),
+  enterprise licence above; the Qwen components stay Apache 2.0; the GGUF repo
+  is not gated. The files are UkisAI's own plain llama.cpp K-quants (no imatrix,
+  no Unsloth Dynamic set for this model), so each rung is about 1 GB larger
+  than the base's UD rung at the same label: the Q3_K_M is the 16 GB-GPU rung,
+  the Q4_K_M needs 20 GB+. The sampling profile is picked from the filename,
+  which still contains `qwen`, so the rungs get the Qwen profile like the
+  base. **Unmeasured on winc's coding set**, so `qwen3.6-35b` /
+  `qwen3.6-35b-q4` keep both tier defaults and the notes say so. VETTED LIVE
+  on the 5070 Ti through the new binary: `winc -d swift-1.5-27b` fetched the
+  Q3_K_M (sha256 ok), reported the baked MTP head and the no-vision trap, and
+  auto-fetched the projector under its family-prefix name; `winc serve` paired
+  the projector (`[MTP: no vision]` badge in `winc ls`, "MTP speculation is
+  OFF" in the launch log, the engine listing the `blk.64.nextn` head tensors
+  as unused), opened a 98304-token window, answered a coding prompt with a
+  correct `is_palindrome` after 723 characters of thinking, and returned a
+  well-formed `get_weather` tool call with `finish_reason = tool_calls`. The
+  measured ~9 tok/s decode is NOT this rung's number: the card had only ~11 GB
+  free (the jobdar eval server held the rest), so the 13.4 GB file ran partly
+  from system RAM. A clean-GPU bench and the coding gate are the open items.
+- Tests: the two baked-MTP tests now take their alias list from one helper
+  (`bakedMTPLine`) that names the Swift rungs, with the minimum count raised
+  to nine.
+- README tier table, roster sentence and the baked-MTP paragraph name the new
+  rungs.
+
+### Watched, not added
+- **`Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF`** — UkisAI's compact 8–12 GB
+  mixed-precision rungs (ISTA-DASLab GSQ/RCO per-tensor allocations, refined
+  on Swift; IQ3_S-mtp 12.1 GB at KLD 0.051 vs BF16). Not catalogued: the plain
+  files DROP the MTP head (`block_count` 64; only the `-mtp` files keep it),
+  and the authors ship no verified vision projector for that release, so in
+  winc's auto-vision flow they would be a hand-verified pairing. Revisit once
+  the standard rungs are measured.
+- The GGUF headers' `general.name` reads `Miroslav 1.0` (an internal UkisAI
+  name). winc never displays `general.name`, so nothing changes; noted so a
+  reader of `winc detect`'s raw metadata is not surprised.
 ## 1.45.0-jobdar.1 — 2026-10-09 (winc-jobdar branch)
 
 **Merge of master v1.45.0 (no download from a closed stdin, installer PATH note

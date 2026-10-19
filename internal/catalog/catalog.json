@@ -295,6 +295,19 @@
   },
   {
    "tier": "mid",
+   "alias": "swift-1.5-27b",
+   "mtp_baked": true,
+   "name": "Swift-1.5-Qwen3.8-27B Q3_K_M (dense, MTP baked in)",
+   "size": "13.4 GB",
+   "repo": "ukisai/Swift-1.5-Qwen3.8-27B-GGUF",
+   "file": "Swift-1.5-Qwen3.8-27B-Q3_K_M.gguf",
+   "note": "UkisAI's Sep 16 2026 reasoning-efficient post-train of Qwen3.8-27B (RL + on-policy distillation; same qwen35 arch, tokenizer, 262K ctx, vision; MTP head baked into every quant, nextn_predict_layers=1 - winc detects it). Published vs the base under one protocol: 58.5% fewer thinking tokens (median, GPQA-Diamond) at 88.6 vs 88.3, LiveCodeBench v6 81.7 vs 76.8, Terminal-Bench 2.1 72.1 vs 69.2; math a touch lower (AIME 2026 96.0 vs 98.7). Swift Open License v1.0: free incl. commercial use up to US$1M gross annual revenue, enterprise licence above; the Qwen parts stay Apache 2.0. UkisAI's own plain llama.cpp K-quants (no Unsloth Dynamic set), so each rung is ~1 GB larger than the base's UD file. NOT yet measured on winc's coding set; qwen3.6-35b keeps the tier default. Q3_K_M rung for 16 GB GPUs / 24 GB Macs (the Q4 at 17.4 GB does not fit 16 GB)",
+   "mmproj_repo": "ukisai/Swift-1.5-Qwen3.8-27B-GGUF",
+   "mmproj_file": "mmproj-Swift-1.5-Qwen3.8-27B-F16.gguf",
+   "mmproj_save": "Swift-1.5-Qwen3.8-27B-mmproj.gguf"
+  },
+  {
+   "tier": "mid",
    "alias": "muse-glimmer-30b",
    "name": "Muse Glimmer 30B UD-Q3_K_XL (dense)",
    "size": "12.4 GB",
@@ -385,6 +398,32 @@
    "mmproj_repo": "unsloth/Qwen3.8-27B-GGUF",
    "mmproj_file": "mmproj-F16.gguf",
    "mmproj_save": "Qwen3.8-27B-mmproj.gguf"
+  },
+  {
+   "tier": "large",
+   "alias": "swift-1.5-27b-q4",
+   "mtp_baked": true,
+   "name": "Swift-1.5-Qwen3.8-27B Q4_K_M (dense, MTP baked in)",
+   "size": "17.4 GB",
+   "repo": "ukisai/Swift-1.5-Qwen3.8-27B-GGUF",
+   "file": "Swift-1.5-Qwen3.8-27B-Q4_K_M.gguf",
+   "note": "UkisAI's Sep 16 2026 reasoning-efficient post-train of Qwen3.8-27B (RL + on-policy distillation; same qwen35 arch, tokenizer, 262K ctx, vision; MTP head baked into every quant, nextn_predict_layers=1 - winc detects it). Published vs the base under one protocol: 58.5% fewer thinking tokens (median, GPQA-Diamond) at 88.6 vs 88.3, LiveCodeBench v6 81.7 vs 76.8, Terminal-Bench 2.1 72.1 vs 69.2; math a touch lower (AIME 2026 96.0 vs 98.7). Swift Open License v1.0: free incl. commercial use up to US$1M gross annual revenue, enterprise licence above; the Qwen parts stay Apache 2.0. UkisAI's own plain llama.cpp K-quants (no Unsloth Dynamic set), so each rung is ~1 GB larger than the base's UD file. NOT yet measured on winc's coding set; qwen3.6-35b keeps the tier default. Q4_K_M rung for 20-24 GB GPUs / 28 GB+ Macs",
+   "mmproj_repo": "ukisai/Swift-1.5-Qwen3.8-27B-GGUF",
+   "mmproj_file": "mmproj-Swift-1.5-Qwen3.8-27B-F16.gguf",
+   "mmproj_save": "Swift-1.5-Qwen3.8-27B-mmproj.gguf"
+  },
+  {
+   "tier": "large",
+   "alias": "swift-1.5-27b-q5",
+   "mtp_baked": true,
+   "name": "Swift-1.5-Qwen3.8-27B Q5_K_M (dense, MTP baked in)",
+   "size": "20.9 GB",
+   "repo": "ukisai/Swift-1.5-Qwen3.8-27B-GGUF",
+   "file": "Swift-1.5-Qwen3.8-27B-Q5_K_M.gguf",
+   "note": "UkisAI's Sep 16 2026 reasoning-efficient post-train of Qwen3.8-27B (RL + on-policy distillation; same qwen35 arch, tokenizer, 262K ctx, vision; MTP head baked into every quant, nextn_predict_layers=1 - winc detects it). Published vs the base under one protocol: 58.5% fewer thinking tokens (median, GPQA-Diamond) at 88.6 vs 88.3, LiveCodeBench v6 81.7 vs 76.8, Terminal-Bench 2.1 72.1 vs 69.2; math a touch lower (AIME 2026 96.0 vs 98.7). Swift Open License v1.0: free incl. commercial use up to US$1M gross annual revenue, enterprise licence above; the Qwen parts stay Apache 2.0. UkisAI's own plain llama.cpp K-quants (no Unsloth Dynamic set), so each rung is ~1 GB larger than the base's UD file. NOT yet measured on winc's coding set; qwen3.6-35b keeps the tier default. Q5_K_M rung for 24 GB+ GPUs / 32 GB+ Macs",
+   "mmproj_repo": "ukisai/Swift-1.5-Qwen3.8-27B-GGUF",
+   "mmproj_file": "mmproj-Swift-1.5-Qwen3.8-27B-F16.gguf",
+   "mmproj_save": "Swift-1.5-Qwen3.8-27B-mmproj.gguf"
   },
   {
    "tier": "large",
