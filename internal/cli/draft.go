@@ -48,10 +48,10 @@ func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 	local := filepath.Base(m.MtpHead)
 	if fileExists(filepath.Join(md, local)) {
 		ui.Info("MTP ready: %s pairs with its drafter head automatically at launch", m.Alias)
-		ui.Warn("%s", catalog.MTPVisionWarning)
+		warnMTPVisionTrap()
 		return
 	}
-	ui.Warn("%s", catalog.MTPVisionWarning)
+	warnMTPVisionTrap()
 	q := fmt.Sprintf("%s ships a small MTP drafter head - also download it to speed up decoding (~1.5x)?", m.Alias)
 	if !autoYes && !ui.Interactive() {
 		ui.Say("  MTP head not downloaded (non-interactive run) - 'winc -d %s -y' fetches it", m.Alias)
@@ -68,7 +68,7 @@ func offerMTPHead(cfg *config.Config, m *catalog.Model, autoYes bool) {
 		return
 	}
 	ui.Good("MTP head ready - multi-token prediction turns on automatically for %s", m.Alias)
-	ui.Warn("%s", catalog.MTPVisionWarning)
+	warnMTPVisionTrap()
 }
 
 // offerDFlashHead prompts to also fetch the small DFlash drafter head for a

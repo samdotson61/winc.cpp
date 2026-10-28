@@ -327,6 +327,60 @@ func serverSupportsFlag(bin, flag string) bool {
 	return bin != "" && strings.Contains(serverHelp(bin), flag)
 }
 
+// LogVerbosityArgs raises llama-server's log threshold so the model-load
+// lines (load_tensors, per-device buffer sizes, KV/compute buffers) reach
+// llama-server.log. The engine's default (3) keeps only the server's own srv
+// lines; the library's INFO lines sit at 4 (common/log.cpp). Without them the
+// log cannot show WHERE a model landed -- the 2026-10-28 audit chased a 2.7
+// tok/s launch with a log that said nothing about the spill. Engines without
+// the flag get no argument.
+func LogVerbosityArgs(bin string) []string {
+	if !serverSupportsFlag(bin, "--log-verbosity") {
+		return nil
+	}
+	return []string{"-lv", "4"}
+}
+
+// mtpVisionFixedBuild is the first llama.cpp build on which draft-mtp was
+// MEASURED to work beside a loaded vision projector (b11960, 2026-10-28; the
+// upstream fixes #30257/#30397 landed 2026-10-10/13 between v0.6.0 and
+// v0.7.0, unverified here on the builds in between, so the verified build is
+// the line). Older engines keep the vision-drops-MTP rule.
+const mtpVisionFixedBuild = 11960
+
+// installedBuild is the installed llama-server's build number, read once per
+// process (the probe runs the binary); 0 when no engine is installed or its
+// version can't be read. Overridable for tests.
+var installedBuild = sync.OnceValue(func() int {
+	return buildNumber(InstalledLlamaTag())
+})
+
+// buildNumber turns a "bNNNNN" tag into its number, 0 for anything else.
+func buildNumber(tag string) int {
+	if !isBuildTag(tag) {
+		return 0
+	}
+	n, err := strconv.Atoi(tag[1:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// MTPRidesWithVision reports whether the installed engine keeps the MTP draft
+// working with a loaded vision projector (build >= mtpVisionFixedBuild).
+func MTPRidesWithVision() bool {
+	if MTPRidesWithVisionOverride != nil {
+		return *MTPRidesWithVisionOverride
+	}
+	return installedBuild() >= mtpVisionFixedBuild
+}
+
+// MTPRidesWithVisionOverride pins MTPRidesWithVision in tests (the real answer
+// depends on whichever engine the test machine happens to have installed).
+// Test-only; never set by product code.
+var MTPRidesWithVisionOverride *bool
+
 // --cache-reuse was dropped in v1.27.0: the v1.25.0 journal-era A/B measured NO
 // gain from it (the request pipeline is already prefix-cache-optimal), and a
 // flag that does nothing here is one more engine interaction surface. Users who
@@ -843,13 +897,17 @@ func mtpActive(cfg *config.Config, modelPath string) bool {
 	if !isMTPFile(modelPath) && mtpHeadFor(modelPath) == "" {
 		return false
 	}
-	// Draft speculation cannot ride with a loaded vision projector: the draft
-	// model can't process image-embedding batches, and llama-server 500s with
-	// "failed to process speculative batch" on EVERY image request (MEASURED,
-	// b10298: no-spec + vision OK, ngram + vision OK, draft-dflash + vision
-	// 500). A vision-active server therefore drops the draft mechanisms and
-	// keeps model-free ngram speculation, which survives images.
-	if visionActive(cfg, modelPath) {
+	// Draft speculation could not ride with a loaded vision projector: the
+	// draft model can't process image-embedding batches, and llama-server 500s
+	// with "failed to process speculative batch" on EVERY image request
+	// (MEASURED, b10298: no-spec + vision OK, ngram + vision OK, draft-dflash +
+	// vision 500). Upstream fixed the MTP path in Oct 2026 (#30257, #30397) --
+	// MEASURED b11960 (Swift-1.5-27B + projector, 5070 Ti): the image request
+	// answers, 72% draft acceptance, 80 vs 52 tok/s without the draft. So on
+	// an engine at or past the verified build MTP stays on; older engines keep
+	// dropping it (ngram survives either way). DFlash still 500s on b11960 and
+	// keeps yielding (see dflashActive).
+	if visionActive(cfg, modelPath) && !MTPRidesWithVision() {
 		return false
 	}
 	// draft-mtp is off on the Metal backend: originally because it crashed during
@@ -954,6 +1012,33 @@ func FFNSpillPlan(cfg *config.Config, hw platform.Hardware, modelPath string, ct
 		return 0, main
 	}
 	return (deficit+layerMB-1)/layerMB + 1, main
+}
+
+// PartialFitFFNPlan is the FFN-spill plan for a PARTIAL fit: a dense model whose
+// weights alone sit on the card but whose window doesn't, which ServerArgs
+// otherwise hands to the engine's device placement -- unverified whole layers
+// in RAM, whose attention and KV stream through RAM too, so decode decays as
+// the context fills. MEASURED (Swift-1.5-Qwen3.8-27B Q3_K_M 13.4 GB, 5070 Ti
+// 16 GB, 98304 window, b11429): engine placement 15 tok/s fresh -> 8.6 at
+// 20k depth (2.7 on one launch); 10 trailing blocks' FFN in RAM at the SAME
+// window 22.9 -> 19.3, attention + KV resident and gate-verified. Returns
+// (k, blocks, true) when the spill placement applies. False for fully
+// resident models (the ladder and the bottom-target stages own those), MoE,
+// unified memory, explicit gpu_layers, a budget the draft-off plan already
+// fits (k == 0: the Stage-1 no-MTP trade, not this one), or a window even
+// every FFN in RAM can't hold (k > blocks: the engine placement stays the
+// last resort). The plan runs with the MTP draft off, as every FFN spill does.
+func PartialFitFFNPlan(cfg *config.Config, hw platform.Hardware, modelPath string, ctx int) (k, blocks int, ok bool) {
+	if ForcedFullGPU(cfg, hw, modelPath) {
+		return 0, 0, false
+	}
+	nf := *cfg
+	nf.Performance.Mtp = "off"
+	k, blocks = FFNSpillPlan(&nf, hw, modelPath, ctx)
+	if k <= 0 || k > blocks {
+		return k, blocks, false
+	}
+	return k, blocks, true
 }
 
 // FFNSpillMB is the weight bytes (MB) a k-block FFN spill moves off the GPU.

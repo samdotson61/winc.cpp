@@ -13,6 +13,8 @@ func mtpTip(cat *catalog.Catalog, m *catalog.Model) {
 	}
 	if v := cat.Find(m.Mtp); v != nil {
 		ui.Dim("tip: '%s' is a faster MTP variant (built-in multi-token prediction) - 'winc -d %s'", v.Alias, v.Alias)
-		ui.Dim("     %s", catalog.MTPVisionWarning)
+		if mtpVisionTrap() {
+			ui.Dim("     %s", catalog.MTPVisionWarning)
+		}
 	}
 }

@@ -116,6 +116,7 @@ func tryContextAttempt(cfg *config.Config, hw platform.Hardware, modelPath, serv
 		}
 	}
 	args := engine.ServerArgs(cfg, hw, modelPath, port, "", ctx)
+	args = append(args, engine.LogVerbosityArgs(serverBin)...) // load/placement lines into llama-server.log
 	warnMTPYieldsToVision(cfg, modelPath, noMTP)
 	// Speculative decoding: draft-mtp (when the model has heads and !noMTP)
 	// composed with the model-free ngram-simple drafter into ONE --spec-type.
@@ -189,14 +190,59 @@ func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serve
 	target := engine.ResolveContext(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 	rungs := engine.ContextLadder(target)
 	for i, ctx := range rungs {
-		if !rungWorthTrying(cfg, hw, modelPath, ctx, 2, i == len(rungs)-1) {
+		last := i == len(rungs)-1
+		if !rungWorthTrying(cfg, hw, modelPath, ctx, 2, last) {
 			continue
 		}
-		if proc := tryContextOnce(cfg, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP, i == len(rungs)-1, gated); proc != nil {
+		// Partial fit (dense weights on the card, the window not): park the
+		// fewest trailing blocks' FFN weights in RAM and pin everything else --
+		// attention + the whole KV cache resident, gate-verified, depth-stable
+		// -- BEFORE the engine's unverified whole-layer placement, which was
+		// the only thing this launch used to get. MEASURED (Swift 27B Q3_K_M,
+		// 16 GB, 98304): 15 -> 8.6 tok/s at 20k depth became 22.9 -> 19.3.
+		if k, blocks, ok := engine.PartialFitFFNPlan(cfg, hw, modelPath, ctx); ok && gated {
+			nf := *cfg
+			nf.Performance.Mtp = "off"
+			nf.Performance.FFNSpill = k
+			ui.Info("partial fit: trying %d tokens with %d/%d layers' FFN weights in RAM (attention + context stay on GPU)...", ctx, k, blocks)
+			if proc := tryContextOnce(&nf, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP, false, gated); proc != nil {
+				cfg.Performance.Mtp = "off"
+				cfg.Performance.FFNSpill = k
+				return proc, ctx
+			}
+			ui.Dim("the FFN spill at %d tokens didn't hold - trying the engine's own placement...", ctx)
+		}
+		if proc := tryContextOnce(cfg, hw, modelPath, serverBin, port, serverURL, logPath, ctx, noMTP, last, gated); proc != nil {
 			return proc, ctx
 		}
 	}
 	return nil, 0
+}
+
+// placementOf names the placement a config launches with: the FFN spill it
+// carries (set by the partial-fit ladder or the bottom-target stage), else
+// fully resident. The engine-placement and no-MTP placements are reported by
+// the stages that choose them.
+func placementOf(cfg *config.Config) string {
+	if k := cfg.Performance.FFNSpill; k > 0 {
+		return plFFN(k)
+	}
+	return plGPU
+}
+
+// placementNote is the decode report's suffix naming where the weights went,
+// so a low number explains itself instead of reading like a slow card: the
+// price of each trade is stated next to the speed it bought.
+func placementNote(placement, modelPath string) string {
+	switch {
+	case placement == plSpill:
+		return " - layers spilled to RAM by the engine (decode decays as the context fills)"
+	case placement == plNoMTP:
+		return " - MTP draft off to afford the window"
+	case ffnSpillOf(placement) > 0:
+		return fmt.Sprintf(" - %d layers' FFN weights in RAM, attention + context on GPU", ffnSpillOf(placement))
+	}
+	return ""
 }
 
 // startLlamaFitting ensures a *working* engine backend and launches it. If the
@@ -245,7 +291,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 					// gets re-verified every launch -- free VRAM drifts day to day); the
 					// report and the memo reuse its numbers.
 					pp, tps := launchBench(serverURL)
-					reportDecode(pp, tps, mctx)
+					reportDecode(pp, tps, mctx, mpl, modelPath)
 					saveLaunchMemo(modelPath, mctx, mct, tps, fp, mpl)
 					return proc, mctx
 				}
@@ -260,14 +306,18 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 				if proc, ctx := tryContextLadder(&lc2, hw, modelPath, bin, port, serverURL, logPath, false, true); proc != nil {
 					lc2.Performance.Context = cfg.Performance.Context // restore auto for the probe's sizing math
 					proc, ctx = upgradeLadderQ4(&lc2, hw, modelPath, bin, port, serverURL, logPath, proc, ctx, true)
-					placement := plGPU
+					placement := placementOf(&lc2)
 					if proc != nil {
 						cfg.Performance.CacheType = lc2.Performance.CacheType
+						cfg.Performance.FFNSpill = lc2.Performance.FFNSpill
+						if lc2.Performance.FFNSpill > 0 {
+							cfg.Performance.Mtp = "off"
+						}
 						proc, ctx, placement = ensureBottomTarget(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
 					}
 					if proc != nil {
 						pp, tps := launchBench(serverURL)
-						reportDecode(pp, tps, ctx)
+						reportDecode(pp, tps, ctx, placement, modelPath)
 						ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 						saveLaunchMemo(modelPath, ctx, ct, tps, fp, placement)
 					}
@@ -278,13 +328,13 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		}
 		if proc, ctx := tryContextLadder(cfg, hw, modelPath, bin, port, serverURL, logPath, false, wasAuto); proc != nil {
 			proc, ctx = upgradeLadderQ4(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx, wasAuto)
-			placement := plGPU
+			placement := placementOf(cfg)
 			if proc != nil && wasAuto {
 				proc, ctx, placement = ensureBottomTarget(cfg, hw, modelPath, bin, port, serverURL, logPath, proc, ctx)
 			}
 			if proc != nil {
 				pp, tps := launchBench(serverURL)
-				reportDecode(pp, tps, ctx)
+				reportDecode(pp, tps, ctx, placement, modelPath)
 				if wasAuto {
 					ct := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
 					saveLaunchMemo(modelPath, ctx, ct, tps, fp, placement)
@@ -419,7 +469,7 @@ func ffnSpillOf(pl string) int {
 // unified memory size their own way, and explicit settings never reach here.
 func ensureBottomTarget(cfg *config.Config, hw platform.Hardware, modelPath, bin string, port int, serverURL, logPath string, proc *server.Proc, ctx int) (*server.Proc, int, string) {
 	if proc == nil || ctx >= engine.BottomCtxTokens || hw.Unified || hw.VRAMMB <= 0 || len(hw.GPUs) == 0 {
-		return proc, ctx, plGPU
+		return proc, ctx, placementOf(cfg) // the partial-fit ladder may already carry an FFN spill
 	}
 	stopped := false
 	// Stage 0, measured multi-GPU only: the bottom may fit WITH the MTP draft
@@ -726,7 +776,7 @@ func benchDecodeSmall(serverURL string) float64 {
 
 // reportDecode prints the measured speeds against the 40-80 tok/s decode
 // baseline band.
-func reportDecode(pp, tps float64, ctx int) {
+func reportDecode(pp, tps float64, ctx int, placement, modelPath string) {
 	if tps <= 0 {
 		return
 	}
@@ -734,11 +784,12 @@ func reportDecode(pp, tps float64, ctx int) {
 	if pp > 0 {
 		note = fmt.Sprintf(" (prompt ~%.0f tok/s)", pp)
 	}
+	where := placementNote(placement, modelPath)
 	switch {
 	case tps < 40:
-		ui.Warn("decode: ~%.0f tok/s%s at %d context - below the 40 tok/s baseline (a smaller model or quant would be faster; see 'winc detect')", tps, note, ctx)
+		ui.Warn("decode: ~%.0f tok/s%s at %d context%s - below the 40 tok/s baseline (a smaller model or quant would be faster; see 'winc detect')", tps, note, ctx, where)
 	default:
-		ui.Info("decode: ~%.0f tok/s%s at %d context", tps, note, ctx)
+		ui.Info("decode: ~%.0f tok/s%s at %d context%s", tps, note, ctx, where)
 	}
 }
 
@@ -900,7 +951,9 @@ func upgradeLadderQ4(cfg *config.Config, hw platform.Hardware, modelPath, bin st
 		return proc, ctx
 	}
 
-	key := fmt.Sprintf("%s|%d", filepath.Base(modelPath), ctx)
+	// Keyed by engine build too: a refreshed engine changes buffer sizes, so a
+	// "q4 gains nothing" verdict measured under the old build must not stick.
+	key := fmt.Sprintf("%s|%d|%s", filepath.Base(modelPath), ctx, engine.LlamaTagOf(bin))
 	memo := loadKVProbe()
 	if best, ok := memo[key]; ok {
 		if best <= ctx {
@@ -1011,5 +1064,28 @@ func mtpYieldsToVision(cfg *config.Config, modelPath string, noMTP bool) bool {
 	if noMTP || strings.EqualFold(strings.TrimSpace(cfg.Performance.Mtp), "off") || engine.CurrentBackend() == "metal" {
 		return false
 	}
+	if engine.MTPRidesWithVision() {
+		return false // b11960+: the draft processes image batches; nothing yields
+	}
 	return engine.MTPCapable(modelPath) && engine.VisionActive(cfg, modelPath)
+}
+
+// mtpVisionTrap reports whether the "a loaded projector turns MTP off" warning
+// still applies on this machine: only on engines before the verified fix.
+func mtpVisionTrap() bool { return !engine.MTPRidesWithVision() }
+
+// warnMTPVisionTrap prints the trap only where it applies (engines before the
+// verified fix); on newer engines MTP and vision simply coexist.
+func warnMTPVisionTrap() {
+	if mtpVisionTrap() {
+		ui.Warn("%s", catalog.MTPVisionWarning)
+	}
+}
+
+// mtpVisionBadge is the listing badge, empty on engines past the fix.
+func mtpVisionBadge() string {
+	if mtpVisionTrap() {
+		return catalog.MTPVisionBadge
+	}
+	return ""
 }

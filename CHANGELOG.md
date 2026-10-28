@@ -3,6 +3,126 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## 1.47.0-jobdar.1 — 2026-10-28 (winc-jobdar branch)
+
+**Merge of master v1.47.0 (engine audit vs llama.cpp v0.8.0, partial-fit FFN
+placement, MTP with vision from b11960, LFM2.5 template patch, lfm2.5-24b-a2b).**
+What reaches jobdar: the **download-name fix** (`cuda-13.3` -> `cuda-13.4`,
+`rocm-7.2` -> `rocm-10.0`) applies to every engine fetch, including the pinned
+build jobdar's `winc_manager` installs (the b11146 assets already carry the new
+names), so CUDA-13 machines get the CUDA-13 build instead of silently falling to
+12.4; llama-server now runs at `-lv 4`, so the desktop's engine log shows the
+load/placement lines. Nothing else touches the eval profile: its picker stays on
+gemma4-e2b / qwen3.5-2b / qwen3.5-4b (small, fully resident, no MTP, no FFN
+spill), the new catalogue entry is `mid`, and `eval.go` is untouched by the merge.
+The desktop still never runs `winc update`; its engine stays pinned.
+
+## v1.47.0 — 2026-10-28
+
+The 2026-10-28 roadmap check turned into a release: the engine audit against
+upstream llama.cpp v0.8.0 (build b11960) found two stale download names and a
+rejected flag, the clean-GPU bench of `swift-1.5-27b` exposed an unverified
+placement path, and a new mid-tier MoE joins the catalogue. Measured on the
+5070 Ti 16 GB, engine b11960 (cuda-13.4), unless noted.
+
+### Fixed
+- **CUDA-13 machines were silently getting the CUDA 12.4 build.** Upstream renamed
+  its Windows CUDA archive `cuda-13.3` → `cuda-13.4` at b11146 (Sep 2026); winc
+  still asked for the old name, the 404 fell through to the next candidate without
+  a word, and every CUDA-13 box (this one included, driver 13.4) has run the 12.4
+  build since. Same story for Linux ROCm (`rocm-7.2` → `rocm-10.0`). Both names
+  fixed; the Linux CUDA prebuilts upstream now ships (`ubuntu-cuda-12.8-x64`,
+  `ubuntu-cuda-13.4-x64/arm64`, each with its cudart companion) are offered
+  driver-matched ahead of Vulkan, and Windows-on-ARM gets the `win-vulkan-arm64`
+  build between Adreno OpenCL and CPU. New test `TestLlamaCandidatesExistUpstream`
+  checks every archive winc can ask for against the real b11960 asset list
+  (`internal/engine/testdata/`), so the next rename fails the build instead of a user.
+  Verified live: `winc update -y` on this box went b11429 → b11960 and landed the
+  cuda-13.4 build on the second pass (the first pass, still running the old code,
+  reproduced the 404 → 12.4 fallback exactly).
+- **A partial-fit dense model now gets winc's FFN-spill placement, not the engine's
+  unverified whole-layer spill.** A dense model whose weights sit on the card but
+  whose window does not (`swift-1.5-27b` Q3_K_M, 13.4 GB, on 16 GB at the 98304
+  bottom-target window) used to launch with `-ngl` omitted and no placement gate:
+  the engine parked whole layers in RAM, whose attention and KV then streamed
+  through RAM too. MEASURED: 15 tok/s fresh, 8.6 at 20k depth, and 2.7 on one
+  launch where the driver paged instead. The ladder now plans the fewest trailing
+  blocks' FFN weights in RAM first (`engine.PartialFitFFNPlan`), pins everything
+  else, and gate-verifies it: the same launch is now **30 tok/s fresh, 24.7 at
+  20k depth** (4/64 layers' FFN in RAM; gate 5/5 through the router). The engine
+  placement remains the fallback when even every FFN in RAM can't hold the window.
+- **The decode report names the placement** — `decode: ~28 tok/s at 98304 context
+  - 4 layers' FFN weights in RAM, attention + context on GPU - below the 40 tok/s
+  baseline`, or `- layers spilled to RAM by the engine (decode decays as the
+  context fills)`, or `- MTP draft off to afford the window` — so a low number
+  explains itself instead of reading like a slow card.
+- **`winc -s cli` passed `-cnv`, which llama-cli rejects** (`invalid argument`, at
+  b11429 and b11960 alike: the flag is registered for the completion example
+  only). Dropped; conversation mode is automatic with a chat template.
+- **The KV-cache probe memo (`.winc-kvprobe`) is now keyed by engine build.** A
+  "q4 gains nothing" verdict measured under one build stuck through an engine
+  refresh; buffer sizes change between builds.
+- **Thinking actually turns off on templates that open the thinking turn
+  themselves.** Every no-think signal winc and llama-server have — the router's
+  adaptive `chat_template_kwargs.enable_thinking=false`, the server's `--reasoning
+  off` — reaches the template as the `enable_thinking` kwarg, and LFM2.5's
+  template has no such switch: its generation prompt ends in `<think>`
+  unconditionally, so every request thought through its whole `max_tokens` and
+  answered nothing (MEASURED: a 300-token JSON reply, 300 tokens of reasoning, no
+  text). winc's template-patch mechanism (the one that already removes Qwen3.5's
+  parser-breaking system guard) now also makes such an opener conditional, the way
+  Qwen3's own template does it — an empty closed thinking block when
+  `enable_thinking` is false. MEASURED on the patched LFM2.5: `--reasoning off`
+  answers JSON directly (end_turn, 69 chars), tool calls intact, thinking still
+  there when enabled. Templates that already carry the switch (Qwen, Gemma) are
+  untouched. `TestForcedThinkOpenPatch`.
+
+### Changed
+- **MTP stays on beside a loaded vision projector from engine b11960.** Upstream
+  fixed the draft-with-image-batches path in October 2026 (#30257, #30397);
+  MEASURED on the 27B + projector: the image request answers, 72% draft
+  acceptance, **80 vs 52 tok/s** without the draft. `engine.MTPRidesWithVision()`
+  gates it on the installed build (≥ 11960, the verified one; older engines keep
+  the vision-drops-MTP rule, its `[MTP: no vision]` badge and warnings, which now
+  print only where they apply). **DFlash still yields to vision**: its draft still
+  500s on image requests on b11960 (re-measured with the 4B head).
+- **llama-server runs at log verbosity 4** (`-lv 4`) when the engine has the flag,
+  so `llama-server.log` and `winc logs --bundle` carry the model-load lines
+  (`load_tensors: offloaded N/N layers`, per-device buffer sizes, KV/compute
+  buffers). The engine's default (3) keeps only the server's own lines — the
+  2.7 tok/s launch above was chased with a log that said nothing about where the
+  model landed. ~120 KB for a load plus a dozen requests.
+- Upstream now ships semver tags beside build tags (v0.8.0 = b11960); winc follows
+  the `nightly-tag.txt` pointer as before. Every flag winc passes or probes exists
+  on b11960; `/health`, the overflow error shape, `timings`, `/v1/messages` and
+  its event names are unchanged; llama-server's new default port (9931) does not
+  matter because winc always passes `--port`.
+
+### Added
+- **`lfm2.5-24b-a2b` — LiquidAI's LFM2.5-24B-A2B joins the `mid` tier** (Oct 13 2026;
+  24B total, ~2.5B active: 64 experts, 4 used, 2 dense lead blocks, `lfm2moe`
+  hybrid short-conv/attention arch, 131K ctx, text-only; official day-one GGUF from
+  LiquidAI's own repo, Q4_K_M 14.5 GB; LFM Open License v1.0 — free incl. commercial
+  use under US$10M revenue, not Apache). MEASURED through `winc serve` on the 16 GB
+  card: expert packing keeps 33/38 layers' experts on the GPU, the full **131072
+  window**, **~145 tok/s at launch, 180 fresh, 156 at 20k depth, 120 at 60k**,
+  prompt 3.5–5.5k tok/s; tool_use + tool_result round trip, strict JSON,
+  `parse_duration` and `LRUCache` all pass; thinking obeys winc's budgets (512 →
+  ~500 reasoning tokens then the answer) and the budget-0 off switch. Placed as an
+  **option, not the default**: `qwen3.6-35b` keeps the tier until LFM is measured on
+  real agent sessions, it is verbose (a 30-line function runs 2–4k tokens with
+  reasoning on; give it `max_tokens` room or run it with reasoning off), and the
+  licence is not Apache. The tier's fastest decode by ~3x.
+
+### Roadmap check (no code)
+- `swift-1.5-27b` on 16 GB: gate 5/5, resident ceiling 39.6 tok/s up to a ~64k
+  window on b11429 (52 on b11960); at the 98304 window it is now the FFN-spill
+  launch above. `qwen3.6-35b-q4-mtp` keeps the default. v1.46.0 tagged + released.
+- Mac v1.42–1.45 test closed (all legs PASS). 12 GB-class gap still open; the
+  Qwen3.8-27B DFlash2 head exists (z-lab) but needs ~2.3 GB VRAM — a 24 GB+ item.
+- Adaptive draft length, `/slots clone_to` and disaggregated prefill are NOT on
+  upstream master; no new KV cache types; Hadamard rotation on by default.
+
 ## 1.46.0-jobdar.1 — 2026-10-19 (winc-jobdar branch)
 
 **Merge of master v1.46.0 (catalogue: Swift 1.5 Qwen3.8-27B, three rungs).**
@@ -70,6 +190,7 @@ beside the base line.
 - The GGUF headers' `general.name` reads `Miroslav 1.0` (an internal UkisAI
   name). winc never displays `general.name`, so nothing changes; noted so a
   reader of `winc detect`'s raw metadata is not surprised.
+
 ## 1.45.0-jobdar.1 — 2026-10-09 (winc-jobdar branch)
 
 **Merge of master v1.45.0 (no download from a closed stdin, installer PATH note
@@ -115,6 +236,7 @@ JSON-mode and `winc stop` found it.
 - Tests: the installer's child-PATH helper (prepend, keep, no duplicate,
   create), and per-directory removal leaving the other directory's rc block
   and fish block intact and still recorded.
+
 ## 1.44.0-jobdar.1 — 2026-10-07 (winc-jobdar branch)
 
 **Merge of master v1.44.0 (`winc -s openclaw` configures OpenClaw).** Inert for
@@ -172,6 +294,7 @@ on a scratch port answered JSON-mode and `winc stop` found it.
   key and defaulted fields.
 - Mac: a step-by-step test handoff for v1.42–v1.44 is in the iCloud File
   Transfer folder (`winc-v1.44-mac-test-2026-10-07.md`).
+
 ## 1.43.0-jobdar.1 — 2026-10-06 (winc-jobdar branch)
 
 **Merge of master v1.43.0 ("web search works on local models") plus its docs
@@ -290,6 +413,7 @@ smoke on a scratch port answered a JSON-mode request.
   From v1.43.0 on, one update delivers everything.
 - Follow-up (separate issue): the Bash safety-classifier timeout seen in the
   same report.
+
 ## 1.42.0-jobdar.2 — 2026-10-06 (winc-jobdar branch)
 
 ### Fixed
@@ -373,6 +497,7 @@ self-update guard still fires (`Version` keeps the suffix; pinned by
   PATH fetched + verified 2.1.292, `claude install` placed
   `.local\bin\claude.exe`, the launcher answered `--version`, `winc doctor`
   resolved it with no PATH entry, and the temp binary was gone afterwards.
+
 ## 1.41.1-jobdar.1 — 2026-10-06 (winc-jobdar branch)
 
 **Merge of master v1.41.1 (the "NO VISION with MTP" warning).** Inert for the
@@ -404,6 +529,7 @@ Ornith-1.5 entries and the mtp-tier text; `winc ls` on a jobdar build shows the
   template comments on `mtp`/`vision` now say so. README: feature row, MTP
   section call-out, ornith-1.5-9b row. Behaviour unchanged; this release is the
   warning.
+
 ## 1.41.0-jobdar.2 — 2026-09-29 (winc-jobdar branch)
 
 **The eval install fetches and loads only what scoring uses.** Found on Jobdar
@@ -652,6 +778,7 @@ jobfaro backend used interactively through the router gains the keepalive.
   hardened by its own test: the wrapper's EOF path delivers every buffered
   tail chunk before surfacing the error (the first cut dropped stream tails —
   caught by the continuation regression test, fixed before ship).
+
 ## 1.38.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.38.0** (automatic vision projectors). **`internal/cli/eval.go`
@@ -682,6 +809,7 @@ and a jobfaro backend used interactively gains image input.
   keeps ngram; `vision = "off"` restores the full speculation stack.
   END-TO-END VERIFIED: `winc serve qwen3.5-4b` + the exact Anthropic-API image
   request Claude Code sends → correct answer through the router.
+
 ## 1.37.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.37.0** (`winc restart` / `winc stop`). **`internal/cli/eval.go`
@@ -707,6 +835,7 @@ invocation replays `--eval` and the model exactly.
   plus an explicit stamp-verified sweep (macOS has no parent-death signal).
   Agent launches (`winc -s ...`) deliberately write no record: their server
   belongs to the agent's own session and is never restartable from outside.
+
 ## 1.36.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.36.0** (MoE expert packing). **`internal/cli/eval.go` is
@@ -733,6 +862,7 @@ the packed placement automatically — pure speed, no behavior change.
   packed experts), like a dense FFN spill. Explicit `cpu_moe` settings
   ("on"/"all"/a layer count) are the user's word and are never repacked; the
   launch prints the split ("packing 24/41 layers on GPU ... --n-cpu-moe 17").
+
 ## 1.35.1-jobdar.2 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master's post-v1.35.1 numeric version ordering (`versionBehindTag`
@@ -767,6 +897,7 @@ master-release advertisement.
   NUMERICALLY — a release-commit literal ahead of a not-yet-published tag
   (1.35.1 while the API still says v1.35.0, the CI window) no longer reads
   "behind," and 1.9.0 vs 1.10.0 compares 9 < 10 instead of lexicographically.
+
 ## 1.35.0-jobdar.1 — 2026-08-07 (winc-jobdar branch)
 
 Merge of master **v1.35.0** (DFlash draft heads + honest clone versions).
@@ -814,6 +945,7 @@ unaffected.
   literal itself only changed when someone remembered — a new gate test pins
   it to the newest CHANGELOG heading, so the release commit that forgets the
   bump fails its own gate, on both branches.
+
 ## 1.34.0-jobdar.1 — 2026-08-06 (winc-jobdar branch)
 
 Merge of master **v1.34.0** (ngram-simple speculation on by default, non-Metal).
@@ -851,6 +983,7 @@ llama-server launched through the standard serve path now also carries
   gemma) measured +57% on fresh generation and stack with ngram on the 4B —
   adoption would need catalog/download plumbing and a provenance decision on
   community-quantized heads.
+
 ## 1.33.0-jobdar.1 — 2026-08-06 (winc-jobdar branch)
 
 Merge of master **v1.33.0** (symmetric-q4_0 starved-KV downshift + engine-aware
@@ -893,6 +1026,7 @@ silently-CPU-attention q8_0/q4_0 pair now gets full-speed symmetric q4_0.
   asset set intact, loads and benches the CUDA roster). Baseline check on the
   5070 Ti: b10298 ≈ b9672 within ±2–4% on pp2048/tg128 at depth 0 and 8192
   across the 4B / E2B / 9B / 26B-A4B roster — no regression, no windfall.
+
 ## 1.32.0-jobdar.1 — 2026-08-06 (winc-jobdar branch)
 
 Merge of master **v1.32.0** (team workers launched at reduced scheduler
@@ -1327,6 +1461,7 @@ Context pin: an explicit `context` in winc.toml is honored exactly.
   endpoint runs at `-c 2048` in ~2.9 GB RSS vs ~3.6 GB fitted. Stepping
   down when a pinned size fails to load remains (rescue, not override).
 - Auto/optimal sizing and the eval profile are unchanged.
+
 ## 1.25.0-jobdar.1 — 2026-07-16 (winc-jobdar branch)
 
 Merge master v1.24.0 + v1.25.0: the journal (context virtualization) and its

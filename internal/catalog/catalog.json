@@ -308,6 +308,15 @@
   },
   {
    "tier": "mid",
+   "alias": "lfm2.5-24b-a2b",
+   "name": "LFM2.5-24B-A2B Q4_K_M (MoE)",
+   "size": "14.5 GB",
+   "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+   "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+   "note": "LiquidAI's Oct 13 2026 MoE: 24B total, ~2.5B active (64 experts, 4 used, 2 dense lead blocks, lfm2moe hybrid short-conv/attention arch, 131K ctx, text-only). Official llama.cpp-day-one GGUF (LiquidAI's own repo), native tool calling with published BFCLv4 / tau3-Bench scores. LFM Open License v1.0: free incl. commercial use under US$10M revenue - not Apache. Too large to sit resident on 16 GB; winc's expert packing keeps the window and parks the leftover experts in RAM"
+  },
+  {
+   "tier": "mid",
    "alias": "muse-glimmer-30b",
    "name": "Muse Glimmer 30B UD-Q3_K_XL (dense)",
    "size": "12.4 GB",

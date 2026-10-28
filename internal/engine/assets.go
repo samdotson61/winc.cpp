@@ -256,9 +256,15 @@ type LlamaAsset struct {
 
 // LlamaCandidates returns the ordered prebuilt llama.cpp archives to try for this
 // hardware, best backend first, always ending in a CPU fallback that exists.
-// NOTE: there is no prebuilt Linux CUDA archive (source build only).
+// Asset names are checked against upstream's b11960 (v0.8.0) release list.
 func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
-	rel := latestLlamaRelease()
+	return llamaCandidatesFor(hw, latestLlamaRelease())
+}
+
+// llamaCandidatesFor is LlamaCandidates against a given release (the network
+// lookup factored out so the archive names can be tested against upstream's
+// real asset list).
+func llamaCandidatesFor(hw platform.Hardware, rel releaseInfo) []LlamaAsset {
 	tag := rel.Tag
 	base := "https://github.com/" + llamaRepo + "/releases/download/" + tag + "/"
 	mk := func(backend, archive string, files ...string) LlamaAsset {
@@ -276,16 +282,22 @@ func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
 			// only GPU path upstream ships for it), native-ARM CPU as fallback.
 			// Never offer x64 archives here -- they run, but under emulation.
 			out = append(out, mk("opencl-adreno", "zip", "llama-"+tag+"-bin-win-opencl-adreno-arm64.zip"))
+			out = append(out, mk("vulkan", "zip", "llama-"+tag+"-bin-win-vulkan-arm64.zip")) // shipped since the b11xxx line
 			out = append(out, mk("cpu", "zip", "llama-"+tag+"-bin-win-cpu-arm64.zip"))
 			return out
 		}
 		if hw.GPUVendor == "nvidia" {
-			// Pick the CUDA build matching the driver. cuda-13.3 needs a newer
+			// Pick the CUDA build matching the driver. cuda-13.4 needs a newer
 			// driver; older drivers (CUDA 12.x) must use cuda-12.4 or its PTX
-			// won't load. Unknown -> offer both, newest first.
+			// won't load. Unknown -> offer both, newest first. Upstream renames
+			// the toolkit suffix as it moves (13.3 -> 13.4 at b11146, 2026-09);
+			// a stale name 404s and the next candidate wins SILENTLY -- every
+			// CUDA-13 machine was quietly on the 12.4 build from Sep 2026 until
+			// this was caught in the 2026-10-28 engine audit. Checked against
+			// the b11960 asset list.
 			cu := hw.CudaMajor
 			if cu == 0 || cu >= 13 {
-				out = append(out, mk("cuda-13.3", "zip", "llama-"+tag+"-bin-win-cuda-13.3-x64.zip", "cudart-llama-bin-win-cuda-13.3-x64.zip"))
+				out = append(out, mk("cuda-13.4", "zip", "llama-"+tag+"-bin-win-cuda-13.4-x64.zip", "cudart-llama-bin-win-cuda-13.4-x64.zip"))
 			}
 			if cu == 0 || cu == 12 || cu >= 13 {
 				out = append(out, mk("cuda-12.4", "zip", "llama-"+tag+"-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"))
@@ -297,16 +309,35 @@ func LlamaCandidates(hw platform.Hardware) []LlamaAsset {
 		out = append(out, mk("cpu", "zip", "llama-"+tag+"-bin-win-cpu-x64.zip"))
 	case "linux":
 		if hw.Arch == "arm64" {
-			// ARM Linux (Snapdragon X laptops, SBCs): vulkan when a GPU is
-			// present, native-ARM CPU always. No ROCm arm64 archive upstream.
+			// ARM Linux (Snapdragon X laptops, SBCs, Jetson/DGX Spark): CUDA 13.4
+			// on NVIDIA, vulkan when any GPU is present, native-ARM CPU always.
+			// No ROCm arm64 archive upstream.
+			if hw.GPUVendor == "nvidia" && (hw.CudaMajor == 0 || hw.CudaMajor >= 13) {
+				out = append(out, mk("cuda-13.4", "tar.gz", "llama-"+tag+"-bin-ubuntu-cuda-13.4-arm64.tar.gz", "cudart-llama-"+tag+"-bin-ubuntu-cuda-13.4-arm64.tar.gz"))
+			}
 			if hw.GPUVendor != "none" && hw.GPUVendor != "" {
 				out = append(out, mk("vulkan", "tar.gz", "llama-"+tag+"-bin-ubuntu-vulkan-arm64.tar.gz"))
 			}
 			out = append(out, mk("cpu", "tar.gz", "llama-"+tag+"-bin-ubuntu-arm64.tar.gz"))
 			return out
 		}
+		if hw.GPUVendor == "nvidia" {
+			// Upstream ships Linux CUDA archives now (cuda-12.8 and cuda-13.4,
+			// each with a cudart companion carrying the runtime libraries, as on
+			// Windows). Driver-matched like the Windows pick; vulkan stays the
+			// fallback the runtime check drops to when the PTX won't load.
+			cu := hw.CudaMajor
+			if cu == 0 || cu >= 13 {
+				out = append(out, mk("cuda-13.4", "tar.gz", "llama-"+tag+"-bin-ubuntu-cuda-13.4-x64.tar.gz", "cudart-llama-"+tag+"-bin-ubuntu-cuda-13.4-x64.tar.gz"))
+			}
+			if cu == 0 || cu == 12 || cu >= 13 {
+				out = append(out, mk("cuda-12.8", "tar.gz", "llama-"+tag+"-bin-ubuntu-cuda-12.8-x64.tar.gz", "cudart-llama-"+tag+"-bin-ubuntu-cuda-12.8-x64.tar.gz"))
+			}
+		}
 		if hw.GPUVendor == "amd" {
-			out = append(out, mk("rocm", "tar.gz", "llama-"+tag+"-bin-ubuntu-rocm-7.2-x64.tar.gz"))
+			// ROCm suffix moved 7.2 -> 7.14 -> 10.0 upstream (b10790+); checked
+			// against the b11960 asset list.
+			out = append(out, mk("rocm", "tar.gz", "llama-"+tag+"-bin-ubuntu-rocm-10.0-x64.tar.gz"))
 		}
 		if hw.GPUVendor != "none" && hw.GPUVendor != "" {
 			out = append(out, mk("vulkan", "tar.gz", "llama-"+tag+"-bin-ubuntu-vulkan-x64.tar.gz"))

@@ -17,6 +17,9 @@ func TestMTPYieldsToVisionGate(t *testing.T) {
 	if engine.CurrentBackend() == "metal" {
 		t.Skip("MTP never engages on Metal, so the warning never fires there")
 	}
+	old := false
+	engine.MTPRidesWithVisionOverride = &old // the pre-b11960 rule the warning describes
+	t.Cleanup(func() { engine.MTPRidesWithVisionOverride = nil })
 	dir := t.TempDir()
 	touch := func(name string) string {
 		p := filepath.Join(dir, name)
@@ -36,6 +39,12 @@ func TestMTPYieldsToVisionGate(t *testing.T) {
 	if !mtpYieldsToVision(&cfg, mtp, false) {
 		t.Fatal("MTP model + its projector + vision auto: the warning must fire")
 	}
+	fixed := true
+	engine.MTPRidesWithVisionOverride = &fixed
+	if mtpYieldsToVision(&cfg, mtp, false) {
+		t.Fatal("on a b11960+ engine MTP rides with the projector: nothing yields, no warning")
+	}
+	engine.MTPRidesWithVisionOverride = &old
 	if mtpYieldsToVision(&cfg, mtp, true) {
 		t.Fatal("a no-MTP retry launch must not warn (MTP is off on purpose)")
 	}

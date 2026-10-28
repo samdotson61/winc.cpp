@@ -240,7 +240,7 @@ func VramTier(mb int) string {
 // image request), so a vision-active server drops MTP/DFlash and keeps only ngram.
 // Because the projector downloads automatically, an MTP model runs WITHOUT its MTP
 // speedup by default; vision = "off" keeps MTP and gives up image input.
-const MTPVisionWarning = `NO VISION with MTP: a loaded image projector turns MTP off (vision = "off" in winc.toml keeps MTP, drops image input)`
+const MTPVisionWarning = `NO VISION with MTP on engines before b11960: a loaded image projector turns MTP off there (vision = "off" in winc.toml keeps MTP, drops image input); 'winc update' moves the engine past it`
 
 // MTPVisionBadge is the short listing marker for the same trap.
 const MTPVisionBadge = "[MTP: no vision]"
