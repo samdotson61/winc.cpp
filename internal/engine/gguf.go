@@ -23,10 +23,28 @@ var systemFirstRaise = regexp.MustCompile(`(?s)\{\{-?\s*raise_exception\([^)]*?b
 
 var chatTemplateCache sync.Map // modelPath -> []string
 
+// forcedThinkOpen is the generation prompt of a template that opens the thinking
+// turn UNCONDITIONALLY and offers no enable_thinking switch (LiquidAI's LFM2.5
+// line). Every no-think signal winc and llama-server have -- the router's
+// chat_template_kwargs.enable_thinking=false, the server's `--reasoning off` --
+// reaches the template as that kwarg, so such a model thinks through every
+// request regardless (MEASURED LFM2.5-24B-A2B, b11960: a 300-token JSON reply
+// spent all 300 on reasoning and answered nothing). forcedThinkOpenPatched is
+// the same statement made conditional the way Qwen3's template does it: an
+// empty, closed thinking block when enable_thinking is false (MEASURED: direct
+// JSON in 31 tokens under `--reasoning off`, tool calls intact, thinking still
+// available when enabled).
+const (
+	forcedThinkOpen        = `{{- "<|im_start|>assistant\n<think>" -}}`
+	forcedThinkOpenPatched = `{%- if enable_thinking is defined and not enable_thinking -%}{{- "<|im_start|>assistant\n<think>\n\n</think>\n" -}}{%- else -%}{{- "<|im_start|>assistant\n<think>" -}}{%- endif -%}`
+)
+
 // ChatTemplateArgs returns "--chat-template-file <patched>" when a model's embedded
-// chat template contains the parser-breaking system-position guard, having written the
-// patched template next to the model. Returns nil when the template is fine or absent,
-// so models whose templates already work (e.g. Qwen3.6) are launched unchanged.
+// chat template needs one of winc's fixes (the parser-breaking system-position
+// guard, or a thinking turn opened without an enable_thinking switch), having
+// written the patched template next to the model. Returns nil when the template
+// is fine or absent, so models whose templates already work (e.g. Qwen3.6) are
+// launched unchanged.
 func ChatTemplateArgs(modelPath string) []string {
 	if v, ok := chatTemplateCache.Load(modelPath); ok {
 		return v.([]string)
@@ -38,14 +56,31 @@ func ChatTemplateArgs(modelPath string) []string {
 
 func computeChatTemplateArgs(modelPath string) []string {
 	tmpl, err := ChatTemplate(modelPath)
-	if err != nil || tmpl == "" || !systemFirstRaise.MatchString(tmpl) {
+	if err != nil || tmpl == "" {
+		return nil
+	}
+	patched, changed := patchChatTemplate(tmpl)
+	if !changed {
 		return nil
 	}
 	out := modelPath + ".winc.jinja"
-	if err := os.WriteFile(out, []byte(systemFirstRaise.ReplaceAllString(tmpl, "")), 0o644); err != nil {
+	if err := os.WriteFile(out, []byte(patched), 0o644); err != nil {
 		return nil
 	}
 	return []string{"--chat-template-file", out}
+}
+
+// patchChatTemplate applies winc's template fixes and reports whether any
+// applied. Pure: the testable contract behind ChatTemplateArgs.
+func patchChatTemplate(tmpl string) (string, bool) {
+	out := tmpl
+	if systemFirstRaise.MatchString(out) {
+		out = systemFirstRaise.ReplaceAllString(out, "")
+	}
+	if !strings.Contains(out, "enable_thinking") && strings.Contains(out, forcedThinkOpen) {
+		out = strings.Replace(out, forcedThinkOpen, forcedThinkOpenPatched, 1)
+	}
+	return out, out != tmpl
 }
 
 const ggufMagic = 0x46554747 // "GGUF" little-endian

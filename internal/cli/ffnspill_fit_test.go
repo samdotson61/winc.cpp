@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"winc/internal/config"
 )
 
 func TestFFNPlacementCodec(t *testing.T) {
@@ -42,5 +44,32 @@ func TestLaunchMemoFFNPlacement(t *testing.T) {
 	}
 	if ffnSpillOf(pl) != 13 {
 		t.Fatalf("placement should decode 13 spilled blocks, got %d", ffnSpillOf(pl))
+	}
+}
+
+// The decode report names the placement, so a low number explains itself.
+func TestPlacementNote(t *testing.T) {
+	if got := placementNote(plGPU, "x.gguf"); got != "" {
+		t.Fatalf("resident placement must add nothing, got %q", got)
+	}
+	if got := placementNote(plFFN(10), "x.gguf"); got != " - 10 layers' FFN weights in RAM, attention + context on GPU" {
+		t.Fatalf("ffn note = %q", got)
+	}
+	if got := placementNote(plSpill, "x.gguf"); got == "" || got[0] != ' ' {
+		t.Fatalf("spill note = %q", got)
+	}
+	if got := placementNote(plNoMTP, "x.gguf"); got == "" {
+		t.Fatal("no-MTP placement must be named")
+	}
+}
+
+func TestPlacementOf(t *testing.T) {
+	cfg := config.Defaults()
+	if placementOf(&cfg) != plGPU {
+		t.Fatal("default config is a resident placement")
+	}
+	cfg.Performance.FFNSpill = 7
+	if placementOf(&cfg) != "ffn:7" {
+		t.Fatalf("FFNSpill=7 must name ffn:7, got %q", placementOf(&cfg))
 	}
 }

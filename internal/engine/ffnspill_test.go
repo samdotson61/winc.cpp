@@ -124,3 +124,46 @@ func TestServerArgsFFNSpill(t *testing.T) {
 		t.Errorf("clamped FFNSpillMB = %d, want 256", got)
 	}
 }
+
+// A partial fit -- dense weights on the card, the window not -- plans the
+// FFN-spill placement instead of the engine's unverified whole-layer spill.
+func TestPartialFitFFNPlan(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Performance.CacheType = "q8_0"
+	// Card 700 MB, model 150 MB: the weights sit on the card, but after the
+	// 530 MB reserve only 20 MB is left -> under the KV headroom -> never
+	// forced full GPU -> a partial fit. 64 blocks, ~1.6 MB of FFN each.
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 700, GPUs: []platform.GPUDevice{{TotalMB: 700}}}
+	m := seedFFN(t, "Near-Card-Dense-Q3_K_M.gguf", 150, 64, 100)
+	if ForcedFullGPU(&cfg, hw, m) {
+		t.Fatal("fixture must be a partial fit")
+	}
+	// 4096 tokens of q8 KV = 64 MB; a 44 MB deficit -> a plannable block count.
+	k, blocks, ok := PartialFitFFNPlan(&cfg, hw, m, 4096)
+	if !ok || blocks != 64 || k <= 0 || k > blocks {
+		t.Fatalf("partial fit must plan an FFN spill, got (%d, %d, %v)", k, blocks, ok)
+	}
+	// 16384 tokens (256 MB) outruns every FFN block -> engine placement stays.
+	if k, blocks, ok = PartialFitFFNPlan(&cfg, hw, m, 16384); ok || k <= blocks {
+		t.Fatalf("impossible window must not plan: (%d, %d, %v)", k, blocks, ok)
+	}
+	// Fully resident models are the ladder's and the bottom-target stages' business.
+	ample := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000, GPUs: []platform.GPUDevice{{TotalMB: 16000}}}
+	if _, _, ok = PartialFitFFNPlan(&cfg, ample, m, 4096); ok {
+		t.Fatal("a fully fitting model must not take the partial-fit plan")
+	}
+	// MoE keeps expert offload; explicit gpu_layers and unified memory never plan.
+	moe := seedFFN(t, "Big-35B-A3B-UD-Q4_K_M.gguf", 150, 48, 100)
+	if _, _, ok = PartialFitFFNPlan(&cfg, hw, moe, 4096); ok {
+		t.Fatal("MoE must not take the partial-fit plan")
+	}
+	exp := cfg
+	exp.Performance.GpuLayers = "20"
+	if _, _, ok = PartialFitFFNPlan(&exp, hw, m, 4096); ok {
+		t.Fatal("explicit gpu_layers must not take the partial-fit plan")
+	}
+	mac := platform.Hardware{GPUVendor: "apple", Unified: true, VRAMMB: 24000, GPUs: []platform.GPUDevice{{TotalMB: 24000}}}
+	if _, _, ok = PartialFitFFNPlan(&cfg, mac, m, 4096); ok {
+		t.Fatal("unified memory must not take the partial-fit plan")
+	}
+}

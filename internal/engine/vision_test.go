@@ -50,6 +50,9 @@ func TestVisionArgs(t *testing.T) {
 // A loaded projector suppresses DRAFT speculation (draft batches break on
 // image embeddings) but keeps model-free ngram -- and drops the draft reserves.
 func TestVisionSuppressesDraftSpec(t *testing.T) {
+	old := false
+	MTPRidesWithVisionOverride = &old // the pre-b11960 engine rule
+	t.Cleanup(func() { MTPRidesWithVisionOverride = nil })
 	dir := t.TempDir()
 	for _, n := range []string{"Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5-4B-DFlash.gguf", "Qwen3.5-4B-mmproj.gguf"} {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
@@ -77,3 +80,34 @@ func TestVisionSuppressesDraftSpec(t *testing.T) {
 }
 
 func platformHW() platform.Hardware { return platform.Hardware{} }
+
+// From b11960 the MTP draft rides with a loaded projector (MEASURED: images
+// answer, 72% acceptance, +54% decode); DFlash still 500s there and keeps
+// yielding. Older engines keep the full rule.
+func TestMTPRidesWithVisionOnFixedEngine(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf", "Qwen3.6-35B-mmproj.gguf", "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5-4B-DFlash.gguf", "Qwen3.5-4B-mmproj.gguf"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Defaults()
+	mtp := filepath.Join(dir, "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf")
+	dfl := filepath.Join(dir, "Qwen3.5-4B-Q4_K_M.gguf")
+	t.Cleanup(func() { MTPRidesWithVisionOverride = nil })
+	for _, fixed := range []bool{false, true} {
+		v := fixed
+		MTPRidesWithVisionOverride = &v
+		if CurrentBackend() != "metal" && mtpActive(&cfg, mtp) != fixed {
+			t.Errorf("fixed=%v: MTP with a projector loaded should be %v", fixed, fixed)
+		}
+		if dflashActive(&cfg, dfl) {
+			t.Errorf("fixed=%v: DFlash must still yield to vision (500 measured on b11960)", fixed)
+		}
+	}
+	for tag, want := range map[string]int{"b11960": 11960, "b9550": 9550, "v0.8.0": 0, "": 0, "bx": 0} {
+		if got := buildNumber(tag); got != want {
+			t.Errorf("buildNumber(%q) = %d, want %d", tag, got, want)
+		}
+	}
+}

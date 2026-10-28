@@ -299,7 +299,7 @@ losslessly drops optional `input_examples`. Set
 |------|--------|----------|
 | `nano` | < 6 GB (phones, weak laptops, iGPUs) | **qwen3.5-4b**, spark-x2.5-4b (fastest), gemma4-e2b, qwen3.5-2b, spark-x2.5-1.7b, qwen3.5-0.8b, granite4.2-3b |
 | `small` | 6-8 GB / 8-16 GB unified | **ornith-9b**, ornith-1.5-9b, qwen3.5-9b, lfm2.5-8b-a1b (fastest), granite4.2-8b, gemma4-12b, gemma4-e4b |
-| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, swift-1.5-27b, muse-glimmer-30b, gemma4-31b, ornith-1.5-35b-a3b-iq3 |
+| `mid` | 16 GB / ~24 GB unified | **qwen3.6-35b (MoE)**, gemma4-26b-a4b, qwen3.8-27b, swift-1.5-27b, lfm2.5-24b-a2b (fastest, MoE), muse-glimmer-30b, gemma4-31b, ornith-1.5-35b-a3b-iq3 |
 | `large` | 24 GB+ / 32-64 GB unified | **qwen3.6-35b-q4 (MoE)**, gemma4-26b-a4b-q4, qwen3.8-27b-q4 / -q5, swift-1.5-27b-q4 / -q5, muse-glimmer-30b-q4, ornith-1.5-35b-a3b |
 | `xl` | 96 GB+ unified | qwen3-coder-next-80b, mistral-small4-119b |
 
@@ -366,7 +366,7 @@ tool-calling**, so even the tiny ones can drive an agent (call tools, web search
 | Model | Params | Size | Released | LiveCodeBench~ | tok/s (6-8 GB GPU / CPU) | Best for |
 |---|---|---|---|---|---|---|
 | ★ ornith-9b | 9B | 5.7 GB | Jun 2026 | SWE-bench 69.4 | ~22-32 / ~6-10 | best small **coder** here (MIT) |
-| ornith-1.5-9b | 9B | 5.8 GB | Aug 2026 | SWE-bench 70.6 | ~22-32 / ~6-10 | 1.0's successor, MTP baked in (**no vision with MTP**); measured 1/2 vs 1.0's 2/2 on the mini gate |
+| ornith-1.5-9b | 9B | 5.8 GB | Aug 2026 | SWE-bench 70.6 | ~22-32 / ~6-10 | 1.0's successor, MTP baked in (no vision with MTP on engines before b11960); measured 1/2 vs 1.0's 2/2 on the mini gate |
 | qwen3.5-9b | 9B | 5.7 GB | Mar 2026 | ~66 | ~22-32 / ~6-10 | best small **all-rounder** |
 | lfm2.5-8b-a1b | 8.5B (**1.5B active**) | 5.3 GB | May 2026 | — | ~75-105 / ~25-40 | **fastest in tier** (MoE) — see anchor below |
 | granite4.2-8b | 8B | 5.2 GB | Aug 2026 | — | ~24-34 / ~7-11 | IBM agentic-RL tool-caller (unmeasured here) |
@@ -403,10 +403,10 @@ end of this section only exist if you want to override a decision.
 
 | Optimization | What it does | Why it's faster |
 |---|---|---|
-| **Driver-aware backend** | Picks the right prebuilt llama.cpp build — CUDA 13.x vs 12.x by your **driver** version, else Metal / Vulkan / ROCm / CPU; **ARM machines get native arm64 builds** (Snapdragon: Adreno OpenCL first), never x64 emulation — and **falls back at runtime** (cuda → vulkan → cpu) if a backend won't actually run | A CUDA build that matches your driver runs on the GPU instead of silently dropping to CPU; native ARM prompt speed is a multiple of emulated x64 |
+| **Driver-aware backend** | Picks the right prebuilt llama.cpp build — CUDA 13.x vs 12.x by your **driver** version (Windows **and Linux** prebuilts, cudart bundled; names checked against the upstream release list — a renamed asset used to 404 silently into the next backend), else Metal / Vulkan / ROCm / CPU; **ARM machines get native arm64 builds** (Snapdragon: Adreno OpenCL first), never x64 emulation — and **falls back at runtime** (cuda → vulkan → cpu) if a backend won't actually run | A CUDA build that matches your driver runs on the GPU instead of silently dropping to CPU; native ARM prompt speed is a multiple of emulated x64 |
 | **P-core thread pinning (CPU inference)** | On a CPU-only install with a known P/E core split (Apple via `sysctl`, ARM/hybrid Linux via cpufreq classes), `--threads` pins to the **performance cores**; unknown split → engine default, never a guess | llama-server's default spans efficiency cores, and on big.LITTLE parts the E cores gate **every** token — each layer waits for the slowest worker |
 | **ARM-CPU model rungs** | `-q40` catalogue rungs (`qwen3.5-2b-q40` / `-4b-q40` / `gemma4-e2b-q40`) ship **Q4_0**, which llama.cpp runtime-repacks to dotprod/i8mm layouts on ARM CPUs; they sit beside their K-quant siblings and are never the default | Typically **1.5–2.5× faster prompt processing** on CPU-only ARM (WoA tablets, SBCs) than the K-quant, at a small quality cost the note discloses |
-| **GPU layer auto-fit, head-first** | A model that **fully fits** VRAM (after buffers + the MTP draft context) is **forced** fully onto the GPU (`-ngl 99`) — the engine's own fit is conservative and could spill a layer to the CPU on a tight fit. A model that doesn't fit keeps the engine's partial offload | Every layer on the GPU is ~5-10x faster — and one CPU-spilled MoE layer drags **every** token through a CPU expert pass, stealing CPU from the team's workers |
+| **GPU layer auto-fit, head-first** | A model that **fully fits** VRAM (after buffers + the MTP draft context) is **forced** fully onto the GPU (`-ngl 99`) — the engine's own fit is conservative and could spill a layer to the CPU on a tight fit. A **dense model whose weights fit but whose window doesn't** (a 27B Q3 on 16 GB) parks the fewest trailing layers' **FFN weights in RAM** and pins everything else — attention and the whole KV cache stay resident, gate-verified, and the rate holds as the context fills (measured at 98k: engine placement 15 → 8.6 tok/s by 20k depth; FFN spill 30 → 25). Only when even that can't hold the window does the engine's own placement take over, and the launch line says which placement you got | Every layer on the GPU is ~5-10x faster — and one CPU-spilled MoE layer drags **every** token through a CPU expert pass, stealing CPU from the team's workers |
 | **Multi-GPU** | Detects **every** GPU (not just the first); the memory budget is the **combined** VRAM, and the engine spreads layers across all cards by each one's free VRAM at load | A 16 GB + 12 GB pair is sized as 28 GB — a 22 GB MoE that needed expert-offload on one card runs **fully on GPU** across two, at a much larger context |
 | **MoE expert offload + packing** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU, budgets the **window first**, then **packs as many layers' experts as the leftover VRAM fits** (exact per-layer sizes from the GGUF tensor table) and parks only the rest in RAM (`--n-cpu-moe`; `--cpu-moe` when nothing fits) | Measured on the 35B-A3B / 16 GB: all-offload stranded 12 GB of VRAM at 47–49 tok/s; packing fills the card — **+70% decode at the same window** (81–83 tok/s), and even at the full 262k window it holds ~63 tok/s |
 | **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and sets the compaction trigger to leave **max(8k, window/8) tokens of headroom** — room for the in-flight turn *plus* the compaction summary itself. If a session still overflows, the router **trims the oldest transcript messages out of the compaction request** so the summary completes instead of truncating mid-write | Long sessions auto-compact and keep going; no more overflow → broken-summary → overflow death loop |
@@ -416,9 +416,9 @@ end of this section only exist if you want to override a decision.
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
 | **MoE-first model picks** | The `mid`/`large` tier defaults are MoE coders (e.g. qwen3.6-35b-A3B) | ~3-5x the tok/s of a same-size dense model at near-equal quality |
 | **External drafts: explicit-only** | The dense 0.8B auto-pair is retired — measured a decode **loss** on every backend tested (CUDA 5070 Ti: −43% code / −57% chat at 67% acceptance; Metal: 0% best case; CPU: halved): the draft's own serial generation costs more than batch verification saves. Set `draft_model` in `winc.toml` to force one anyway | No silent slowdown from a "speedup" — measured-no, documented in the CHANGELOG |
-| **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine). **No vision with MTP**: a loaded image projector turns MTP off (`vision = "off"` keeps MTP, drops image input) — every MTP surface (`winc ls`, download, launch) says so | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
+| **MTP (Qwen variants + Gemma heads)** | Qwen `*-mtp` variants carry built-in multi-token-prediction heads; Gemma 4 models pair with their separately-downloaded MTP head file. `winc` auto-adds the right flags when either is present (engine support probed — never breaks an old engine). **MTP and vision coexist from engine b11960** (measured: image requests answer, 72% draft acceptance, +54% decode on the 27B); on older engines a loaded projector still turns MTP off (`vision = "off"` keeps MTP there, drops image input) and every MTP surface (`winc ls`, download, launch) says so | ~1.4–2.2× on the dense Qwen 9B/27B, ~1.15–1.25× on the 35B MoE, ~1.1× on Gemma 26B-A4B |
 | **ngram speculation (model-free, default on)** | Every non-Metal launch adds `ngram-simple` to the speculative types: drafts come from n-grams already seen in the prompt + generation, verified by the model itself — no draft model, no VRAM, output-exact | Agentic coding constantly re-emits files, diffs and JSON: **4.4–7.2× decode** on re-emission/edit turns (4B 181→1103 tok/s), with **zero measured cost** on fresh generation; `ngram = "off"` opts out |
-| **Vision (image input), automatic** | The catalogue's Qwen3.5/3.6 + Gemma 4 models are natively multimodal; winc downloads each model's official `mmproj` projector automatically (with the model, or healed at launch) and pairs it via `--mmproj` — one projector serves every quant and MTP variant of its family | Paste images into Claude Code on a local model and it just works; without the projector every image 500s. Draft speculation yields on vision servers (measured incompatible with image batches); ngram stays. `vision = "off"` opts out |
+| **Vision (image input), automatic** | The catalogue's Qwen3.5/3.6 + Gemma 4 models are natively multimodal; winc downloads each model's official `mmproj` projector automatically (with the model, or healed at launch) and pairs it via `--mmproj` — one projector serves every quant and MTP variant of its family | Paste images into Claude Code on a local model and it just works; without the projector every image 500s. DFlash yields on vision servers (its draft still 500s on image batches, re-measured b11960); MTP yields only on engines before b11960; ngram always stays. `vision = "off"` opts out |
 | **DFlash draft heads (Qwen3.5 4B/9B)** | A small per-model drafter head (the z-lab line) offered at download and paired automatically at launch, composed with ngram into one spec-type; MTP models keep their own heads | The one case ngram can't speed up: **fresh generation** — measured **+57% on the 4B** (178→280 tok/s) and **2× on the 9B** (120→240); `dflash = "off"` opts out |
 | **Batch / ubatch tuning** | Sets `-b 2048 -ub 512` when offloading to GPU | Faster prompt processing (the "reading your repo" phase) |
 
@@ -495,13 +495,17 @@ supports the flag** (older engines just run without it):
   (~1.15–1.25× — the only speculative speedup that helps a MoE)
 - `winc -d qwen3.5-9b-mtp` — the small-tier 9B, faster than its external 0.8B draft
 
-> **No vision with MTP.** Draft speculation and a loaded vision projector cannot run
-> together (measured, b10298: the draft can't process image-embedding batches and
-> llama-server 500s on every image request), so a vision-active server drops MTP and
-> DFlash and keeps only ngram. The projector downloads automatically, which means **an
-> MTP model runs without its MTP speedup by default**. Set `vision = "off"` in
-> `[performance]` to keep MTP — you give up image input. `winc ls` marks every
-> MTP-capable model `[MTP: no vision]`, and the launch log says when MTP yielded.
+> **MTP with vision depends on the engine.** On llama.cpp builds before b11960 the MTP
+> draft could not process image-embedding batches (measured, b10298: llama-server 500s
+> on every image request), so a vision-active server dropped MTP and DFlash and kept
+> only ngram — and since the projector downloads automatically, an MTP model ran
+> without its speedup by default. Upstream fixed the MTP path in October 2026: **from
+> b11960 winc keeps MTP on beside the projector** (measured on the 27B: images answer,
+> 72% draft acceptance, 80 vs 52 tok/s). `winc update` moves the engine there. On an
+> older engine the old rule and its warnings still apply: `winc ls` marks MTP-capable
+> models `[MTP: no vision]`, the launch log says when MTP yielded, and `vision = "off"`
+> in `[performance]` keeps MTP at the cost of image input. DFlash still yields on every
+> engine (its draft still 500s on images on b11960).
 
 **Qwen3.8 bakes its MTP head into every standard quant** — there is no separate `-mtp`
 variant. winc reads `nextn_predict_layers` from the GGUF metadata (not the filename) and
@@ -540,8 +544,8 @@ variants, Gemma 4 external heads), **DFlash heads** (Qwen3.5 4B/9B — measured 
 model — measured 4.4–7.2× on the file re-emission and edit turns agentic coding is made
 of, at zero cost on fresh output). Drafts are always verified by the main model, so
 output is unaffected by construction. One interaction to know: a loaded vision
-projector suppresses the DRAFT mechanisms (measured: image batches break them) —
-vision servers keep ngram only. On Metal all of it stays off: speculation there is
+projector suppresses DFlash on every engine and MTP on engines before b11960 (image
+batches broke the drafts; upstream fixed MTP in Oct 2026) — ngram always stays. On Metal all of it stays off: speculation there is
 a measured loss (MTP -8% to -38% by draft depth; an external draft ~0% for a wasted
 model load), because the backend doesn't get the batch-verification parallelism drafting
 needs.
