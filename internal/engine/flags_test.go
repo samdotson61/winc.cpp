@@ -266,10 +266,15 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	if got := EffectiveCacheType(&cfg, mid, "m.gguf", 1000, false); got != "q8_0" {
 		t.Errorf("non-ceiling window should stay q8_0, got %q", got)
 	}
-	// MoE experts offloaded: VRAM math differs, stay q8_0 (f16 was measured on
-	// the dense case only).
-	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, true); got != "q8_0" {
-		t.Errorf("expert-offloaded should stay q8_0, got %q", got)
+	// MoE experts offloaded: q4_0 -- every KV byte saved is an expert layer
+	// packed back on the GPU (MEASURED 2026-10-28, 35B on 16 GB at 262k: 15/41
+	// layers packed vs 11/41, +8% decode, +15-23% prompt processing, +0.29% PPL).
+	// Never f16 there, however roomy the card looks.
+	if got := EffectiveCacheType(&cfg, ample, "m.gguf", 13800, true); got != "q4_0" {
+		t.Errorf("expert-offloaded should take q4_0, got %q", got)
+	}
+	if got := EffectiveCacheType(&cfg, tight, "m.gguf", 13800, true); got != "q4_0" {
+		t.Errorf("expert-offloaded on a tight card should take q4_0, got %q", got)
 	}
 	// Explicit q8_0 never downshifts the CACHE; the window that pure-q8 KV can't
 	// reach lands at the usable floor instead (partial offload places the rest).
@@ -287,6 +292,35 @@ func TestAutoKVCacheDownshift(t *testing.T) {
 	cfg.Performance.FlashAttn = true
 	if got := EffectiveCacheType(&cfg, tight, "missing.gguf", 0, false); got != "q8_0" {
 		t.Errorf("unknown size must stay q8_0, got %q", got)
+	}
+}
+
+// Explicit cache types with no full-speed kernel on the CUDA prebuilts get a
+// warning (q5_0/q5_1/q4_1 slow FA kernel, iq4_nl and mixed pairs no FA kernel
+// at all -> CPU attention); the types winc's auto policy uses, and auto itself,
+// never do. Values are honored either way -- the warning is the whole guard.
+func TestSlowKVTypeWarning(t *testing.T) {
+	for _, ct := range []string{"", "auto", "f16", "q8_0", "q4_0", " Q4_0 "} {
+		if w := SlowKVTypeWarning(ct); w != "" {
+			t.Errorf("cache_type %q must not warn: %s", ct, w)
+		}
+	}
+	for _, ct := range []string{"q5_0", "q5_1", "q4_1", "iq4_nl", "q8_0/q4_0", "Q5_0"} {
+		w := SlowKVTypeWarning(ct)
+		if w == "" {
+			t.Errorf("cache_type %q should warn", ct)
+			continue
+		}
+		if !strings.Contains(w, "CUDA prebuilts") || !strings.Contains(w, "q4_0") {
+			t.Errorf("warning for %q should say where it was measured and name the fix: %s", ct, w)
+		}
+	}
+	if w := SlowKVTypeWarning("iq4_nl"); !strings.Contains(w, "CPU") {
+		t.Errorf("iq4_nl warning should name the CPU-attention fallback: %s", w)
+	}
+	// iq4_nl sizes like q4_0 (both 4.5 bits per weight).
+	if got := kvCtxFactor("iq4_nl", true); got != kvCtxFactor("q4_0", true) {
+		t.Errorf("iq4_nl factor %d should equal q4_0's %d", got, kvCtxFactor("q4_0", true))
 	}
 }
 

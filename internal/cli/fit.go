@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -219,6 +220,19 @@ func tryContextLadder(cfg *config.Config, hw platform.Hardware, modelPath, serve
 	return nil, 0
 }
 
+// memoCacheTypeCurrent reports whether a remembered launch's KV cache type is
+// one the CURRENT auto policy can produce for this model: the type
+// EffectiveCacheType picks today, or the starved-window probe's q4_0. The memo
+// fingerprint hashes the configured value ("auto"), not the resolved one, so a
+// policy change (v1.48.0: offloaded-MoE experts now take q4_0, not q8_0) would
+// otherwise replay the old type forever -- the memo pins the remembered cache
+// type on replay. A stale entry misses, re-measures once under the new policy,
+// and is rewritten.
+func memoCacheTypeCurrent(cfg *config.Config, hw platform.Hardware, modelPath, mct string) bool {
+	want := engine.EffectiveCacheType(cfg, hw, modelPath, engine.FileMB(modelPath), engine.WillOffloadExperts(cfg, hw, modelPath))
+	return mct == want || mct == starvedKV
+}
+
 // placementOf names the placement a config launches with: the FFN spill it
 // carries (set by the partial-fit ladder or the bottom-target stage), else
 // fully resident. The engine-placement and no-MTP placements are reported by
@@ -251,6 +265,9 @@ func placementNote(placement, modelPath string) string {
 // re-downloading as needed, then launches at the largest context that fits.
 // Returns (proc, loadedCtx) or (nil, 0).
 func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath string, port int, serverURL, logPath string) (*server.Proc, int) {
+	if w := engine.SlowKVTypeWarning(cfg.Performance.CacheType); w != "" {
+		ui.Warn("%s", w) // explicit values run as written; the trap is otherwise silent
+	}
 	exclude := map[string]bool{}
 	unknownCleared := false
 	for {
@@ -266,7 +283,7 @@ func startLlamaFitting(cfg *config.Config, hw platform.Hardware, modelPath strin
 		// KV cache under these exact sizing inputs -- load straight there (one load
 		// instead of re-walking the ladder).
 		if wasAuto {
-			if mctx, mct, _, mpl := loadLaunchMemo(modelPath, fp); mctx > 0 {
+			if mctx, mct, _, mpl := loadLaunchMemo(modelPath, fp); mctx > 0 && memoCacheTypeCurrent(cfg, hw, modelPath, mct) {
 				lc := *cfg
 				lc.Performance.CacheType = mct
 				// Replay the remembered PLACEMENT, not just the window: a spill result
@@ -633,17 +650,61 @@ const ppHealthyFloor = 150
 // on any healthy GPU-resident server.
 const benchSickSecs = 45
 
+// warmServer runs one throwaway request before a launch is measured. The FIRST
+// request after a load is not a speed measurement: weights the engine mmaps
+// into RAM (a packed MoE's offloaded experts, a dense FFN spill, every CPU-only
+// or unified-memory load) page in as each expert or block is first touched, and
+// the GPU side captures its graphs. MEASURED (35B-A3B, 30/41 expert layers in
+// RAM, b11960, 5070 Ti): the cold first request read 251 tok/s prompt / 21 tok/s
+// decode; the next requests 72-79 tok/s decode and ~900+ prompt. That cold
+// number printed as "decode: ~21 tok/s ... below the 40 tok/s baseline" on a
+// healthy launch, landed in the memo and the agent notes, and sat within 2x of
+// the placement gate's 150 PP floor -- a slower box would have REJECTED a
+// healthy window for it. big=true sends a ~2.5k-token prompt (prefill touches
+// nearly every expert; the gate's own prompt size), false a tiny one (the
+// ungated small bench, where a CPU-class box can't afford a big prefill). The
+// filler words differ from benchServer's so the measured request can never
+// hit the server's prompt cache (an identical prefix reads near-zero PP).
+// slow=true when the warm-up itself dragged past benchSickSecs: on a sysmem-paged
+// load that is already the gate's verdict, so the caller skips the bench
+// instead of paying the sick prefill twice.
+func warmServer(serverURL string, big bool) (slow bool) {
+	prompt := "Reply with the single word OK."
+	tokens := 16
+	if big {
+		prompt += " Ignore the rest: " + strings.Repeat("kilo lima mike november oscar papa quebec romeo sierra tango ", 200)
+	} else {
+		tokens = 48
+	}
+	body, _ := json.Marshal(map[string]any{
+		"messages":    []map[string]string{{"role": "user", "content": prompt}},
+		"max_tokens":  tokens,
+		"temperature": 0,
+	})
+	start := time.Now()
+	cl := &http.Client{Timeout: 2 * benchSickSecs * time.Second}
+	resp, err := cl.Post(serverURL+"/v1/chat/completions", "application/json", bytes.NewReader(body))
+	if err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return time.Since(start) > benchSickSecs*time.Second
+}
+
 // benchServer measures real prompt-processing and decode speed with one fixed
-// completion against the freshly-loaded (and warmed-up) server. The prompt is
-// ~2.5k tokens so prompt processing runs in the batched regime (tiny prompts
-// are overhead-bound and read 5-10x low). measured=false when speeds couldn't
-// be determined (fast transport failure, or a response without timings) --
-// callers never gate on a broken measurement. slow=true when the request itself
-// dragged past benchSickSecs before failing.
+// completion against the freshly-loaded server (warmServer first -- see there).
+// The prompt is ~2.5k tokens so prompt processing runs in the batched regime
+// (tiny prompts are overhead-bound and read 5-10x low); the question asks for
+// ordinary prose so speculative decoding (MTP, ngram) runs at a realistic
+// acceptance rate -- a "repeat this word" or "count to 30" answer is accepted
+// almost token-for-token and reads 30-40% above what real output decodes at.
+// measured=false when speeds couldn't be determined (fast transport failure, or
+// a response without timings) -- callers never gate on a broken measurement.
+// slow=true when the request itself dragged past benchSickSecs before failing.
 func benchServer(serverURL string) (pp, gen float64, measured, slow bool) {
 	words := strings.Repeat("alpha bravo charlie delta echo foxtrot golf hotel india juliet ", 200)
 	body, _ := json.Marshal(map[string]any{
-		"messages":    []map[string]string{{"role": "user", "content": "Repeat the word alpha once. Ignore the rest: " + words}},
+		"messages":    []map[string]string{{"role": "user", "content": "In two or three sentences, what causes ocean tides? Ignore the rest: " + words}},
 		"max_tokens":  48,
 		"temperature": 0,
 	})
@@ -689,7 +750,11 @@ func verifyOnGPU(serverURL, modelPath string, ctx, preFreeMB, residentMB int, la
 	if residencyBroken(preFreeMB, postFreeMB(), residentMB) {
 		sick = fmt.Sprintf("dedicated VRAM use rose by less than half the expected %d MB resident set", residentMB)
 	} else {
-		pp, gen, measured, slow := benchServer(serverURL)
+		var pp, gen float64
+		var measured, slow bool
+		if slow = warmServer(serverURL, true); !slow {
+			pp, gen, measured, slow = benchServer(serverURL)
+		}
 		if !measured && !slow {
 			// A fresh server occasionally drops the first request right after
 			// /health goes green (observed live as silent unverified accepts).
@@ -749,14 +814,16 @@ func launchBench(serverURL string) (pp, gen float64) {
 	if lastBench.tried {
 		return lastBench.pp, lastBench.gen
 	}
+	warmServer(serverURL, false) // the first request after a load under-reads (see warmServer)
 	return 0, benchDecodeSmall(serverURL)
 }
 
 // benchDecodeSmall measures decode speed with a tiny fixed completion (~25
-// prompt tokens + 48 generated). Returns 0 when the request fails -- this is
-// measurement for the launch report, never a gate.
+// prompt tokens + 48 generated) -- ordinary prose, so speculative decoding runs
+// at a realistic acceptance rate (see benchServer). Returns 0 when the request
+// fails -- this is measurement for the launch report, never a gate.
 func benchDecodeSmall(serverURL string) float64 {
-	body := `{"messages":[{"role":"user","content":"Count from 1 to 30 as plain digits separated by spaces."}],"max_tokens":48,"temperature":0}`
+	body := `{"messages":[{"role":"user","content":"In two or three sentences, what causes ocean tides?"}],"max_tokens":48,"temperature":0}`
 	cl := &http.Client{Timeout: 120 * time.Second}
 	resp, err := cl.Post(serverURL+"/v1/chat/completions", "application/json", strings.NewReader(body))
 	if err != nil {

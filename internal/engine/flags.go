@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -874,7 +875,7 @@ func kvSideFactor(cacheType string) int {
 		return 64
 	case "q5_0", "q5_1":
 		return 80
-	case "q4_0", "q4_1":
+	case "q4_0", "q4_1", "iq4_nl": // 4.5-5 bits per weight; iq4_nl is q4_0-sized
 		return 120
 	default:
 		return 64 // unknown -> conservative q8 baseline
@@ -1053,11 +1054,14 @@ func FFNSpillMB(modelPath string, k int) int {
 }
 
 // EffectiveCacheType resolves cache_type = "auto": q8_0 normally, downshifted to
-// SYMMETRIC "q4_0" when the q8-sized window would be starved (< StarvedCtxTokens):
-// 2x the window at a measured ~+0.3% perplexity (4B, wikitext, b10298 -- within
-// the estimate's error bars; upstream's Hadamard KV rotation, merged Apr 2026,
-// is what retired the old "4-bit keys cost ~+10% PPL" basis for an asymmetric
-// q8_0/q4_0 pair). The asymmetric pair is BANNED as an auto choice: upstream
+// SYMMETRIC "q4_0" when the q8-sized window would be starved (< StarvedCtxTokens)
+// or when the model's experts are offloaded (every KV byte saved is an expert
+// layer packed back on the GPU): 2x the window at a measured ~+0.3% perplexity
+// (4B, wikitext, b10298; re-measured on b11960: +0.14-0.29% on the 4B / 9B / 35B,
+// the gap SHRINKING with context, decode equal to f16 at 64k depth -- within the
+// estimate's error bars; upstream's Hadamard KV rotation, merged Apr 2026, is
+// what retired the old "4-bit keys cost ~+10% PPL" basis for an asymmetric
+// q8_0/q4_0 pair -- rotation off doubles the q4_0 loss). The asymmetric pair is BANNED as an auto choice: upstream
 // prebuilt CUDA binaries ship without FA kernels for MIXED K/V quant types
 // (GGML_CUDA_FA_ALL_QUANTS off), so q8_0/q4_0 silently falls back to CPU
 // attention -- MEASURED ~19x slower prompt processing (442 vs 8550 tok/s, 4B,
@@ -1074,25 +1078,70 @@ func EffectiveCacheType(cfg *config.Config, hw platform.Hardware, modelPath stri
 	if !cfg.Performance.FlashAttn || modelFileMB <= 0 {
 		return "q8_0" // no flash-attn (cache is f16 anyway) or unknown size -> never downshift
 	}
+	// MoE with offloaded experts: q4_0. On a packed MoE every KV byte the window
+	// doesn't need is an expert layer back on the GPU, and the 4-bit cache is
+	// near-lossless on Hadamard-rotation engines. MEASURED (35B-A3B Q4_K_M, 16 GB,
+	// b11960, 262144 window, MTP on, through winc serve): q8_0 packs 11/41 expert
+	// layers -> 55 fresh / 64 @28k / 65 @56k / 60 @84k tok/s; q4_0 packs 15/41 ->
+	// 61 / 70 / 64 / 64, prompt processing +15-23% (1135 vs 922 tok/s at 28k);
+	// perplexity at an identical placement (--n-cpu-moe 30, wikitext-2, 16k ctx)
+	// 4.6060 vs 4.5948 (+0.29%, inside the +/-1.1% error; f16 4.5929). The
+	// pre-v1.48 rule kept q8_0 here because the offload budget had never been
+	// measured against the dense-case findings; now it has.
+	if expertsOffloaded {
+		return "q4_0"
+	}
 	// Prefer f16 KV when it costs NO window -- i.e. the f16 cache still reaches
 	// the context ceiling, so the window is ceiling-capped either way and f16
 	// only buys speed. MEASURED (M4 Pro, 4B, v1.27.0): f16 decodes ~9% faster at
 	// an 8k-deep context and processes prompts ~11% faster than q8_0, for 2x the
 	// KV bytes -- free when the window is already capped, a capacity loss when it
 	// isn't. So f16 only when it reaches the ceiling (free VRAM >= ~8 GB of KV);
-	// below that q8_0 keeps the window, and q8_0/q4_0 rescues a starved card.
-	// MoE with offloaded experts keeps q8_0: its VRAM math is the expert-offload
-	// budget, not the dense case this was measured on.
-	if !expertsOffloaded && rawCtxTokens(cfg, hw, "f16", modelPath, modelFileMB) >= ctxCeil {
+	// below that q8_0 keeps the window, and q4_0 rescues a starved card.
+	if rawCtxTokens(cfg, hw, "f16", modelPath, modelFileMB) >= ctxCeil {
 		return "f16"
 	}
 	// Starvation is judged on the RAW full-GPU estimate, not the bottom-bumped
 	// target: the bump reports a window the KV budget can't actually hold, which
 	// would hide starvation from the exact cards the downshift exists for.
-	if !expertsOffloaded && rawCtxTokens(cfg, hw, "q8_0", modelPath, modelFileMB) < StarvedCtxTokens {
+	if rawCtxTokens(cfg, hw, "q8_0", modelPath, modelFileMB) < StarvedCtxTokens {
 		return "q4_0"
 	}
 	return "q8_0"
+}
+
+// SlowKVTypeWarning explains why an EXPLICIT cache_type is a speed trap on the
+// engine builds winc installs, or "" when the type is fine. winc honors explicit
+// values as written (the auto policy never picks these), so the trap would
+// otherwise be silent -- the server loads, answers, and only depth or a long
+// prompt shows the cost. MEASURED on the CUDA prebuilt (b11960, 5070 Ti, 4B and
+// 9B, llama-bench -fa on, prompt depth 0 / 16384 / 65536):
+//   - q5_0, q5_1, q4_1: a slow flash-attention kernel -- fresh decode equals
+//     f16, then 132 vs 164 tok/s at 16k and 70 vs 122 at 64k (-40%), for at most
+//     0.1% better perplexity than q4_0 (8.7273 / 8.7306 / 8.7664 vs 8.7455, f16
+//     8.7249).
+//   - iq4_nl: NO flash-attention kernel -> attention runs on the CPU: prompt
+//     processing 357 vs 9971 tok/s (28x slower), decode 16 tok/s at 16k depth.
+//   - mixed k/v pairs (q8_0/q4_0 ...): the same missing-kernel cliff, ~19x slower
+//     prompt processing (v1.33 measurement).
+//
+// Other backends are unmeasured; the message says where the numbers come from.
+func SlowKVTypeWarning(cacheType string) string {
+	ct := strings.ToLower(strings.TrimSpace(cacheType))
+	if ct == "" || ct == "auto" {
+		return ""
+	}
+	k, v := SplitKV(ct)
+	if k != v {
+		return fmt.Sprintf("cache_type %q is a mixed K/V pair: CUDA prebuilts ship no flash-attention kernel for it, so attention falls back to the CPU (measured ~19x slower prompt processing); use q8_0 or q4_0 on both sides", ct)
+	}
+	switch k {
+	case "q5_0", "q5_1", "q4_1":
+		return fmt.Sprintf("cache_type %q runs on a slow attention kernel on CUDA prebuilts: measured -40%% decode at 64k context depth for <=0.1%% better perplexity than q4_0; q4_0 keeps full speed (f16 or q8_0 if you want no KV quantization)", ct)
+	case "iq4_nl":
+		return fmt.Sprintf("cache_type %q has no flash-attention kernel on CUDA prebuilts, so attention runs on the CPU: measured 28x slower prompt processing and 16 tok/s decode at 16k depth; use q4_0 (same size, full speed)", ct)
+	}
+	return ""
 }
 
 // SplitKV splits a cache-type value into its key-cache and value-cache types: a

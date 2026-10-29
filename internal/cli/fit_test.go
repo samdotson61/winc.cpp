@@ -152,3 +152,22 @@ func TestAutoSized(t *testing.T) {
 		t.Error("explicit cache_type must disable the launch memo")
 	}
 }
+
+// A remembered launch replays only while its KV cache type is one the current
+// auto policy can still produce: the policy's own pick or the starved probe's
+// q4_0. Anything else was measured under an older policy and must re-measure.
+func TestMemoCacheTypeCurrent(t *testing.T) {
+	hw := platform.Hardware{GPUVendor: "nvidia", VRAMMB: 16000}
+	cfg := config.Defaults()
+	// An unknown model size resolves to q8_0 (never downshifts), so q8_0 and the
+	// probe's q4_0 are current here; a remembered f16 is not.
+	if !memoCacheTypeCurrent(&cfg, hw, "missing.gguf", "q8_0") {
+		t.Error("the policy's own pick must replay")
+	}
+	if !memoCacheTypeCurrent(&cfg, hw, "missing.gguf", starvedKV) {
+		t.Error("the starved probe's q4_0 must replay")
+	}
+	if memoCacheTypeCurrent(&cfg, hw, "missing.gguf", "f16") {
+		t.Error("a cache type the current policy cannot produce must miss")
+	}
+}
