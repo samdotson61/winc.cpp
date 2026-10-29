@@ -201,7 +201,8 @@ gpu_layers = "auto"     # "auto" or integer (-ngl)
 context    = "optimal"
 batch      = "auto"
 flash_attn = true
-cache_type = "auto"     # KV cache: "auto" (q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 | q4_0 | "k/v" pair e.g. "q8_0/q4_0" (mixed pairs are SLOW on CUDA prebuilts - no FA kernel). Needs flash_attn.
+cache_type = "auto"     # KV cache: "auto" (f16 when it still reaches the context ceiling; else q8_0; q4_0 when the window is starved or MoE experts are offloaded) | f16 | q8_0 | q4_0. Needs flash_attn.
+                        # Avoid on CUDA prebuilts (measured, winc warns): q5_0/q5_1/q4_1 (slow attention kernel, -40% decode at 64k depth), iq4_nl and mixed "k/v" pairs (no FA kernel -> CPU attention, 20-30x slower prompts).
 threads    = "auto"
 max_output_tokens = "auto"   # "auto" (~half the context) or an integer; caps the agent's response length
 

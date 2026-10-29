@@ -3,6 +3,78 @@
 All notable changes to winc.cpp, newest first. Each release is a single
 `vX.Y.Z: description` commit; tagged releases ship binaries via CI.
 
+## v1.48.0 — 2026-10-29
+
+The KV cache-type re-bench on engine b11960 (4B and 9B dense, 35B MoE through
+`winc serve`; report `winc-kv-rebench-2026-10-28.md`) confirmed the q8_0 floor
+and the symmetric q4_0 downshift on the current engine, measured two policy
+gaps, and caught the launch speed line reading a cold server. All three ship
+here. Measured on the 5070 Ti 16 GB, engine b11960 (cuda-13.4).
+
+### Changed
+- **A MoE launch with offloaded experts now takes a q4_0 KV cache** (`cache_type
+  = "auto"`; it kept q8_0 before). On a packed MoE every KV byte the window
+  doesn't need is an expert layer back on the GPU, and q4_0 is near-lossless on
+  today's engines: vs f16 it costs +0.14% perplexity on the 4B, +0.23% on the 9B
+  and +0.29% on the 35B (wikitext-2, 16k context; inside the estimate's error),
+  the gap SHRINKS with context rather than growing, and decode at 64k depth
+  equals f16 — upstream's Hadamard KV rotation does that work (switching it off
+  doubles the q4_0 loss and shows no throughput cost on this card). MEASURED on
+  `qwen3.6-35b-q4-mtp` at the 262144 window, MTP on, through `winc serve`:
+  q8_0 packs 11/41 expert layers → 55 tok/s fresh / 64 at 28k / 65 at 56k / 60
+  at 84k prompt tokens, prompt processing 922 tok/s; **q4_0 packs 15/41 → 61 / 70
+  / 64 / 64, prompt processing 1135 tok/s** (+8–10% decode fresh and at 28k,
+  flat deeper, +15–23% prompt processing); f16 packs 2/41 and still decodes 54,
+  so the 35B's pace on this card is set by the expert traffic over the bus, not
+  the cache type — a real but modest win. A remembered launch whose KV type the
+  current policy no longer produces (the old q8_0 for an offloaded MoE) misses
+  the memo and re-measures once (`memoCacheTypeCurrent`; the memo fingerprint
+  hashes the configured `auto`, not the resolved type). `cpu_moe = "on"` and
+  explicit `cache_type` values behave as before. Workers still pin q8_0.
+  VERIFIED live on this box: the first `winc serve qwen3.6-35b-q4-mtp` after the
+  update missed its q8_0 memo, re-walked once and landed `--cache-type-k q4_0`,
+  15/41 expert layers packed, 262144 window (15.6 GB VRAM); the second launch
+  replayed it in one load.
+- **Explicit slow KV types warn at launch.** winc passes an explicit `cache_type`
+  through untouched, so a hand-set type without a full-speed kernel on the CUDA
+  prebuilts walked in silently. MEASURED (llama-bench, 4B and 9B, prompt depth 0
+  / 16k / 64k): `q5_0`, `q5_1` and `q4_1` run on a slow flash-attention kernel —
+  equal to f16 fresh, then 132 vs 164 tok/s at 16k and **70 vs 122 at 64k (−40%)**,
+  for at most 0.1% better perplexity than q4_0; `iq4_nl` has NO flash-attention
+  kernel, so attention runs on the CPU — prompt processing **357 vs 9971 tok/s**,
+  decode 16 tok/s at 16k depth (the mixed-pair cliff from v1.33 again). Setting
+  any of those, or a mixed `k/v` pair, now prints one warning naming the measured
+  cost and the fix; the value is still honored. `iq4_nl` now sizes like q4_0 in
+  the context math (both 4.5 bits per weight; it sized as q8_0 before). The toml
+  template comment and the README list the types to avoid.
+
+### Fixed
+- **The launch speed line measured a cold server.** `decode: ~34 tok/s at 262144
+  context - below the 40 tok/s baseline` on a healthy 35B launch that decodes
+  55–70 warm: the first request after a load is not a speed measurement — the
+  engine mmaps the weights it keeps in RAM (a packed MoE's offloaded experts, a
+  dense FFN spill, every CPU-only or unified-memory load), and they page in as
+  each expert or block is first touched. MEASURED on the 35B with 30/41 expert
+  layers in RAM: the cold first request read **251 tok/s prompt / 21 tok/s decode;
+  the next requests 72–79 decode and ~900+ prompt**. That cold number printed as
+  a sub-baseline warning, went into the launch memo and the `.claude-local`
+  agent notes, and sat within 2x of the placement gate's 150 tok/s prompt floor
+  — on a slower box the gate would have REJECTED a healthy window and stepped the
+  ladder down for nothing. The gate bench and the small launch bench now run one
+  throwaway request first (`warmServer`: a 2.5k-token prompt where the gate's own
+  prompt size is affordable, a tiny one on the ungated path), on a prompt whose
+  words differ from the measured request's so the server's prompt cache can
+  never fake the number; a warm-up that itself drags past the sick threshold is
+  the gate's verdict and skips the bench. Both bench prompts now ask for a few
+  sentences of prose instead of "repeat this word" / "count to 30": speculative
+  decoding (MTP, ngram) accepts a counting answer almost token-for-token and read
+  30–40% above what real output decodes at. Cost: one extra short request per
+  launch (~1 s on a GPU; a few seconds on a CPU box). VERIFIED live: the same 35B
+  launch now prints `decode: ~53 tok/s (prompt ~474 tok/s)` cold and `~56 (prompt
+  ~546)` on the memo replay, against 62 tok/s fresh and 70 at 28k depth measured
+  right after with a 350-token answer — the line is now a lower bound of the
+  real speed instead of a third of it.
+
 ## v1.47.0 — 2026-10-28
 
 The 2026-10-28 roadmap check turned into a release: the engine audit against

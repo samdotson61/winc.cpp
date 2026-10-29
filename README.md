@@ -410,7 +410,7 @@ end of this section only exist if you want to override a decision.
 | **Multi-GPU** | Detects **every** GPU (not just the first); the memory budget is the **combined** VRAM, and the engine spreads layers across all cards by each one's free VRAM at load | A 16 GB + 12 GB pair is sized as 28 GB — a 22 GB MoE that needed expert-offload on one card runs **fully on GPU** across two, at a much larger context |
 | **MoE expert offload + packing** | For a Mixture-of-Experts model that won't fit VRAM — **or fits so tightly it leaves no room for context** — keeps attention + MTP heads on the GPU, budgets the **window first**, then **packs as many layers' experts as the leftover VRAM fits** (exact per-layer sizes from the GGUF tensor table) and parks only the rest in RAM (`--n-cpu-moe`; `--cpu-moe` when nothing fits) | Measured on the 35B-A3B / 16 GB: all-offload stranded 12 GB of VRAM at 47–49 tok/s; packing fills the card — **+70% decode at the same window** (81–83 tok/s), and even at the full 262k window it holds ~63 tok/s |
 | **Tell Claude Code the real context** | Passes the loaded window to Claude Code (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and sets the compaction trigger to leave **max(8k, window/8) tokens of headroom** — room for the in-flight turn *plus* the compaction summary itself. If a session still overflows, the router **trims the oldest transcript messages out of the compaction request** so the summary completes instead of truncating mid-write | Long sessions auto-compact and keep going; no more overflow → broken-summary → overflow death loop |
-| **Flash attention + speed-aware KV cache** | Enables `--flash-attn` and auto-picks the KV type: **f16 when it still reaches the context ceiling** (measured ~9% faster decode / ~11% faster prompt processing than q8, free when the window is capped either way), else **q8_0** to keep the window, else a symmetric q4_0 downshift when a card is starved (mixed k/v pairs are never auto-picked: upstream CUDA prebuilts have no flash-attention kernel for them and silently fall back to CPU attention, ~19x slower prompt processing) | The speed of f16 on roomy setups without ever trading away context on tight ones |
+| **Flash attention + speed-aware KV cache** | Enables `--flash-attn` and auto-picks the KV type: **f16 when it still reaches the context ceiling** (measured ~9% faster decode / ~11% faster prompt processing than q8, free when the window is capped either way), else **q8_0** to keep the window, else a symmetric **q4_0** when a card is starved — and always q4_0 when a MoE model's experts are offloaded, where every KV byte saved is an expert layer back on the GPU (measured on the 35B at 262k: 15/41 layers packed instead of 11/41, +8% decode, +15–23% prompt processing, +0.3% perplexity). q4_0 is near-lossless on today's engines (+0.14–0.29% perplexity vs f16 across the 4B/9B/35B, the gap shrinking with context, full speed at depth). Never auto-picked: mixed k/v pairs and `iq4_nl` (no flash-attention kernel on CUDA prebuilts → CPU attention, 20–30× slower prompt processing) or `q5_0`/`q5_1`/`q4_1` (slow kernel, −40% decode at 64k depth); an explicit setting of one of those gets a warning at launch | The speed of f16 on roomy setups without ever trading away context on tight ones |
 | **VRAM-aware context + silent retry** | Sizes the context window to the VRAM left after the model — scaled to the KV `cache_type` (`q4_0` fits ~2× the tokens of `q8_0`) — then **steps down a ladder** (256k → 196k → 131k → … → 16k) if the first choice doesn't load. When the window settles short, winc **probes the next rungs with a symmetric q4_0 KV cache** (~2× the q8 window at a measured ~+0.3% perplexity — the engine's Hadamard KV rotation made 4-bit keys near-lossless) — applied to the main *and* draft caches, keeping the widest window that loads, memoized per model so the probe cost is paid once | You get the largest context that actually loads — measured on a 16+12 GB pair: the 35B MoE goes **131k → 262k fully on GPU at full speed** |
 | **Prefix KV caching** | Built into llama-server: the static system-prompt + tools KV is **reused across turns** | Claude Code's ~25k-token system prompt is processed once, not on every message |
 | **Adaptive reasoning** | A per-request *thinking ceiling* scaled to request size (see [Adaptive reasoning](#adaptive-reasoning)) | "hi" answers instantly instead of burning a 4k-token think budget |
@@ -453,7 +453,7 @@ gpu_layers = "auto"   # "auto" (fit to VRAM) or an integer -ngl
 context    = "optimal"   # "optimal" (~128K/agent, 40-80 tok/s baseline) | "auto" (largest that fits, up to 256K) | a fixed token count
 batch      = "auto"   # "auto" (2048) or an integer
 flash_attn = true     # flash attention when on GPU
-cache_type = "auto"   # KV cache: "auto" (f16 when it still hits the ceiling — faster; else q8_0; drops to q4_0 when the window is starved) | q8_0 | f16 | q4_0 (smallest → ~2× the auto context). Needs flash_attn
+cache_type = "auto"   # KV cache: "auto" (f16 when it still hits the ceiling — faster; else q8_0; q4_0 when the window is starved or MoE experts are offloaded) | f16 | q8_0 | q4_0 (smallest → ~2× the q8_0 context). Needs flash_attn. q5_0/q5_1/q4_1/iq4_nl and mixed pairs are measured speed traps on CUDA prebuilts (winc warns)
 threads    = "auto"   # CPU threads (auto = all cores; CPU-only installs pin the performance cores on a P/E split)
 max_output_tokens = "auto"   # cap on response length ("auto" = ~half the context)
 
@@ -529,13 +529,20 @@ that doesn't cost window. When f16 still reaches the context ceiling — roomy V
 common case for the small models these tiers target — it uses **f16** (measured ~9%
 faster decode / ~11% faster prompt processing than q8, and free because the window is
 capped either way). When f16 would shrink the window it uses **q8_0**, and it drops to **symmetric q4_0**
-(~2× the window at a measured ~+0.3% perplexity — the engine's Hadamard KV rotation made
-4-bit keys near-lossless) whenever even the q8_0 window would come up short — the launch
-probe verifies the wider window actually loads. Auto never picks a MIXED k/v pair:
-upstream CUDA prebuilts ship no flash-attention kernel for mixed types and silently fall
-back to CPU attention (~19× slower prompt processing). Workers always pin q8_0 — small
-models suffer most from KV quantization. Set `cache_type` to `q8_0` / `f16` / `q4_0` to
-force a layout (an explicit `"k/v"` pair still passes through, cliff and all).
+(~2× the window at a measured +0.14–0.29% perplexity vs f16 on the 4B / 9B / 35B, the gap
+shrinking with context and decode equal to f16 at 64k depth — the engine's Hadamard KV
+rotation made 4-bit keys near-lossless; switching the rotation off doubles the loss)
+whenever even the q8_0 window would come up short — the launch probe verifies the wider
+window actually loads — and **always when a MoE model's experts are offloaded**: on a packed
+MoE every KV byte the window doesn't need is an expert layer back on the GPU (measured on
+the 35B at 262k: 15/41 layers packed vs 11/41, +8% decode, +15–23% prompt processing,
++0.3% perplexity). Auto never picks a MIXED k/v pair or `iq4_nl`: upstream CUDA prebuilts
+ship no flash-attention kernel for them and silently fall back to CPU attention (20–30×
+slower prompt processing); nor `q5_0` / `q5_1` / `q4_1`, which run on a slow kernel (−40%
+decode at 64k depth for ≤0.1% better perplexity than q4_0). Workers always pin q8_0 — small
+models suffer most from KV quantization. Set `cache_type` to `f16` / `q8_0` / `q4_0` to
+force a layout; any other explicit value still passes through, with a warning at launch
+that says what it was measured to cost.
 
 **Three speculation mechanisms, composed automatically (CUDA/Vulkan-only).** Every
 launch stacks what the model supports into one spec-type: **MTP heads** (Qwen `*-mtp`
